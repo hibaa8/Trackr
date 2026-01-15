@@ -48,7 +48,7 @@ def get_current_plan_summary(user_id: int) -> str:
             """
             SELECT start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g, status
             FROM plans
-            WHERE user_id = ?
+            WHERE user_id = ? AND status = 'active'
             ORDER BY start_date DESC
             LIMIT 1
             """,
@@ -61,10 +61,9 @@ def get_current_plan_summary(user_id: int) -> str:
                 SELECT workout_plan, rest_day
                 FROM plan_days
                 WHERE plan_id = (
-                    SELECT id FROM plans WHERE user_id = ? ORDER BY start_date DESC LIMIT 1
+                    SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1
                 )
                 ORDER BY date
-                LIMIT 7
                 """,
                 (user_id,),
             )
@@ -227,7 +226,7 @@ def route_after_tools(state: AgentState) -> str:
         return "human_feedback"
     return "assistant"
 
-
+# added because human_feedback can only pause before a node not in the middle. Added so we can ask for input.
 def human_feedback(state: AgentState) -> Dict[str, Any]:
     return {}
 
