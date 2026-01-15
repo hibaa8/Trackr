@@ -404,19 +404,7 @@ def apply_plan(state: AgentState) -> AgentState:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS plan_checkpoints (
-                id INTEGER PRIMARY KEY,
-                plan_id INTEGER NOT NULL,
-                checkpoint_week INTEGER NOT NULL,
-                expected_weight_kg REAL NOT NULL,
-                min_weight_kg REAL NOT NULL,
-                max_weight_kg REAL NOT NULL,
-                FOREIGN KEY (plan_id) REFERENCES plans (id)
-            )
-            """
-        )
+        
         cur.execute(
             """
             INSERT INTO plans (
@@ -491,7 +479,7 @@ def build_graph() -> StateGraph:
     builder.add_conditional_edges(
         "assistant",
         # If the latest message (result) from assistant is a tool call -> tools_condition routes to tools
-        # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to END
+        # If the latest message (result) from assistant is a not a tool call -> tools_condition routes to assistant
         tools_condition,
     )
     builder.add_conditional_edges("tools", route_after_tools, ["assistant", "human_feedback"])

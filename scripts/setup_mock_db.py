@@ -62,6 +62,16 @@ CREATE TABLE IF NOT EXISTS plans (
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
+CREATE TABLE IF NOT EXISTS plan_checkpoints (
+    id INTEGER PRIMARY KEY,
+    plan_id INTEGER NOT NULL,
+    checkpoint_week INTEGER NOT NULL,
+    expected_weight_kg REAL NOT NULL,
+    min_weight_kg REAL NOT NULL,
+    max_weight_kg REAL NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES plans (id)
+)
+
 CREATE TABLE IF NOT EXISTS plan_days (
     id INTEGER PRIMARY KEY,
     plan_id INTEGER NOT NULL,
