@@ -70,18 +70,41 @@ CREATE TABLE IF NOT EXISTS plan_checkpoints (
     min_weight_kg REAL NOT NULL,
     max_weight_kg REAL NOT NULL,
     FOREIGN KEY (plan_id) REFERENCES plans (id)
-)
+);
 
-CREATE TABLE IF NOT EXISTS plan_days (
+CREATE TABLE IF NOT EXISTS plan_templates (
+    id INTEGER PRIMARY KEY,
+    plan_id INTEGER NOT NULL,
+    cycle_length_days INTEGER NOT NULL,
+    timezone TEXT,
+    default_calories INTEGER NOT NULL,
+    default_protein_g INTEGER NOT NULL,
+    default_carbs_g INTEGER NOT NULL,
+    default_fat_g INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    FOREIGN KEY (plan_id) REFERENCES plans (id)
+);
+
+CREATE TABLE IF NOT EXISTS plan_template_days (
+    id INTEGER PRIMARY KEY,
+    template_id INTEGER NOT NULL,
+    day_index INTEGER NOT NULL,
+    workout_json TEXT,
+    calorie_delta INTEGER,
+    notes TEXT,
+    FOREIGN KEY (template_id) REFERENCES plan_templates (id)
+);
+
+CREATE TABLE IF NOT EXISTS plan_overrides (
     id INTEGER PRIMARY KEY,
     plan_id INTEGER NOT NULL,
     date TEXT NOT NULL,
-    calorie_target INTEGER NOT NULL,
-    protein_g INTEGER NOT NULL,
-    carbs_g INTEGER NOT NULL,
-    fat_g INTEGER NOT NULL,
-    workout_plan TEXT,
-    rest_day INTEGER NOT NULL DEFAULT 0,
+    override_type TEXT NOT NULL,
+    workout_json TEXT,
+    calorie_target INTEGER,
+    calorie_delta INTEGER,
+    reason TEXT,
+    created_at TEXT NOT NULL,
     FOREIGN KEY (plan_id) REFERENCES plans (id)
 );
 
@@ -141,9 +164,9 @@ CREATE TABLE IF NOT EXISTS reminders (
     scheduled_at TEXT NOT NULL,
     status TEXT NOT NULL,
     channel TEXT NOT NULL,
-    related_plan_day_id INTEGER,
+    related_plan_override_id INTEGER,
     FOREIGN KEY (user_id) REFERENCES users (id),
-    FOREIGN KEY (related_plan_day_id) REFERENCES plan_days (id)
+    FOREIGN KEY (related_plan_override_id) REFERENCES plan_overrides (id)
 );
 
 CREATE TABLE IF NOT EXISTS ai_suggestions (
@@ -336,7 +359,6 @@ def seed_data(conn: sqlite3.Connection) -> None:
         ],
     )
 
-    plan_day_rows = []
     workouts = [
         "Upper body strength",
         "Lower body strength",
@@ -346,43 +368,69 @@ def seed_data(conn: sqlite3.Connection) -> None:
         "Yoga + core",
         "Rest day",
     ]
-    for day_offset in range(7):
-        plan_date = plan_start + timedelta(days=day_offset)
-        rest_day = 1 if workouts[day_offset] == "Rest day" else 0
-        plan_day_rows.append(
+    insert_many(
+        conn,
+        """
+        INSERT INTO plan_templates (
+            id, plan_id, cycle_length_days, timezone, default_calories,
+            default_protein_g, default_carbs_g, default_fat_g, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
             (
                 1,
-                iso_date(plan_date),
+                1,
+                7,
+                "America/Los_Angeles",
                 2200,
                 170,
                 220,
                 70,
-                workouts[day_offset],
-                rest_day,
-            )
-        )
-        plan_day_rows.append(
+                iso_dt(now - timedelta(days=3)),
+            ),
             (
                 2,
-                iso_date(plan_date),
+                2,
+                7,
+                "America/New_York",
                 1900,
                 130,
                 200,
                 60,
-                "Pilates + walk" if not rest_day else "Rest day",
-                rest_day,
+                iso_dt(now - timedelta(days=3)),
+            ),
+        ],
+    )
+    template_day_rows = []
+    for day_index in range(7):
+        template_day_rows.append(
+            (
+                1,
+                day_index,
+                f'{{"label":"{workouts[day_index]}"}}',
+                0,
+                None,
             )
         )
-
+        template_day_rows.append(
+            (
+                2,
+                day_index,
+                f'{{"label":"{"Pilates + walk" if workouts[day_index] != "Rest day" else "Rest day"}"}}',
+                0,
+                None,
+            )
+        )
     insert_many(
         conn,
         """
-        INSERT INTO plan_days (
-            plan_id, date, calorie_target, protein_g, carbs_g, fat_g, workout_plan, rest_day
+        INSERT INTO plan_template_days (
+            template_id, day_index, workout_json, calorie_delta, notes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        plan_day_rows,
+        template_day_rows,
     )
 
     workout_rows = [
@@ -578,12 +626,12 @@ def seed_data(conn: sqlite3.Connection) -> None:
         conn,
         """
         INSERT INTO reminders (
-            user_id, reminder_type, scheduled_at, status, channel, related_plan_day_id
+            user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
         )
         VALUES (?, ?, ?, ?, ?, ?)
         """,
         [
-            (1, "workout", iso_dt(now + timedelta(hours=3)), "pending", "push", 1),
+            (1, "workout", iso_dt(now + timedelta(hours=3)), "pending", "push", None),
             (2, "checkin", iso_dt(now + timedelta(days=1)), "scheduled", "local", None),
         ],
     )
@@ -684,7 +732,9 @@ def print_counts(conn: sqlite3.Connection) -> None:
         "users",
         "user_preferences",
         "plans",
-        "plan_days",
+        "plan_templates",
+        "plan_template_days",
+        "plan_overrides",
         "workout_sessions",
         "meal_logs",
         "health_activity",

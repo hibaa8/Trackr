@@ -86,6 +86,65 @@ def _redis_delete(key: str) -> None:
 REDIS = _redis_client()
 
 
+def _workout_label_from_json(workout_json: Optional[str]) -> str:
+    if not workout_json:
+        return "Workout"
+    try:
+        payload = json.loads(workout_json)
+    except json.JSONDecodeError:
+        return str(workout_json)
+    if isinstance(payload, dict):
+        return payload.get("label") or payload.get("type") or "Workout"
+    return str(payload)
+
+
+def _render_plan_days(
+    start_date: str,
+    end_date: str,
+    cycle_length: int,
+    default_calories: int,
+    default_macros: Dict[str, int],
+    template_days: Dict[int, Dict[str, Any]],
+    overrides: Dict[str, Dict[str, Any]],
+) -> List[Dict[str, Any]]:
+    start = datetime.strptime(start_date, "%Y-%m-%d").date()
+    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    total_days = (end - start).days + 1
+    plan_days = []
+    for offset in range(total_days):
+        day_date = start + timedelta(days=offset)
+        day_key = day_date.isoformat()
+        day_index = offset % max(1, cycle_length)
+        template = template_days.get(day_index, {})
+        base_calories = default_calories + int(template.get("calorie_delta") or 0)
+        workout_json = template.get("workout_json")
+        rest_day = _workout_label_from_json(workout_json).lower() == "rest day"
+        override = overrides.get(day_key)
+        if override:
+            if override.get("workout_json"):
+                workout_json = override["workout_json"]
+                rest_day = _workout_label_from_json(workout_json).lower() == "rest day"
+            if override.get("calorie_target") is not None:
+                base_calories = override["calorie_target"]
+            elif override.get("calorie_delta") is not None:
+                base_calories = default_calories + int(override["calorie_delta"])
+            if override.get("override_type") in {"pause", "deload"}:
+                rest_day = True
+        macros = _macro_split(base_calories) if base_calories else default_macros
+        plan_days.append(
+            {
+                "date": day_key,
+                "workout_plan": _workout_label_from_json(workout_json),
+                "rest_day": 1 if rest_day else 0,
+                "calorie_target": base_calories,
+                "protein_g": macros["protein_g"],
+                "carbs_g": macros["carbs_g"],
+                "fat_g": macros["fat_g"],
+            }
+        )
+    return plan_days
+
+
 def _load_user_context_data(user_id: int) -> Dict[str, Any]:
     cache_key = f"user:{user_id}:profile"
     cached = _redis_get_json(cache_key)
@@ -133,25 +192,62 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         plan_id = plan_row[0]
         cur.execute(
             """
-            SELECT date, workout_plan, rest_day, calorie_target, protein_g, carbs_g, fat_g
-            FROM plan_days
+            SELECT id, cycle_length_days, timezone, default_calories,
+                   default_protein_g, default_carbs_g, default_fat_g
+            FROM plan_templates
             WHERE plan_id = ?
-            ORDER BY date
+            LIMIT 1
             """,
             (plan_id,),
         )
-        plan_days = [
-            {
-                "date": row[0],
-                "workout_plan": row[1],
-                "rest_day": row[2],
+        template_row = cur.fetchone()
+        if not template_row:
+            return {"plan": plan_row, "plan_days": []}
+        template_id = template_row[0]
+        cycle_length = template_row[1]
+        default_calories = template_row[3]
+        default_macros = {
+            "protein_g": template_row[4],
+            "carbs_g": template_row[5],
+            "fat_g": template_row[6],
+        }
+        cur.execute(
+            """
+            SELECT day_index, workout_json, calorie_delta
+            FROM plan_template_days
+            WHERE template_id = ?
+            ORDER BY day_index
+            """,
+            (template_id,),
+        )
+        template_days = {row[0]: {"workout_json": row[1], "calorie_delta": row[2]} for row in cur.fetchall()}
+        cur.execute(
+            """
+            SELECT date, override_type, workout_json, calorie_target, calorie_delta
+            FROM plan_overrides
+            WHERE plan_id = ? AND date BETWEEN ? AND ?
+            ORDER BY date
+            """,
+            (plan_id, plan_row[1], plan_row[2]),
+        )
+        overrides = {
+            row[0]: {
+                "override_type": row[1],
+                "workout_json": row[2],
                 "calorie_target": row[3],
-                "protein_g": row[4],
-                "carbs_g": row[5],
-                "fat_g": row[6],
+                "calorie_delta": row[4],
             }
             for row in cur.fetchall()
-        ]
+        }
+        plan_days = _render_plan_days(
+            start_date=plan_row[1],
+            end_date=plan_row[2],
+            cycle_length=cycle_length,
+            default_calories=default_calories,
+            default_macros=default_macros,
+            template_days=template_days,
+            overrides=overrides,
+        )
     bundle = {
         "plan": {
             "id": plan_row[0],
@@ -201,7 +297,7 @@ def _invalidate_active_plan_cache(user_id: int) -> None:
 @tool("get_current_plan_summary")
 def get_current_plan_summary(user_id: int) -> str:
     """Return a basic plan summary for the given user_id."""
-    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=False)
+    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan:
@@ -563,6 +659,9 @@ def apply_plan(state: AgentState) -> AgentState:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
+        pref_row = cur.fetchone()
+        timezone = pref_row[0] if pref_row else None
         
         cur.execute(
             """
@@ -584,25 +683,42 @@ def apply_plan(state: AgentState) -> AgentState:
             ),
         )
         plan_id = cur.lastrowid
-        for day in plan_data["plan_days"]:
-            workout = day["workout"]
-            rest_day = 1 if workout.lower() == "rest day" else 0
-            day_macros = _macro_split(day["calorie_target"])
+        cycle_length = min(7, len(plan_data["plan_days"]))
+        cur.execute(
+            """
+            INSERT INTO plan_templates (
+                plan_id, cycle_length_days, timezone, default_calories,
+                default_protein_g, default_carbs_g, default_fat_g, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                plan_id,
+                cycle_length,
+                timezone,
+                plan_data["calorie_target"],
+                plan_data["macros"]["protein_g"],
+                plan_data["macros"]["carbs_g"],
+                plan_data["macros"]["fat_g"],
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        template_id = cur.lastrowid
+        for day_index in range(cycle_length):
+            day = plan_data["plan_days"][day_index]
+            workout_json = json.dumps({"label": day["workout"]})
+            calorie_delta = day["calorie_target"] - plan_data["calorie_target"]
             cur.execute(
                 """
-                INSERT INTO plan_days (
-                    plan_id, date, calorie_target, protein_g, carbs_g, fat_g, workout_plan, rest_day
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO plan_template_days (
+                    template_id, day_index, workout_json, calorie_delta, notes
+                ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
-                    day["date"],
-                    day["calorie_target"],
-                    day_macros["protein_g"],
-                    day_macros["carbs_g"],
-                    day_macros["fat_g"],
-                    workout,
-                    rest_day,
+                    template_id,
+                    day_index,
+                    workout_json,
+                    calorie_delta,
+                    None,
                 ),
             )
         for checkpoint in plan_data["checkpoints"]:
@@ -653,14 +769,22 @@ def run_cli() -> None:
     graph = build_graph()
     print("Basic AI Trainer agent. Type 'exit' to quit.\n")
 
+    config = {"configurable": {"thread_id": "cli"}}
+    preload = _preload_session_cache(1)
 
     while True:
         user_input = input("You: ").strip()
         if user_input.lower() in {"exit", "quit"}:
             break
     
-        config = {"configurable": {"thread_id": "cli"}}
-        state = graph.invoke({"messages": [HumanMessage(content=user_input)]}, config)
+        state = graph.invoke(
+            {
+                "messages": [HumanMessage(content=user_input)],
+                "context": preload.get("context"),
+                "active_plan": preload.get("active_plan"),
+            },
+            config,
+        )
         graph_state = graph.get_state(config)
         if graph_state.next and "human_feedback" in graph_state.next:
             plan_text = None
