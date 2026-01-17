@@ -12,4 +12,5 @@ wikipedia
 trustcall
 langgraph-cli[inmem]
 python-dotenv
+upstash-redis
 

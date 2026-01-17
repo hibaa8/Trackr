@@ -2,10 +2,16 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sqlite3
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Annotated
 
+try:
+    from upstash_redis import Redis
+except ImportError:  # pragma: no cover - optional dependency for local dev
+    Redis = None
 from typing_extensions import TypedDict
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
@@ -23,8 +29,9 @@ DB_PATH = "/Users/admin/Documents/AI-trainer-agent/data/ai_trainer.db"
 
 sys_msg = SystemMessage(content="""You are an AI Trainer assistant.
 
-If the user asks about their current plan, call the tool `get_current_plan_summary`
-using user_id=1. Otherwise answer normally.
+Assume user context and active plan are preloaded into memory and provided in a
+context message. Only call tools if the user explicitly asks to see the current
+plan summary or to generate a new plan.
 
 If the user asks a nutrition or exercise question that requires external info,
 call the tool `search_web` with a concise search query.
@@ -38,16 +45,81 @@ If they specify a weight loss amount, pass target_loss_lbs.
 class AgentState(TypedDict):
     messages: Annotated[List[BaseMessage], add_messages]
     approve_plan: Optional[bool]
+    context: Optional[Dict[str, Any]]
+    active_plan: Optional[Dict[str, Any]]
+    proposed_plan: Optional[Dict[str, Any]]
+
+def _redis_client() -> Optional["Redis"]:
+    if Redis is None:
+        return None
+    url = os.getenv("UPSTASH_REDIS_REST_URL")
+    token = os.getenv("UPSTASH_REDIS_REST_TOKEN")
+    if not url or not token:
+        return None
+    return Redis(url=url, token=token)
 
 
-@tool("get_current_plan_summary")
-def get_current_plan_summary(user_id: int) -> str:
-    """Return a basic plan summary for the given user_id."""
+def _redis_get_json(key: str) -> Optional[Dict[str, Any]]:
+    if not REDIS:
+        return None
+    raw = REDIS.get(key)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+
+
+def _redis_set_json(key: str, value: Dict[str, Any], ttl_seconds: int) -> None:
+    if not REDIS:
+        return
+    REDIS.setex(key, ttl_seconds, json.dumps(value))
+
+
+def _redis_delete(key: str) -> None:
+    if not REDIS:
+        return
+    REDIS.delete(key)
+
+
+REDIS = _redis_client()
+
+
+def _load_user_context_data(user_id: int) -> Dict[str, Any]:
+    cache_key = f"user:{user_id}:profile"
+    cached = _redis_get_json(cache_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?",
+            (user_id,),
+        )
+        user_row = cur.fetchone()
+        cur.execute(
+            "SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg FROM user_preferences WHERE user_id = ?",
+            (user_id,),
+        )
+        pref_row = cur.fetchone()
+    data = {"user": user_row, "preferences": pref_row}
+    _redis_set_json(cache_key, data, ttl_seconds=6 * 60 * 60)
+    return data
+
+
+def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -> Dict[str, Any]:
+    cache_key = f"user:{user_id}:active_plan"
+    cached = _redis_get_json(cache_key)
+    if cached:
+        return cached
+    if not allow_db_fallback:
+        return {"plan": None, "plan_days": []}
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g, status
+            SELECT id, start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g, status
             FROM plans
             WHERE user_id = ? AND status = 'active'
             ORDER BY start_date DESC
@@ -56,31 +128,107 @@ def get_current_plan_summary(user_id: int) -> str:
             (user_id,),
         )
         plan_row = cur.fetchone()
-        if plan_row:
-            cur.execute(
-                """
-                SELECT workout_plan, rest_day
-                FROM plan_days
-                WHERE plan_id = (
-                    SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1
-                )
-                ORDER BY date
-                """,
-                (user_id,),
-            )
-            workout_rows = cur.fetchall()
-    if not plan_row:
-        return "No plan found for this user."
-    start_date, end_date, calories, protein, carbs, fat, status = plan_row
+        if not plan_row:
+            return {"plan": None, "plan_days": []}
+        plan_id = plan_row[0]
+        cur.execute(
+            """
+            SELECT date, workout_plan, rest_day, calorie_target, protein_g, carbs_g, fat_g
+            FROM plan_days
+            WHERE plan_id = ?
+            ORDER BY date
+            """,
+            (plan_id,),
+        )
+        plan_days = [
+            {
+                "date": row[0],
+                "workout_plan": row[1],
+                "rest_day": row[2],
+                "calorie_target": row[3],
+                "protein_g": row[4],
+                "carbs_g": row[5],
+                "fat_g": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+    bundle = {
+        "plan": {
+            "id": plan_row[0],
+            "start_date": plan_row[1],
+            "end_date": plan_row[2],
+            "daily_calorie_target": plan_row[3],
+            "protein_g": plan_row[4],
+            "carbs_g": plan_row[5],
+            "fat_g": plan_row[6],
+            "status": plan_row[7],
+        },
+        "plan_days": plan_days,
+    }
+    _redis_set_json(cache_key, bundle, ttl_seconds=30 * 60)
+    return bundle
+
+
+def _summarize_active_plan_for_context(active_plan: Dict[str, Any]) -> Dict[str, Any]:
+    plan = active_plan.get("plan")
+    plan_days = active_plan.get("plan_days", [])
+    if not plan:
+        return {"plan": None, "plan_days": []}
+    return {
+        "plan": {
+            "start_date": plan.get("start_date"),
+            "end_date": plan.get("end_date"),
+            "daily_calorie_target": plan.get("daily_calorie_target"),
+            "protein_g": plan.get("protein_g"),
+            "carbs_g": plan.get("carbs_g"),
+            "fat_g": plan.get("fat_g"),
+            "status": plan.get("status"),
+        },
+        "plan_days": plan_days[:7],
+    }
+
+
+def _preload_session_cache(user_id: int) -> Dict[str, Any]:
+    context = _load_user_context_data(user_id)
+    active_plan = _get_active_plan_bundle_data(user_id)
+    return {"context": context, "active_plan": active_plan}
+
+
+def _invalidate_active_plan_cache(user_id: int) -> None:
+    _redis_delete(f"user:{user_id}:active_plan")
+
+
+@tool("get_current_plan_summary")
+def get_current_plan_summary(user_id: int) -> str:
+    """Return a basic plan summary for the given user_id."""
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=False)
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan:
+        return "No cached plan found for this user. Try again or start a new session."
+    start_date = plan["start_date"]
+    end_date = plan["end_date"]
+    calories = plan["daily_calorie_target"]
+    protein = plan["protein_g"]
+    carbs = plan["carbs_g"]
+    fat = plan["fat_g"]
+    status = plan["status"]
     workout_lines = []
-    for workout_plan, rest_day in workout_rows:
-        workout_lines.append("Rest day" if rest_day else workout_plan)
-    workout_summary = ", ".join(workout_lines) if workout_lines else "No workouts scheduled."
+
+    for day in plan_days[:14]:
+        workout_plan = day["workout_plan"]
+        rest_day = day["rest_day"]
+        workout_label = "Rest day" if rest_day else workout_plan
+       
+        workout_lines.append(f"{day['date']}: {workout_label}")
+    workout_summary = "\n".join(workout_lines) if workout_lines else "No workouts scheduled."
     return (
         f"Plan {status}: {start_date} to {end_date}. "
         f"Calories {calories}, macros (g) P{protein}/C{carbs}/F{fat}. "
-        f"Workouts: {workout_summary}."
+
+        f"Next 14 days:\n{workout_summary}"
     )
+
 
 @tool("search_web")
 def search_web(query: str) -> str:
@@ -127,6 +275,34 @@ def _macro_split(calories: int) -> Dict[str, int]:
         "carbs_g": carbs_cals // 4,
         "fat_g": fat_cals // 9,
     }
+
+
+def _format_plan_text(plan_data: Dict[str, Any]) -> str:
+    lines = [
+        f"Plan length: {plan_data['days']} days",
+        f"Daily calories (start): {plan_data['calorie_target']}",
+        f"Adjust calories every 14 days by -{plan_data['decrement']} (if applicable).",
+        "Workout schedule:",
+    ]
+    if plan_data["checkpoints"]:
+        first_checkpoint = plan_data["checkpoints"][0]
+        lines.append(
+            f"Current weight: {plan_data['current_weight_kg']:.1f} kg. "
+            f"Expected by week {first_checkpoint['week']}: {first_checkpoint['expected_weight_kg']:.1f} kg "
+            f"(range {first_checkpoint['min_weight_kg']:.1f}–{first_checkpoint['max_weight_kg']:.1f})."
+        )
+    for day in plan_data["plan_days"]:
+        lines.append(f"{day['date']}: {day['workout']} | {day['calorie_target']} kcal")
+    if plan_data["target_weight_kg"] is not None:
+        lines.append(f"Target weight: {plan_data['target_weight_kg']:.1f} kg.")
+    if plan_data["checkpoints"]:
+        lines.append("Expected weight checkpoints (every 2 weeks):")
+        for checkpoint in plan_data["checkpoints"]:
+            lines.append(
+                f"Week {checkpoint['week']}: {checkpoint['expected_weight_kg']:.1f} kg "
+                f"(range {checkpoint['min_weight_kg']:.1f}–{checkpoint['max_weight_kg']:.1f})"
+            )
+    return "\n".join(lines)
 
 def calc_targets(user_row: tuple, pref_row: Optional[tuple]) -> Dict[str, Any]:
     birthdate, height_cm, weight_kg, gender = user_row
@@ -326,35 +502,28 @@ def generate_plan(user_id: int, days: int = 14, target_loss_lbs: Optional[float]
     plan_data = _build_plan_data(user_id, days, target_loss_lbs)
     if "error" in plan_data:
         return plan_data["error"]
-    lines = [
-        f"Plan length: {plan_data['days']} days",
-        f"Daily calories (start): {plan_data['calorie_target']}",
-        f"Adjust calories every 14 days by -{plan_data['decrement']} (if applicable).",
-        "Workout schedule:",
-    ]
-    if plan_data["checkpoints"]:
-        first_checkpoint = plan_data["checkpoints"][0]
-        lines.append(
-            f"Current weight: {plan_data['current_weight_kg']:.1f} kg. "
-            f"Expected by week {first_checkpoint['week']}: {first_checkpoint['expected_weight_kg']:.1f} kg "
-            f"(range {first_checkpoint['min_weight_kg']:.1f}–{first_checkpoint['max_weight_kg']:.1f})."
-        )
-    for day in plan_data["plan_days"]:
-        lines.append(f"{day['date']}: {day['workout']} | {day['calorie_target']} kcal")
-    if plan_data["target_weight_kg"] is not None:
-        lines.append(f"Target weight: {plan_data['target_weight_kg']:.1f} kg.")
-    if plan_data["checkpoints"]:
-        lines.append("Expected weight checkpoints (every 2 weeks):")
-        for checkpoint in plan_data["checkpoints"]:
-            lines.append(
-                f"Week {checkpoint['week']}: {checkpoint['expected_weight_kg']:.1f} kg "
-                f"(range {checkpoint['min_weight_kg']:.1f}–{checkpoint['max_weight_kg']:.1f})"
-            )
-
-    return "\n".join(lines)
+    plan_text = _format_plan_text(plan_data)
+    return json.dumps({"plan_text": plan_text, "plan_data": plan_data})
 
 def assistant(state: AgentState):
-    return {"messages": [llm_with_tools.invoke([sys_msg] + state["messages"])]}
+    context = state.get("context")
+    active_plan = state.get("active_plan")
+    if context is None or active_plan is None:
+        preload = _preload_session_cache(1)
+        context = preload["context"]
+        active_plan = preload["active_plan"]
+    active_plan_summary = _summarize_active_plan_for_context(active_plan)
+    context_msg = SystemMessage(
+        content=(
+            f"User context: {json.dumps(context)}\n"
+            f"Active plan (summary): {json.dumps(active_plan_summary)}"
+        )
+    )
+    return {
+        "context": context,
+        "active_plan": active_plan,
+        "messages": [llm_with_tools.invoke([sys_msg, context_msg] + state["messages"])],
+    }
 
 
 tools = [get_current_plan_summary, search_web, generate_plan]
@@ -386,20 +555,10 @@ def apply_plan(state: AgentState) -> AgentState:
     if not state.get("approve_plan"):
         return {"messages": [AIMessage(content="Plan not changed.")]}
 
-    messages = state.get("messages", [])
-    if len(messages) < 2 or not isinstance(messages[-2], AIMessage):
+    plan_data = state.get("proposed_plan")
+    if not plan_data:
         return {"messages": [AIMessage(content="No plan data to apply.")]}
-    tool_calls = messages[-2].tool_calls or []
-    if not tool_calls:
-        return {"messages": [AIMessage(content="No plan data to apply.")]}
-    args = tool_calls[0].get("args", {})
-    user_id = args.get("user_id", 1)
-    days = args.get("days", 14)
-
-    target_loss_lbs = args.get("target_loss_lbs")
-    plan_data = _build_plan_data(user_id, days, target_loss_lbs)
-    if "error" in plan_data:
-        return {"messages": [AIMessage(content=plan_data["error"])]}
+    user_id = plan_data.get("user_id", 1)
 
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
@@ -462,6 +621,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 ),
             )
         conn.commit()
+    _invalidate_active_plan_cache(user_id)
 
     return {"messages": [AIMessage(content="Plan updated and saved.")]}
 
@@ -504,15 +664,28 @@ def run_cli() -> None:
         graph_state = graph.get_state(config)
         if graph_state.next and "human_feedback" in graph_state.next:
             plan_text = None
+            proposed_plan = None
             for message in reversed(state["messages"]):
                 if isinstance(message, ToolMessage):
-                    plan_text = message.content
+                    try:
+                        payload = json.loads(message.content)
+                    except json.JSONDecodeError:
+                        payload = None
+                    if isinstance(payload, dict):
+                        plan_text = payload.get("plan_text")
+                        proposed_plan = payload.get("plan_data")
+                    else:
+                        plan_text = message.content
                     break
             if plan_text:
                 print("\nAssistant (proposed plan):", plan_text, "\n")
             approval = input("Do you like this plan more than your current one? (yes/no): ").strip().lower()
             approve_plan = approval.startswith("y")
-            graph.update_state(config, {"approve_plan": approve_plan}, as_node="human_feedback")
+            graph.update_state(
+                config,
+                {"approve_plan": approve_plan, "proposed_plan": proposed_plan},
+                as_node="human_feedback",
+            )
             state = graph.invoke(None, config)
         print("\nAssistant:", state["messages"][-1].content, "\n")
 
