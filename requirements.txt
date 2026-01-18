@@ -16,4 +16,5 @@ upstash-redis
 pypdf
 faiss-cpu
 langchain-text-splitters
+redis
 

@@ -2,18 +2,24 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import os
 import re
 import sqlite3
+import time
 from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Annotated
 
 try:
-    from upstash_redis import Redis
+    import redis.asyncio as AsyncRedis
 except ImportError:  # pragma: no cover - optional dependency for local dev
-    Redis = None
+    AsyncRedis = None
+try:
+    from upstash_redis import Redis as UpstashRedis
+except ImportError:  # pragma: no cover - optional dependency for local dev
+    UpstashRedis = None
 from typing_extensions import TypedDict
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
@@ -41,13 +47,14 @@ plan summary or to generate a new plan.
 Use any provided reference excerpts to ground exercise guidance and safety.
 
 Policy (nutrition + training constraints):
-- Calories: estimate TDEE; for gain use +150 to +300 kcal (default +200), allow +300 to +500 if underweight/very active; never exceed +500 unless user requests.
-- Maintain: target TDEE ± 100; avoid deficit unless user explicitly wants leaning out.
+- Gain: target +0.1–0.25% bodyweight/week (beginner/high body fat: 0–0.25%); if user asks to bulk fast, cap at 0.5%/week and warn about fat gain.
+- Gain calories: estimate TDEE, then +150 to +300 kcal/day (default +200). Never > +500 unless user explicitly requests.
+- Maintain calories: TDEE ± 100 (leaner but maintain only with explicit intent: −150 to −250).
 - Protein: gain 1.6–2.2 g/kg (default 1.8), maintain 1.4–2.0 g/kg (default 1.6); never <1.2 g/kg; never >2.4 g/kg without warning.
 - Fat: 0.6–1.0 g/kg (default 0.8) and ≥20% of calories unless medically directed.
 - Carbs: fill remainder; round macros to nearest 5g; ensure macro calories within ±50 of total.
-- Gain/maintain: no auto calorie decrement. Adjust by ±100–150 only based on multi-week trends.
-- Training: gain 4–6 days/week, 10–20 hard sets per muscle/week, RPE 6–9; maintain 3–4 strength days + 2 cardio, RPE 6–8; include warm-up, avoid back-to-back heavy lower days, deload every 4–6 weeks; novice uses machines/DBs and lower volume.
+- Gain/maintain: no auto calorie decrement. Adjust by ±100–150 based on 2–4 week trends.
+- Training: gain 3–6 strength days/week (hypertrophy focus, 10–20 hard sets/muscle, reps 6–12, accessories 12–20, RPE 6–9). Maintain: 2–4 strength days + 2–4 cardio sessions + mobility 2–3x/week, moderate volume.
 
 If the user asks a nutrition or exercise question that requires external info,
 call the tool `search_web` with a concise search query.
@@ -55,6 +62,7 @@ call the tool `search_web` with a concise search query.
 If the user asks to calculate a plan for weight loss or a workout schedule,
 call the tool `generate_plan` using user_id=1 and days between 14 and 60.
 If they specify a weight loss amount, pass target_loss_lbs.
+If they ask to gain muscle or stay fit, pass goal_override="gain" or "maintain".
 
 If the user says they are taking days off, ask only if missing: how many days and which dates. Then call `shift_active_plan_end_date`.
 If the user says the workouts are too intense or they dislike exercises, ask:
@@ -77,20 +85,34 @@ class AgentState(TypedDict):
     active_plan: Optional[Dict[str, Any]]
     proposed_plan: Optional[Dict[str, Any]]
 
-def _redis_client() -> Optional["Redis"]:
-    if Redis is None:
+def _redis_client() -> Optional[Any]:
+    tcp_url = os.getenv("REDIS_URL")
+    if tcp_url and AsyncRedis is not None:
+        return AsyncRedis.from_url(tcp_url, decode_responses=True)
+    if UpstashRedis is None:
         return None
     url = os.getenv("UPSTASH_REDIS_REST_URL")
     token = os.getenv("UPSTASH_REDIS_REST_TOKEN")
     if not url or not token:
         return None
-    return Redis(url=url, token=token)
+    return UpstashRedis(url=url, token=token)
+
+
+def _run_async(coro):
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+    return loop.run_until_complete(coro)
 
 
 def _redis_get_json(key: str) -> Optional[Dict[str, Any]]:
     if not REDIS:
         return None
-    raw = REDIS.get(key)
+    if AsyncRedis and isinstance(REDIS, AsyncRedis.Redis):
+        raw = _run_async(REDIS.get(key))
+    else:
+        raw = REDIS.get(key)
     if not raw:
         return None
     try:
@@ -102,16 +124,25 @@ def _redis_get_json(key: str) -> Optional[Dict[str, Any]]:
 def _redis_set_json(key: str, value: Dict[str, Any], ttl_seconds: int) -> None:
     if not REDIS:
         return
-    REDIS.setex(key, ttl_seconds, json.dumps(value))
+    payload = json.dumps(value)
+    if AsyncRedis and isinstance(REDIS, AsyncRedis.Redis):
+        _run_async(REDIS.setex(key, ttl_seconds, payload))
+    else:
+        REDIS.setex(key, ttl_seconds, payload)
 
 
 def _redis_delete(key: str) -> None:
     if not REDIS:
         return
-    REDIS.delete(key)
+    if AsyncRedis and isinstance(REDIS, AsyncRedis.Redis):
+        _run_async(REDIS.delete(key))
+    else:
+        REDIS.delete(key)
 
 
 REDIS = _redis_client()
+SESSION_CACHE: Dict[int, Dict[str, Any]] = {}
+RAG_QUERY_CACHE: Dict[str, Dict[str, Any]] = {}
 
 RAG_SOURCES_DIR = Path("/Users/admin/Documents/AI-trainer-agent/sources")
 RAG_INDEX = None
@@ -123,31 +154,26 @@ def _build_rag_index():
     if RAG_READY:
         return
     RAG_READY = True
-    pdf_paths = list(RAG_SOURCES_DIR.glob("*.pdf"))
-    if not pdf_paths:
+    index_path = Path("/Users/admin/Documents/AI-trainer-agent/data/faiss_index")
+    if not index_path.exists():
         return
-    documents = []
-    for pdf_path in pdf_paths:
-        try:
-            loader = PyPDFLoader(str(pdf_path))
-            documents.extend(loader.load())
-        except Exception:
-            continue
-    if not documents:
-        return
-    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
-    chunks = splitter.split_documents(documents)
-    if not chunks:
-        return
-    embeddings = OpenAIEmbeddings()
-    RAG_INDEX = FAISS.from_documents(chunks, embeddings)
+    try:
+        embeddings = OpenAIEmbeddings()
+        RAG_INDEX = FAISS.load_local(str(index_path), embeddings, allow_dangerous_deserialization=True)
+    except Exception:
+        RAG_INDEX = None
 
 
-def _retrieve_rag_context(query: str, k: int = 4) -> str:
+def _retrieve_rag_context(query: str, k: int = 3) -> str:
     if not query:
         return ""
     if not RAG_INDEX:
         return ""
+    cache_key = f"default:{hash(query)}"
+    cached = RAG_QUERY_CACHE.get(cache_key)
+    now = time.time()
+    if cached and now - cached["ts"] < 10 * 60:
+        return cached["value"]
     results = RAG_INDEX.similarity_search_with_score(query, k=k)
     if not results:
         return ""
@@ -156,10 +182,12 @@ def _retrieve_rag_context(query: str, k: int = 4) -> str:
         source = doc.metadata.get("source", "unknown")
         page = doc.metadata.get("page")
         page_note = f" p.{page + 1}" if isinstance(page, int) else ""
-        content = doc.page_content.strip()
+        content = doc.page_content.strip().replace("\n", " ")
         if content:
-            lines.append(f"[{Path(source).name}{page_note} | score {score:.3f}] {content}")
-    return "\n".join(lines)
+            lines.append(f"({Path(source).name}{page_note}) {content[:200]}")
+    value = "\n".join(lines)[:800]
+    RAG_QUERY_CACHE[cache_key] = {"ts": now, "value": value}
+    return value
 
 
 def _should_apply_rag(message: str) -> bool:
@@ -403,9 +431,46 @@ def _summarize_active_plan_for_context(active_plan: Dict[str, Any]) -> Dict[str,
     }
 
 
+def _compact_context_summary(context: Dict[str, Any], active_plan: Dict[str, Any]) -> str:
+    user = context.get("user") or ()
+    pref = context.get("preferences") or ()
+    birthdate = user[2] if len(user) > 2 else None
+    height_cm = user[3] if len(user) > 3 else None
+    weight_kg = user[4] if len(user) > 4 else None
+    gender = user[5] if len(user) > 5 else None
+    goal_type = pref[2] if len(pref) > 2 else None
+    activity_level = pref[1] if len(pref) > 1 else None
+    age = _age_from_birthdate(birthdate) if birthdate else None
+
+    plan = active_plan.get("plan") or {}
+    plan_days = active_plan.get("plan_days", [])
+    next_days = [day.get("workout_plan") or day.get("workout") for day in plan_days[:7]]
+    checkpoints = active_plan.get("checkpoints", [])
+    next_checkpoint = checkpoints[0] if checkpoints else None
+
+    summary = {
+        "age": age,
+        "sex": gender,
+        "height_cm": height_cm,
+        "weight_kg": weight_kg,
+        "goal_type": goal_type,
+        "activity_level": activity_level,
+        "calorie_target": plan.get("daily_calorie_target"),
+        "macros_g": {
+            "protein": plan.get("protein_g"),
+            "carbs": plan.get("carbs_g"),
+            "fat": plan.get("fat_g"),
+        },
+        "next_7_workouts": [label for label in next_days if label],
+        "next_checkpoint": next_checkpoint,
+    }
+    return json.dumps(summary)
+
+
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
     context = _load_user_context_data(user_id)
     active_plan = _get_active_plan_bundle_data(user_id)
+    SESSION_CACHE[user_id] = {"context": context, "active_plan": active_plan}
     return {"context": context, "active_plan": active_plan}
 
 
@@ -416,7 +481,9 @@ def _invalidate_active_plan_cache(user_id: int) -> None:
 @tool("get_current_plan_summary")
 def get_current_plan_summary(user_id: int) -> str:
     """Return a basic plan summary for the given user_id."""
-    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
+    if bundle and user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan:
@@ -431,8 +498,10 @@ def get_current_plan_summary(user_id: int) -> str:
     workout_lines = []
 
     for day in plan_days[:14]:
-        workout_plan = day["workout_plan"]
-        rest_day = day["rest_day"]
+        workout_plan = day.get("workout_plan") or day.get("workout") or "Workout"
+        rest_day = day.get("rest_day")
+        if rest_day is None:
+            rest_day = "rest" in workout_plan.lower()
         workout_label = "Rest day" if rest_day else workout_plan
        
         workout_lines.append(f"{day['date']}: {workout_label}")
@@ -728,6 +797,7 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
             "(protein+carbs*4 + fat*9 ≈ calories)"
         ),
         f"Progression rule: {plan_data.get('progression_rule', 'double progression')}",
+        f"Check-in rule: {plan_data.get('check_in_rule', 'Check-in every 2 weeks and adjust based on trend.')}",
         (
             "No auto calorie decrement for gain/maintain; adjust ±100–150 based on 2–3 week trends."
             if plan_data.get("decrement", 0) == 0
@@ -758,11 +828,15 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
     )
     return "\n".join(lines)
 
-def calc_targets(user_row: tuple, pref_row: Optional[tuple]) -> Dict[str, Any]:
+def calc_targets(
+    user_row: tuple,
+    pref_row: Optional[tuple],
+    goal_override: Optional[str] = None,
+) -> Dict[str, Any]:
     birthdate, height_cm, weight_kg, gender = user_row
     weekly_delta = pref_row[0] if pref_row else -0.5
     activity_level = pref_row[1] if pref_row else "moderate"
-    goal_type = pref_row[2] if pref_row else "lose"
+    goal_type = goal_override or (pref_row[2] if pref_row else "lose")
 
     age = _age_from_birthdate(birthdate)
     bmr = _bmr_mifflin(weight_kg, height_cm, age, gender)
@@ -811,11 +885,31 @@ def compute_weight_checkpoints(
     pref_row: Optional[tuple],
     requested_days: int,
     target_weight_override: Optional[float],
+    goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     weight_kg = user_row[2]
-    goal_type = pref_row[2] if pref_row else "lose"
+    goal_type = goal_override or (pref_row[2] if pref_row else "lose")
     target_weight = target_weight_override or (pref_row[3] if pref_row else None)
     if target_weight is None:
+        if goal_type in {"gain", "maintain"}:
+            planned_days = requested_days
+            total_weeks = max(1, int((planned_days + 6) / 7))
+            num_checkpoints = max(1, int((total_weeks + 1) / 2))
+            rate_per_week = 0.002 if goal_type == "gain" else 0.0
+            band = 0.01 * weight_kg
+            checkpoints = []
+            for i in range(1, num_checkpoints + 1):
+                week = i * 2
+                expected = weight_kg * (1 + rate_per_week * week)
+                checkpoints.append(
+                    {
+                        "week": week,
+                        "expected_weight_kg": expected,
+                        "min_weight_kg": expected - band,
+                        "max_weight_kg": expected + band,
+                    }
+                )
+            return {"checkpoints": checkpoints, "recommended_weeks": None, "planned_days": planned_days}
         return {"checkpoints": [], "recommended_weeks": None, "planned_days": requested_days}
 
     delta = abs(weight_kg - target_weight)
@@ -885,7 +979,7 @@ def generate_workout_plan(
             f"DB press 3x8–12 @RPE7, Curl 3x10–12 @RPE7. {warmup} {progression}",
             f"Lower B: Deadlift 3x5–8 @RPE7–8, Leg press 3x10–12 @RPE7, "
             f"Ham curl 3x10–12 @RPE7, Calf raise 3x12–15 @RPE7. {warmup} {progression}",
-            f"{cardio_zone2} Mobility 10 min.",
+            "Rest / Mobility 10 min.",
             "Rest / Mobility 10 min.",
         ]
     elif goal == "maintain":
@@ -912,7 +1006,12 @@ def generate_workout_plan(
     return week_template[:days_per_week] + week_template[days_per_week:]
 
 
-def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) -> Dict[str, Any]:
+def _build_plan_data(
+    user_id: int,
+    days: int,
+    target_loss_lbs: Optional[float],
+    goal_override: Optional[str] = None,
+) -> Dict[str, Any]:
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -928,11 +1027,17 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
         )
         pref_row = cur.fetchone()
 
-    targets = calc_targets(user_row, pref_row)
+    targets = calc_targets(user_row, pref_row, goal_override=goal_override)
     target_weight_override = None
     if target_loss_lbs:
         target_weight_override = user_row[2] - (target_loss_lbs * 0.453592)
-    weight_info = compute_weight_checkpoints(user_row, pref_row, days, target_weight_override)
+    weight_info = compute_weight_checkpoints(
+        user_row,
+        pref_row,
+        days,
+        target_weight_override,
+        goal_override=goal_override,
+    )
     days = weight_info["planned_days"]
     if targets["goal_type"] == "gain":
         days_per_week = 5
@@ -962,6 +1067,19 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
             }
         )
 
+    if targets["goal_type"] == "gain":
+        check_in_rule = (
+            "Check-in every 2 weeks: if gain <0.1%/week → +100–150 kcal; "
+            "if gain >0.5%/week → −100–150 kcal; if strength up and weight flat, hold."
+        )
+    elif targets["goal_type"] == "maintain":
+        check_in_rule = (
+            "Check-in every 2–4 weeks: if weight drifts >1% → adjust ±100 kcal; "
+            "if low energy, reduce volume 10–20% before calories."
+        )
+    else:
+        check_in_rule = "Check-in every 2 weeks and adjust calories based on trend."
+
     plan_data = {
         "user_id": user_id,
         "current_weight_kg": user_row[2],
@@ -979,6 +1097,7 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
         "tdee": targets.get("tdee"),
         "calorie_formula": targets.get("calorie_formula"),
         "progression_rule": "double progression",
+        "check_in_rule": check_in_rule,
     }
     if not validate_macros(
         plan_data["calorie_target"],
@@ -992,14 +1111,19 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
     return plan_data
 
 @tool("generate_plan")
-def generate_plan(user_id: int, days: int = 14, target_loss_lbs: Optional[float] = None) -> str:
+def generate_plan(
+    user_id: int,
+    days: int = 14,
+    target_loss_lbs: Optional[float] = None,
+    goal_override: Optional[str] = None,
+) -> str:
     """Generate a simple 14-60 day plan based on user profile and preferences."""
     if days < 14:
         days = 14
     if days > 60:
         days = 60
 
-    plan_data = _build_plan_data(user_id, days, target_loss_lbs)
+    plan_data = _build_plan_data(user_id, days, target_loss_lbs, goal_override=goal_override)
     if "error" in plan_data:
         return plan_data["error"]
     cache_bundle = {
@@ -1017,6 +1141,10 @@ def generate_plan(user_id: int, days: int = 14, target_loss_lbs: Optional[float]
         "checkpoints": plan_data.get("checkpoints", []),
     }
     _redis_set_json(f"user:{user_id}:active_plan", cache_bundle, ttl_seconds=30 * 60)
+    SESSION_CACHE[user_id] = {
+        "context": SESSION_CACHE.get(user_id, {}).get("context"),
+        "active_plan": cache_bundle,
+    }
     plan_text = _format_plan_text(plan_data)
     return json.dumps({"plan_text": plan_text, "plan_data": plan_data})
 
@@ -1081,6 +1209,10 @@ def shift_active_plan_end_date(
         cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end, plan_id))
         conn.commit()
     _invalidate_active_plan_cache(user_id)
+    SESSION_CACHE[user_id] = {
+        "context": SESSION_CACHE.get(user_id, {}).get("context"),
+        "active_plan": _get_active_plan_bundle_data(user_id),
+    }
     payload = {
         "plan_patch": {
             "end_date_shift_days": days_off,
@@ -1115,7 +1247,9 @@ def replace_active_plan_workouts(
     else:
         preferred_list = []
 
-    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
+    if bundle and user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan or not plan_days:
@@ -1186,6 +1320,10 @@ def replace_active_plan_workouts(
         conn.commit()
 
     _invalidate_active_plan_cache(user_id)
+    SESSION_CACHE[user_id] = {
+        "context": SESSION_CACHE.get(user_id, {}).get("context"),
+        "active_plan": _get_active_plan_bundle_data(user_id),
+    }
     payload = {
         "plan_patch": {
             "end_date_shift_days": 0,
@@ -1200,7 +1338,9 @@ def replace_active_plan_workouts(
 @tool("get_weight_checkpoint_for_current_week")
 def get_weight_checkpoint_for_current_week(user_id: int) -> str:
     """Get the expected weight for the current week from cached checkpoints."""
-    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
+    if bundle and user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
     plan = bundle.get("plan")
     checkpoints = bundle.get("checkpoints", [])
     if not plan or not checkpoints:
@@ -1234,21 +1374,25 @@ def get_weight_checkpoint_for_current_week(user_id: int) -> str:
 def assistant(state: AgentState):
     context = state.get("context")
     active_plan = state.get("active_plan")
+    session = SESSION_CACHE.get(1, {})
+    if session.get("context"):
+        context = session["context"]
+    if session.get("active_plan"):
+        active_plan = session["active_plan"]
     if context is None or active_plan is None:
         preload = _preload_session_cache(1)
         context = preload["context"]
         active_plan = preload["active_plan"]
+    SESSION_CACHE[1] = {"context": context, "active_plan": active_plan}
     last_user_message = ""
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
             last_user_message = message.content
             break
     rag_context = _retrieve_rag_context(last_user_message) if _should_apply_rag(last_user_message) else ""
-    active_plan_summary = _summarize_active_plan_for_context(active_plan)
     context_msg = SystemMessage(
         content=(
-            f"User context: {json.dumps(context)}\n"
-            f"Active plan (summary): {json.dumps(active_plan_summary)}"
+            f"User context (compact): {_compact_context_summary(context, active_plan)}"
             + (f"\nReference excerpts (RAG):\n{rag_context}" if rag_context else "")
         )
     )
@@ -1382,6 +1526,10 @@ def apply_plan(state: AgentState) -> AgentState:
             )
         conn.commit()
     _invalidate_active_plan_cache(user_id)
+    SESSION_CACHE[user_id] = {
+        "context": SESSION_CACHE.get(user_id, {}).get("context"),
+        "active_plan": _get_active_plan_bundle_data(user_id),
+    }
 
     return {"messages": [AIMessage(content="Plan updated and saved.")]}
 
