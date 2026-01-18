@@ -13,4 +13,7 @@ trustcall
 langgraph-cli[inmem]
 python-dotenv
 upstash-redis
+pypdf
+faiss-cpu
+langchain-text-splitters
 

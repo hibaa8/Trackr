@@ -4,7 +4,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sqlite3
+from pathlib import Path
 from datetime import date, datetime, timedelta
 from typing import List, Optional, Dict, Any, Annotated
 
@@ -13,7 +15,7 @@ try:
 except ImportError:  # pragma: no cover - optional dependency for local dev
     Redis = None
 from typing_extensions import TypedDict
-from langchain_openai import ChatOpenAI
+from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, START, END, add_messages
@@ -22,6 +24,9 @@ from dotenv import load_dotenv
 from langgraph.prebuilt import ToolNode
 from langgraph.prebuilt import tools_condition
 from langchain_tavily import TavilySearch
+from langchain_community.document_loaders import PyPDFLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_community.vectorstores import FAISS
 
 load_dotenv()
 
@@ -33,12 +38,35 @@ Assume user context and active plan are preloaded into memory and provided in a
 context message. Only call tools if the user explicitly asks to see the current
 plan summary or to generate a new plan.
 
+Use any provided reference excerpts to ground exercise guidance and safety.
+
+Policy (nutrition + training constraints):
+- Calories: estimate TDEE; for gain use +150 to +300 kcal (default +200), allow +300 to +500 if underweight/very active; never exceed +500 unless user requests.
+- Maintain: target TDEE ± 100; avoid deficit unless user explicitly wants leaning out.
+- Protein: gain 1.6–2.2 g/kg (default 1.8), maintain 1.4–2.0 g/kg (default 1.6); never <1.2 g/kg; never >2.4 g/kg without warning.
+- Fat: 0.6–1.0 g/kg (default 0.8) and ≥20% of calories unless medically directed.
+- Carbs: fill remainder; round macros to nearest 5g; ensure macro calories within ±50 of total.
+- Gain/maintain: no auto calorie decrement. Adjust by ±100–150 only based on multi-week trends.
+- Training: gain 4–6 days/week, 10–20 hard sets per muscle/week, RPE 6–9; maintain 3–4 strength days + 2 cardio, RPE 6–8; include warm-up, avoid back-to-back heavy lower days, deload every 4–6 weeks; novice uses machines/DBs and lower volume.
+
 If the user asks a nutrition or exercise question that requires external info,
 call the tool `search_web` with a concise search query.
 
 If the user asks to calculate a plan for weight loss or a workout schedule,
 call the tool `generate_plan` using user_id=1 and days between 14 and 60.
 If they specify a weight loss amount, pass target_loss_lbs.
+
+If the user says they are taking days off, ask only if missing: how many days and which dates. Then call `shift_active_plan_end_date`.
+If the user says the workouts are too intense or they dislike exercises, ask:
+- Do you prefer machines, dumbbells, barbells, bodyweight, or bands?
+- Any exercises you hate or any injuries?
+- If cardio swap is needed: walking, cycling, rowing, or elliptical?
+Then call `replace_active_plan_workouts`.
+If the user asks what their weight should be this week, call `get_weight_checkpoint_for_current_week` (use cached checkpoints only).
+If the user asks how to do an exercise, provide 4–6 form cues, 2 common mistakes, 1 regression, 1 progression, and a YouTube link (call `search_web` with a YouTube query like "{exercise} proper form tutorial Jeff Nippard").
+
+Small changes should use patch, not full regeneration. For pause days or workout swaps, return a plan_patch JSON:
+{"end_date_shift_days": N, "overrides":[{date, override_type, workout_json, calorie_target|calorie_delta}], "notes": "..."}.
 """)
 
 
@@ -84,6 +112,78 @@ def _redis_delete(key: str) -> None:
 
 
 REDIS = _redis_client()
+
+RAG_SOURCES_DIR = Path("/Users/admin/Documents/AI-trainer-agent/sources")
+RAG_INDEX = None
+RAG_READY = False
+
+
+def _build_rag_index():
+    global RAG_INDEX, RAG_READY
+    if RAG_READY:
+        return
+    RAG_READY = True
+    pdf_paths = list(RAG_SOURCES_DIR.glob("*.pdf"))
+    if not pdf_paths:
+        return
+    documents = []
+    for pdf_path in pdf_paths:
+        try:
+            loader = PyPDFLoader(str(pdf_path))
+            documents.extend(loader.load())
+        except Exception:
+            continue
+    if not documents:
+        return
+    splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
+    chunks = splitter.split_documents(documents)
+    if not chunks:
+        return
+    embeddings = OpenAIEmbeddings()
+    RAG_INDEX = FAISS.from_documents(chunks, embeddings)
+
+
+def _retrieve_rag_context(query: str, k: int = 4) -> str:
+    if not query:
+        return ""
+    if not RAG_INDEX:
+        return ""
+    results = RAG_INDEX.similarity_search_with_score(query, k=k)
+    if not results:
+        return ""
+    lines = []
+    for doc, score in results:
+        source = doc.metadata.get("source", "unknown")
+        page = doc.metadata.get("page")
+        page_note = f" p.{page + 1}" if isinstance(page, int) else ""
+        content = doc.page_content.strip()
+        if content:
+            lines.append(f"[{Path(source).name}{page_note} | score {score:.3f}] {content}")
+    return "\n".join(lines)
+
+
+def _should_apply_rag(message: str) -> bool:
+    if not message:
+        return False
+    lower = message.lower()
+    keywords = [
+        "plan",
+        "workout",
+        "schedule",
+        "routine",
+        "days off",
+        "shift",
+        "too intense",
+        "don't like",
+        "dislike",
+        "replace",
+        "modify",
+        "update plan",
+        "adjust plan",
+        "generate plan",
+        "new plan",
+    ]
+    return any(keyword in lower for keyword in keywords)
 
 
 def _workout_label_from_json(workout_json: Optional[str]) -> str:
@@ -248,6 +348,24 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
             template_days=template_days,
             overrides=overrides,
         )
+        cur.execute(
+            """
+            SELECT checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
+            FROM plan_checkpoints
+            WHERE plan_id = ?
+            ORDER BY checkpoint_week
+            """,
+            (plan_id,),
+        )
+        checkpoints = [
+            {
+                "week": row[0],
+                "expected_weight_kg": row[1],
+                "min_weight_kg": row[2],
+                "max_weight_kg": row[3],
+            }
+            for row in cur.fetchall()
+        ]
     bundle = {
         "plan": {
             "id": plan_row[0],
@@ -260,6 +378,7 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
             "status": plan_row[7],
         },
         "plan_days": plan_days,
+        "checkpoints": checkpoints,
     }
     _redis_set_json(cache_key, bundle, ttl_seconds=30 * 60)
     return bundle
@@ -373,11 +492,247 @@ def _macro_split(calories: int) -> Dict[str, int]:
     }
 
 
+def _round_to_nearest_5(value: float) -> int:
+    return int(5 * round(value / 5))
+
+
+def _bmi(weight_kg: float, height_cm: float) -> float:
+    height_m = height_cm / 100.0
+    if height_m <= 0:
+        return 0.0
+    return weight_kg / (height_m ** 2)
+
+
+def _calorie_minimum(goal_type: str, weight_kg: float) -> Optional[int]:
+    if goal_type == "maintain":
+        return 1500 if weight_kg < 60 else 1800
+    return None
+
+
+def _macro_targets(calories: int, weight_kg: float, goal_type: str) -> Dict[str, int]:
+    if goal_type == "gain":
+        protein_per_kg = 1.8
+        protein_min = 1.6
+        protein_max = 2.2
+    elif goal_type == "maintain":
+        protein_per_kg = 1.6
+        protein_min = 1.4
+        protein_max = 2.0
+    else:
+        protein_per_kg = 1.6
+        protein_min = 1.4
+        protein_max = 2.2
+
+    protein_g = weight_kg * protein_per_kg
+    protein_g = max(weight_kg * 1.2, protein_g)
+    protein_g = min(weight_kg * 2.4, protein_g)
+    protein_g = min(max(protein_g, weight_kg * protein_min), weight_kg * protein_max)
+
+    fat_g = weight_kg * 0.8
+    fat_g = min(max(fat_g, weight_kg * 0.6), weight_kg * 1.0)
+
+    min_fat_for_20pct = (0.2 * calories) / 9.0
+    fat_g = max(fat_g, min_fat_for_20pct)
+
+    protein_cals = protein_g * 4
+    fat_cals = fat_g * 9
+    remaining = calories - (protein_cals + fat_cals)
+    if remaining < 0:
+        fat_g = max(weight_kg * 0.6, (0.2 * calories) / 9.0)
+        fat_cals = fat_g * 9
+        remaining = calories - (protein_cals + fat_cals)
+        if remaining < 0:
+            protein_g = max(weight_kg * 1.2, (calories - fat_cals) / 4)
+            protein_cals = protein_g * 4
+            remaining = calories - (protein_cals + fat_cals)
+
+    carbs_g = max(0.0, remaining / 4)
+
+    protein_g = _round_to_nearest_5(protein_g)
+    fat_g = _round_to_nearest_5(fat_g)
+    carbs_g = _round_to_nearest_5(carbs_g)
+
+    total_cals = protein_g * 4 + carbs_g * 4 + fat_g * 9
+    delta = calories - total_cals
+    if abs(delta) > 50:
+        carbs_adjust = _round_to_nearest_5(delta / 4)
+        carbs_g = max(0, carbs_g + carbs_adjust)
+
+    return {
+        "protein_g": int(protein_g),
+        "carbs_g": int(carbs_g),
+        "fat_g": int(fat_g),
+    }
+
+
+def validate_macros(calories: int, protein_g: int, carbs_g: int, fat_g: int) -> bool:
+    if min(protein_g, carbs_g, fat_g) < 0:
+        return False
+    total_cals = protein_g * 4 + carbs_g * 4 + fat_g * 9
+    return abs(total_cals - calories) <= 50
+
+
+def validate_protein(weight_kg: float, protein_g: int, goal_type: str) -> bool:
+    per_kg = protein_g / max(weight_kg, 1)
+    if per_kg < 1.2 or per_kg > 2.4:
+        return False
+    if goal_type == "gain":
+        return 1.6 <= per_kg <= 2.2
+    if goal_type == "maintain":
+        return 1.4 <= per_kg <= 2.0
+    return True
+
+
+def validate_workout_volume(goal_type: str, sessions: int, sets_per_week: Optional[int] = None) -> bool:
+    if goal_type == "gain":
+        return 4 <= sessions <= 6
+    if goal_type == "maintain":
+        return 3 <= sessions <= 4
+    return True
+
+
+def _is_cardio_exercise(name: str) -> bool:
+    lower = name.lower()
+    keywords = ["run", "jog", "bike", "cycle", "row", "elliptical", "swim", "walk", "cardio", "hiit"]
+    return any(keyword in lower for keyword in keywords)
+
+
+def _estimate_total_sets(workout_label: str) -> int:
+    matches = re.findall(r"(\d+)\s*x", workout_label)
+    if not matches:
+        return 12
+    return max(6, sum(int(m) for m in matches))
+
+
+def _estimate_cardio_minutes(workout_label: str) -> int:
+    range_match = re.search(r"(\d+)\s*[–-]\s*(\d+)\s*min", workout_label)
+    if range_match:
+        return int((int(range_match.group(1)) + int(range_match.group(2))) / 2)
+    single_match = re.search(r"(\d+)\s*min", workout_label)
+    if single_match:
+        return int(single_match.group(1))
+    return 30
+
+
+def _build_strength_workout_label(preferred: List[str], total_sets: int) -> str:
+    exercises = [ex.strip() for ex in preferred if ex.strip()]
+    if not exercises:
+        exercises = ["Squat", "Bench", "Row"]
+    sets_per_ex = max(2, int(round(total_sets / len(exercises))))
+    parts = [f"{ex} {sets_per_ex}x8–12 @RPE7–8" for ex in exercises]
+    return "Preferred Strength: " + ", ".join(parts)
+
+
+def _build_cardio_workout_label(preferred: List[str], minutes: int) -> str:
+    exercises = [ex.strip() for ex in preferred if ex.strip()]
+    if not exercises:
+        exercises = ["Bike"]
+    cardio = exercises[0]
+    return f"Cardio: {cardio} {minutes} min @RPE5–6"
+
+
+def _replace_workout_label(existing_label: str, preferred_exercises: List[str]) -> str:
+    if "rest" in existing_label.lower():
+        return existing_label
+    if "cardio" in existing_label.lower() or _is_cardio_exercise(existing_label):
+        minutes = _estimate_cardio_minutes(existing_label)
+        return _build_cardio_workout_label(preferred_exercises, minutes)
+    total_sets = _estimate_total_sets(existing_label)
+    return _build_strength_workout_label(preferred_exercises, total_sets)
+
+
+def _reduce_sets_in_label(label: str) -> str:
+    def _repl(match: re.Match) -> str:
+        sets = max(1, int(match.group(1)) - 1)
+        return f"{sets}x"
+    return re.sub(r"(\d+)\s*x", _repl, label)
+
+
+def _reduce_rpe_in_label(label: str) -> str:
+    label = re.sub(r"RPE\s*7–8", "RPE6–7", label)
+    label = re.sub(r"RPE\s*7-8", "RPE6-7", label)
+    label = re.sub(r"RPE\s*7", "RPE6", label)
+    return label
+
+
+def _movement_category(exercise: str) -> Optional[str]:
+    lower = exercise.lower()
+    if any(k in lower for k in ["squat", "leg press", "goblet"]):
+        return "squat"
+    if any(k in lower for k in ["hinge", "rdl", "deadlift", "hip thrust"]):
+        return "hinge"
+    if any(k in lower for k in ["bench", "press", "chest press"]):
+        return "horizontal_push"
+    if any(k in lower for k in ["row", "cable row"]):
+        return "horizontal_pull"
+    if any(k in lower for k in ["overhead", "shoulder press", "ohp"]):
+        return "vertical_push"
+    if any(k in lower for k in ["pull-down", "pulldown", "pull up", "pull-up", "lat"]):
+        return "vertical_pull"
+    return None
+
+
+def _replacement_for_category(category: str, preferred: List[str]) -> str:
+    category_map = {
+        "squat": ["Leg press", "Goblet squat"],
+        "hinge": ["RDL", "Hip thrust"],
+        "horizontal_push": ["DB bench", "Machine press"],
+        "horizontal_pull": ["Cable row", "DB row"],
+        "vertical_push": ["DB shoulder press"],
+        "vertical_pull": ["Lat pulldown", "Assisted pull-up"],
+    }
+    preferred_lower = [p.lower() for p in preferred]
+    for p in preferred:
+        if _movement_category(p) == category:
+            return p
+    return category_map.get(category, ["Strength exercise"])[0]
+
+
+def _swap_exercises_by_pattern(label: str, preferred: List[str]) -> str:
+    parts = [p.strip() for p in label.split(",")]
+    updated = []
+    for part in parts:
+        match = re.match(r"([A-Za-z \-/]+)\s+(\d+x[^\@]+)(.*)", part)
+        if not match:
+            updated.append(part)
+            continue
+        exercise = match.group(1).strip()
+        rest = f"{match.group(2)}{match.group(3)}"
+        category = _movement_category(exercise)
+        if category:
+            new_ex = _replacement_for_category(category, preferred)
+            updated.append(f"{new_ex} {rest}".strip())
+        else:
+            updated.append(part)
+    return ", ".join(updated)
+
+
+def _repair_macros(calories: int, weight_kg: float, goal_type: str) -> Dict[str, int]:
+    macros = _macro_targets(calories, weight_kg, goal_type)
+    if not validate_macros(calories, macros["protein_g"], macros["carbs_g"], macros["fat_g"]):
+        macros = _macro_targets(calories, weight_kg, goal_type)
+    if not validate_protein(weight_kg, macros["protein_g"], goal_type):
+        macros = _macro_targets(calories, weight_kg, goal_type)
+    return macros
+
+
 def _format_plan_text(plan_data: Dict[str, Any]) -> str:
     lines = [
         f"Plan length: {plan_data['days']} days",
-        f"Daily calories (start): {plan_data['calorie_target']}",
-        f"Adjust calories every 14 days by -{plan_data['decrement']} (if applicable).",
+        f"Daily calories (start): {plan_data['calorie_target']} ({plan_data.get('calorie_formula', 'formula unavailable')})",
+        (
+            "Macros (g): "
+            f"P{plan_data['macros']['protein_g']} "
+            f"C{plan_data['macros']['carbs_g']} "
+            f"F{plan_data['macros']['fat_g']} "
+            "(protein+carbs*4 + fat*9 ≈ calories)"
+        ),
+        f"Progression rule: {plan_data.get('progression_rule', 'double progression')}",
+        (
+            "No auto calorie decrement for gain/maintain; adjust ±100–150 based on 2–3 week trends."
+            if plan_data.get("decrement", 0) == 0
+            else f"Adjust calories every 14 days by -{plan_data['decrement']} (if applicable)."
+        ),
         "Workout schedule:",
     ]
     if plan_data["checkpoints"]:
@@ -398,6 +753,9 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
                 f"Week {checkpoint['week']}: {checkpoint['expected_weight_kg']:.1f} kg "
                 f"(range {checkpoint['min_weight_kg']:.1f}–{checkpoint['max_weight_kg']:.1f})"
             )
+    lines.append(
+        "If you are unsure how to perform any exercise, ask and I can explain it and share a video."
+    )
     return "\n".join(lines)
 
 def calc_targets(user_row: tuple, pref_row: Optional[tuple]) -> Dict[str, Any]:
@@ -409,9 +767,33 @@ def calc_targets(user_row: tuple, pref_row: Optional[tuple]) -> Dict[str, Any]:
     age = _age_from_birthdate(birthdate)
     bmr = _bmr_mifflin(weight_kg, height_cm, age, gender)
     tdee = bmr * _activity_multiplier(activity_level)
-    daily_delta = (weekly_delta * 7700) / 7.0
-    calorie_target = int(max(1200, tdee + daily_delta))
-    macros = _macro_split(calorie_target)
+    calorie_target = int(tdee)
+    calorie_formula = f"TDEE {int(tdee)} kcal"
+
+    if goal_type == "gain":
+        is_underweight = _bmi(weight_kg, height_cm) < 18.5
+        very_active = activity_level in {"active", "very_active"}
+        surplus = 200
+        if is_underweight or very_active:
+            surplus = 350
+        surplus = min(surplus, 500)
+        calorie_target = int(tdee + surplus)
+        calorie_formula = f"TDEE {int(tdee)} + surplus {surplus}"
+    elif goal_type == "maintain":
+        calorie_target = int(tdee)
+        calorie_formula = f"TDEE {int(tdee)} (maintenance)"
+    else:
+        daily_delta = (weekly_delta * 7700) / 7.0
+        calorie_target = int(max(1200, tdee + daily_delta))
+        calorie_formula = f"TDEE {int(tdee)} + daily_delta {int(daily_delta)}"
+
+    min_cals = _calorie_minimum(goal_type, weight_kg)
+    if min_cals:
+        calorie_target = max(calorie_target, min_cals)
+    if goal_type == "gain":
+        calorie_target = max(calorie_target, int(tdee))
+
+    macros = _repair_macros(calorie_target, weight_kg, goal_type)
 
     step_goal = 10000 if goal_type == "lose" else 8000
     return {
@@ -419,6 +801,8 @@ def calc_targets(user_row: tuple, pref_row: Optional[tuple]) -> Dict[str, Any]:
         "calorie_target": calorie_target,
         "macros": macros,
         "step_goal": step_goal,
+        "tdee": int(tdee),
+        "calorie_formula": calorie_formula,
     }
 
 
@@ -479,44 +863,48 @@ def generate_workout_plan(
     goal: str,
     days_per_week: int = 5,
 ) -> List[str]:
+    warmup = "Warm-up 5–10 min + ramp-up sets."
     progression = (
-        "Progression: pick 8–12 reps; if you hit top range for all sets with good form, "
-        "increase load next time; otherwise keep load and add reps."
+        "Progression: double progression (add reps to top of range, then add load)."
     )
     strength_template = (
-        "Full Body Strength: Squat 3x8–12 @RPE7, Bench 3x8–12 @RPE7, "
+        "Full Body Strength: Squat 3x6–10 @RPE7, Bench 3x6–10 @RPE7, "
         "Row 3x8–12 @RPE7, RDL 2x8–12 @RPE7, Plank 3x30–45s. "
     )
-    cardio_zone2 = "Zone 2 Cardio: 30–45 min @RPE5. "
-    core = "Core: Dead bug 3x10/side, Pallof press 3x10/side. "
+    cardio_zone2 = "Zone 2 Cardio: 25–40 min @RPE5."
+    core = "Core: Dead bug 3x10/side, Pallof press 3x10/side."
 
     if goal == "gain":
         week_template = [
-            "Upper A: Bench 4x8–12, Row 4x8–12, OHP 3x8–12, Pull-down 3x8–12. " + progression,
-            "Lower A: Squat 4x8–12, RDL 3x8–12, Lunge 3x10/side, Calf raise 3x12–15. " + progression,
+            f"Upper A: Bench 4x6–10 @RPE7–8, Row 4x6–10 @RPE7–8, "
+            f"OHP 3x8–12 @RPE7, Pull-down 3x8–12 @RPE7. {warmup} {progression}",
+            f"Lower A: Squat 4x6–10 @RPE7–8, RDL 3x8–12 @RPE7, "
+            f"Lunge 3x10/side @RPE7, Calf raise 3x12–15 @RPE7. {warmup} {progression}",
             "Rest / Mobility 10 min.",
-            "Upper B: Incline bench 4x8–12, Row 4x8–12, DB press 3x8–12, Curl 3x10–12. " + progression,
-            "Lower B: Deadlift 3x5–8, Leg press 3x10–12, Ham curl 3x10–12, Calf raise 3x12–15. " + progression,
-            "Rest / Mobility 10 min.",
+            f"Upper B: Incline bench 4x6–10 @RPE7–8, Row 4x6–10 @RPE7–8, "
+            f"DB press 3x8–12 @RPE7, Curl 3x10–12 @RPE7. {warmup} {progression}",
+            f"Lower B: Deadlift 3x5–8 @RPE7–8, Leg press 3x10–12 @RPE7, "
+            f"Ham curl 3x10–12 @RPE7, Calf raise 3x12–15 @RPE7. {warmup} {progression}",
+            f"{cardio_zone2} Mobility 10 min.",
             "Rest / Mobility 10 min.",
         ]
     elif goal == "maintain":
         week_template = [
-            strength_template + progression,
-            cardio_zone2 + "Mobility 10 min.",
-            strength_template + progression,
-            cardio_zone2 + core + "Mobility 10 min.",
-            "Full Body Strength (lighter): Squat 2x8–10, Bench 2x8–10, Row 2x8–10. " + progression,
+            f"{strength_template} {warmup} {progression}",
+            f"{cardio_zone2} Mobility 10 min.",
+            f"{strength_template} {warmup} {progression}",
+            f"{cardio_zone2} {core} Mobility 10 min.",
+            "Rest / active recovery.",
             "Rest / active recovery.",
             "Rest / active recovery.",
         ]
     else:
         week_template = [
-            strength_template + progression,
-            cardio_zone2 + "Mobility 10 min.",
-            strength_template + progression,
-            cardio_zone2 + core + "Mobility 10 min.",
-            strength_template + progression,
+            f"{strength_template} {warmup} {progression}",
+            f"{cardio_zone2} Mobility 10 min.",
+            f"{strength_template} {warmup} {progression}",
+            f"{cardio_zone2} {core} Mobility 10 min.",
+            f"{strength_template} {warmup} {progression}",
             "Rest / active recovery.",
             "Rest / active recovery.",
         ]
@@ -546,18 +934,21 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
         target_weight_override = user_row[2] - (target_loss_lbs * 0.453592)
     weight_info = compute_weight_checkpoints(user_row, pref_row, days, target_weight_override)
     days = weight_info["planned_days"]
-    workout_cycle = generate_workout_plan(targets["goal_type"])
+    if targets["goal_type"] == "gain":
+        days_per_week = 5
+    elif targets["goal_type"] == "maintain":
+        days_per_week = 4
+    else:
+        days_per_week = 4
+    if not validate_workout_volume(targets["goal_type"], days_per_week):
+        days_per_week = 5 if targets["goal_type"] == "gain" else 4
+    workout_cycle = generate_workout_plan(targets["goal_type"], days_per_week=days_per_week)
 
     start = date.today()
     plan_days = []
     decrement = 0
-    if days > 14:
-        if targets["goal_type"] == "lose":
-            decrement = 300
-        elif targets["goal_type"] == "maintain":
-            decrement = 150
-        else:
-            decrement = 0
+    if days > 14 and targets["goal_type"] == "lose":
+        decrement = 300
     for i in range(days):
         day = start + timedelta(days=i)
         workout = workout_cycle[i % len(workout_cycle)]
@@ -571,7 +962,7 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
             }
         )
 
-    return {
+    plan_data = {
         "user_id": user_id,
         "current_weight_kg": user_row[2],
         "target_weight_kg": target_weight_override,
@@ -585,7 +976,20 @@ def _build_plan_data(user_id: int, days: int, target_loss_lbs: Optional[float]) 
         "checkpoints": weight_info["checkpoints"],
         "recommended_weeks": weight_info["recommended_weeks"],
         "plan_days": plan_days,
+        "tdee": targets.get("tdee"),
+        "calorie_formula": targets.get("calorie_formula"),
+        "progression_rule": "double progression",
     }
+    if not validate_macros(
+        plan_data["calorie_target"],
+        plan_data["macros"]["protein_g"],
+        plan_data["macros"]["carbs_g"],
+        plan_data["macros"]["fat_g"],
+    ):
+        plan_data["macros"] = _repair_macros(plan_data["calorie_target"], user_row[2], targets["goal_type"])
+    if not validate_protein(user_row[2], plan_data["macros"]["protein_g"], targets["goal_type"]):
+        plan_data["macros"] = _repair_macros(plan_data["calorie_target"], user_row[2], targets["goal_type"])
+    return plan_data
 
 @tool("generate_plan")
 def generate_plan(user_id: int, days: int = 14, target_loss_lbs: Optional[float] = None) -> str:
@@ -598,8 +1002,234 @@ def generate_plan(user_id: int, days: int = 14, target_loss_lbs: Optional[float]
     plan_data = _build_plan_data(user_id, days, target_loss_lbs)
     if "error" in plan_data:
         return plan_data["error"]
+    cache_bundle = {
+        "plan": {
+            "id": None,
+            "start_date": plan_data["start_date"],
+            "end_date": plan_data["end_date"],
+            "daily_calorie_target": plan_data["calorie_target"],
+            "protein_g": plan_data["macros"]["protein_g"],
+            "carbs_g": plan_data["macros"]["carbs_g"],
+            "fat_g": plan_data["macros"]["fat_g"],
+            "status": "proposed",
+        },
+        "plan_days": plan_data["plan_days"],
+        "checkpoints": plan_data.get("checkpoints", []),
+    }
+    _redis_set_json(f"user:{user_id}:active_plan", cache_bundle, ttl_seconds=30 * 60)
     plan_text = _format_plan_text(plan_data)
     return json.dumps({"plan_text": plan_text, "plan_data": plan_data})
+
+
+@tool("shift_active_plan_end_date")
+def shift_active_plan_end_date(
+    user_id: int,
+    days_off: int,
+    pause_dates: Optional[List[str]] = None,
+    calorie_delta: Optional[int] = None,
+) -> str:
+    """Pause specific dates and shift the active plan end date by days_off."""
+    if days_off <= 0:
+        return "Days off must be at least 1."
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT p.id, p.end_date, p.start_date, pref.goal_type
+            FROM plans p
+            JOIN user_preferences pref ON pref.user_id = p.user_id
+            WHERE p.user_id = ? AND p.status = 'active'
+            ORDER BY p.start_date DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return "No active plan found."
+        plan_id, end_date, start_date, goal_type = row
+        end = datetime.strptime(end_date, "%Y-%m-%d").date()
+        new_end = (end + timedelta(days=days_off)).isoformat()
+
+        dates = pause_dates or []
+        if not dates:
+            start = datetime.strptime(start_date, "%Y-%m-%d").date()
+            dates = [(start + timedelta(days=i)).isoformat() for i in range(days_off)]
+
+        if calorie_delta is None:
+            calorie_delta = 100 if goal_type == "lose" else 0
+
+        for day in dates:
+            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, day))
+            cur.execute(
+                """
+                INSERT INTO plan_overrides (
+                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    day,
+                    "pause",
+                    json.dumps({"label": "Rest day"}),
+                    None,
+                    calorie_delta,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+
+        cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end, plan_id))
+        conn.commit()
+    _invalidate_active_plan_cache(user_id)
+    payload = {
+        "plan_patch": {
+            "end_date_shift_days": days_off,
+            "overrides": [
+                {
+                    "date": day,
+                    "override_type": "pause",
+                    "workout_json": json.dumps({"label": "Rest day"}),
+                    "calorie_delta": calorie_delta,
+                }
+                for day in dates
+            ],
+            "notes": "Paused days and shifted end date; kept cycle order intact.",
+        },
+        "message": f"Paused {len(dates)} days; plan end date moved from {end_date} to {new_end}.",
+    }
+    return json.dumps(payload)
+
+
+@tool("replace_active_plan_workouts")
+def replace_active_plan_workouts(
+    user_id: int,
+    preferred_exercises: Any,
+    reduce_intensity: bool = False,
+    cardio_preference: Optional[str] = None,
+) -> str:
+    """Replace active plan workouts using preferred exercises while matching volume."""
+    if isinstance(preferred_exercises, str):
+        preferred_list = [ex.strip() for ex in preferred_exercises.split(",") if ex.strip()]
+    elif isinstance(preferred_exercises, list):
+        preferred_list = [str(ex).strip() for ex in preferred_exercises if str(ex).strip()]
+    else:
+        preferred_list = []
+
+    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan or not plan_days:
+        return "No cached plan days found to update."
+
+    start_date = plan.get("start_date")
+    end_date = plan.get("end_date")
+    today = date.today().isoformat()
+    affected = []
+    overrides = []
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id
+            FROM plans
+            WHERE user_id = ? AND status = 'active'
+            ORDER BY start_date DESC
+            LIMIT 1
+            """,
+            (user_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return "No active plan found."
+        plan_id = row[0]
+
+        for day in plan_days:
+            if day["date"] < today or day["date"] > end_date:
+                continue
+            before_label = day["workout_plan"]
+            new_label = _replace_workout_label(before_label, preferred_list)
+            new_label = _swap_exercises_by_pattern(new_label, preferred_list)
+            if cardio_preference and "cardio" in new_label.lower():
+                new_label = _build_cardio_workout_label([cardio_preference], _estimate_cardio_minutes(new_label))
+            if reduce_intensity:
+                new_label = _reduce_sets_in_label(new_label)
+                new_label = _reduce_rpe_in_label(new_label)
+            if new_label != before_label:
+                affected.append({"date": day["date"], "before": before_label, "after": new_label})
+                overrides.append(
+                    {
+                        "date": day["date"],
+                        "override_type": "adjust",
+                        "workout_json": json.dumps({"label": new_label}),
+                    }
+                )
+
+        for override in overrides:
+            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, override["date"]))
+            cur.execute(
+                """
+                INSERT INTO plan_overrides (
+                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    override["date"],
+                    override["override_type"],
+                    override["workout_json"],
+                    None,
+                    None,
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+        conn.commit()
+
+    _invalidate_active_plan_cache(user_id)
+    payload = {
+        "plan_patch": {
+            "end_date_shift_days": 0,
+            "overrides": overrides,
+            "notes": "Matched movement pattern and kept weekly volume similar.",
+        },
+        "changes": affected,
+    }
+    return json.dumps(payload)
+
+
+@tool("get_weight_checkpoint_for_current_week")
+def get_weight_checkpoint_for_current_week(user_id: int) -> str:
+    """Get the expected weight for the current week from cached checkpoints."""
+    bundle = _redis_get_json(f"user:{user_id}:active_plan") or {}
+    plan = bundle.get("plan")
+    checkpoints = bundle.get("checkpoints", [])
+    if not plan or not checkpoints:
+        return "No cached weight checkpoints found for this plan."
+    try:
+        start_date = datetime.strptime(plan["start_date"], "%Y-%m-%d").date()
+    except (KeyError, ValueError, TypeError):
+        return "Plan start date missing or invalid."
+    weeks_since_start = max(1, int(((date.today() - start_date).days + 1 + 6) / 7))
+    selected = None
+    previous = None
+    for checkpoint in checkpoints:
+        if checkpoint["week"] < weeks_since_start:
+            previous = checkpoint
+        if checkpoint["week"] >= weeks_since_start:
+            selected = checkpoint
+            break
+    if selected is None:
+        selected = checkpoints[-1]
+    response = (
+        f"By end of week {selected['week']}: expected {selected['expected_weight_kg']:.1f} kg "
+        f"(range {selected['min_weight_kg']:.1f}–{selected['max_weight_kg']:.1f})."
+    )
+    if weeks_since_start % 2 == 1 and previous:
+        response += (
+            f" Prior checkpoint (week {previous['week']}): {previous['expected_weight_kg']:.1f} kg "
+            f"(range {previous['min_weight_kg']:.1f}–{previous['max_weight_kg']:.1f})."
+        )
+    return response
 
 def assistant(state: AgentState):
     context = state.get("context")
@@ -608,11 +1238,18 @@ def assistant(state: AgentState):
         preload = _preload_session_cache(1)
         context = preload["context"]
         active_plan = preload["active_plan"]
+    last_user_message = ""
+    for message in reversed(state.get("messages", [])):
+        if isinstance(message, HumanMessage):
+            last_user_message = message.content
+            break
+    rag_context = _retrieve_rag_context(last_user_message) if _should_apply_rag(last_user_message) else ""
     active_plan_summary = _summarize_active_plan_for_context(active_plan)
     context_msg = SystemMessage(
         content=(
             f"User context: {json.dumps(context)}\n"
             f"Active plan (summary): {json.dumps(active_plan_summary)}"
+            + (f"\nReference excerpts (RAG):\n{rag_context}" if rag_context else "")
         )
     )
     return {
@@ -622,7 +1259,14 @@ def assistant(state: AgentState):
     }
 
 
-tools = [get_current_plan_summary, search_web, generate_plan]
+tools = [
+    get_current_plan_summary,
+    search_web,
+    generate_plan,
+    shift_active_plan_end_date,
+    replace_active_plan_workouts,
+    get_weight_checkpoint_for_current_week,
+]
 llm = ChatOpenAI(model="gpt-4o", temperature=0)
 llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
 
@@ -771,6 +1415,7 @@ def run_cli() -> None:
 
     config = {"configurable": {"thread_id": "cli"}}
     preload = _preload_session_cache(1)
+    _build_rag_index()
 
     while True:
         user_input = input("You: ").strip()
