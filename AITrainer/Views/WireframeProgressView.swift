@@ -25,11 +25,11 @@ struct WireframeProgressView: View {
                 .ignoresSafeArea()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 32) {
+                    VStack(spacing: 24) {
                         // Modern header section
                         headerSection
                             .padding(.horizontal, 20)
-                            .padding(.top, 16)
+                            .padding(.top, 12)
 
                         // Enhanced timeframe selector
                         modernTimeframeSelector
@@ -46,9 +46,9 @@ struct WireframeProgressView: View {
                         // Achievements with modern cards
                         achievementsSection
                             .padding(.horizontal, 20)
-                            .padding(.bottom, 100)
+                            .padding(.bottom, 80)
                     }
-                    .padding(.top, 8)
+                    .padding(.top, 4)
                 }
             }
             .navigationBarHidden(true)
@@ -194,7 +194,7 @@ struct WireframeProgressView: View {
                 Spacer()
             }
 
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 16) {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 12) {
                 ModernAchievementCard(
                     icon: "🔥",
                     title: "15 Day Streak",
@@ -458,48 +458,39 @@ struct ModernAchievementCard: View {
 
     var body: some View {
         ModernCard {
-            VStack(spacing: 16) {
-                ZStack {
-                    // Background glow
-                    Circle()
-                        .fill(gradient.opacity(0.3))
-                        .frame(width: 72, height: 72)
-                        .blur(radius: 12)
+            VStack(alignment: .leading, spacing: 16) {
+                HStack {
+                    ZStack {
+                        Circle()
+                            .fill(gradient.opacity(0.25))
+                            .frame(width: 56, height: 56)
+                            .blur(radius: 8)
 
-                    // Icon container
-                    Circle()
-                        .fill(gradient.opacity(0.15))
-                        .frame(width: 60, height: 60)
-                        .overlay(
-                            Circle()
-                                .stroke(gradient.opacity(0.4), lineWidth: 2)
-                        )
+                        Circle()
+                            .fill(gradient.opacity(0.2))
+                            .frame(width: 48, height: 48)
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white.opacity(0.6), lineWidth: 1)
+                            )
 
-                    Text(icon)
-                        .font(.system(size: 28))
+                        Text(icon)
+                            .font(.system(size: 20))
+                    }
+
+                    Spacer()
                 }
 
-                VStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: 6) {
                     Text(title)
-                        .font(.bodyLarge)
+                        .font(.headlineMedium)
                         .foregroundColor(.textPrimary)
-                        .fontWeight(.semibold)
-                        .multilineTextAlignment(.center)
+                        .lineLimit(1)
 
                     Text(description)
-                        .font(.captionLarge)
+                        .font(.bodyMedium)
                         .foregroundColor(.textSecondary)
-                        .multilineTextAlignment(.center)
                         .lineLimit(2)
-                }
-
-                // Progress indicator
-                HStack(spacing: 4) {
-                    ForEach(0..<4) { index in
-                        Circle()
-                            .fill(index < 3 ? Color.fitnessGradientStart : Color.gray.opacity(0.3))
-                            .frame(width: 6, height: 6)
-                    }
                 }
             }
             .padding(20)

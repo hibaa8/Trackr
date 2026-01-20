@@ -10,26 +10,26 @@ import SwiftUI
 // MARK: - Color Palette
 extension Color {
     // Fitness gradient colors
-    static let fitnessGradientStart = Color(red: 255/255, green: 94/255, blue: 77/255)
-    static let fitnessGradientEnd = Color(red: 255/255, green: 154/255, blue: 0/255)
+    static let fitnessGradientStart = Color(red: 252/255, green: 126/255, blue: 120/255)
+    static let fitnessGradientEnd = Color(red: 255/255, green: 196/255, blue: 140/255)
 
     // Macro gradient colors
-    static let proteinGradientStart = Color(red: 255/255, green: 59/255, blue: 48/255)
-    static let proteinGradientEnd = Color(red: 255/255, green: 149/255, blue: 0/255)
+    static let proteinGradientStart = Color(red: 255/255, green: 140/255, blue: 136/255)
+    static let proteinGradientEnd = Color(red: 255/255, green: 195/255, blue: 150/255)
 
-    static let carbsGradientStart = Color(red: 52/255, green: 199/255, blue: 89/255)
-    static let carbsGradientEnd = Color(red: 48/255, green: 209/255, blue: 88/255)
+    static let carbsGradientStart = Color(red: 120/255, green: 210/255, blue: 150/255)
+    static let carbsGradientEnd = Color(red: 150/255, green: 226/255, blue: 170/255)
 
-    static let fatsGradientStart = Color(red: 90/255, green: 200/255, blue: 250/255)
-    static let fatsGradientEnd = Color(red: 0/255, green: 122/255, blue: 255/255)
+    static let fatsGradientStart = Color(red: 150/255, green: 200/255, blue: 245/255)
+    static let fatsGradientEnd = Color(red: 120/255, green: 170/255, blue: 235/255)
 
     // Background colors
-    static let backgroundGradientStart = Color(red: 248/255, green: 250/255, blue: 252/255)
-    static let backgroundGradientEnd = Color(red: 255/255, green: 255/255, blue: 255/255)
+    static let backgroundGradientStart = Color(red: 250/255, green: 252/255, blue: 255/255)
+    static let backgroundGradientEnd = Color(red: 246/255, green: 248/255, blue: 252/255)
 
     // Card colors
     static let cardBackground = Color.white
-    static let cardShadowColor = Color.black.opacity(0.1)
+    static let cardShadowColor = Color.black.opacity(0.06)
 
     // Text colors
     static let textPrimary = Color.black

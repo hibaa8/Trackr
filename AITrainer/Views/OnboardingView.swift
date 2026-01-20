@@ -36,7 +36,7 @@ struct OnboardingView: View {
                 .padding(.vertical, 20)
                 
                 ScrollView {
-                    VStack(spacing: 32) {
+                    VStack(spacing: 24) {
                         // Modern header with better typography
                         VStack(spacing: 12) {
                             Text(stepTitle)
@@ -50,7 +50,7 @@ struct OnboardingView: View {
                                 .multilineTextAlignment(.center)
                                 .lineLimit(2)
                         }
-                        .padding(.top, 40)
+                        .padding(.top, 24)
                         .padding(.horizontal, 24)
 
                         // Modern content in cards

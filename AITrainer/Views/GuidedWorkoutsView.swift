@@ -33,12 +33,12 @@ struct GuidedWorkoutsView: View {
                     // Modern header
                     modernHeader
                         .padding(.horizontal, 20)
-                        .padding(.top, 16)
+                        .padding(.top, 12)
 
                     // Category selector
                     modernCategorySelector
                         .padding(.horizontal, 20)
-                        .padding(.vertical, 16)
+                        .padding(.vertical, 12)
 
                     // Videos list
                     if youtubeService.isLoading {

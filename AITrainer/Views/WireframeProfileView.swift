@@ -33,7 +33,7 @@ struct WireframeProfileView: View {
                     VStack(spacing: 32) {
                         // Enhanced profile header
                         modernProfileHeader
-                            .padding(.top, 20)
+                            .padding(.top, 12)
                             .padding(.horizontal, 20)
 
                         // Physical stats

@@ -371,7 +371,7 @@ struct GymCard: View {
                 photoPlaceholder
             }
         }
-        .frame(height: 160)
+        .frame(height: 130)
         .clipped()
         .cornerRadius(12)
     }

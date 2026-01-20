@@ -28,9 +28,9 @@ struct WelcomeView: View {
                 .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
-                VStack(spacing: 28) {
+                VStack(spacing: 24) {
                     headerSection
-                        .padding(.top, 40)
+                        .padding(.top, 28)
 
                     authCard
                         .padding(.horizontal, 20)

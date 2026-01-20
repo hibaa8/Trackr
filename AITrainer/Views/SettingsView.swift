@@ -29,11 +29,11 @@ struct SettingsView: View {
                 .ignoresSafeArea()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 32) {
+                    VStack(spacing: 24) {
                         // Notifications section
                         notificationsSection
                             .padding(.horizontal, 20)
-                            .padding(.top, 20)
+                            .padding(.top, 12)
 
                         // Health integration section
                         healthSection
@@ -58,7 +58,7 @@ struct SettingsView: View {
                         // About section
                         aboutSection
                             .padding(.horizontal, 20)
-                            .padding(.bottom, 40)
+                            .padding(.bottom, 24)
                     }
                 }
             }

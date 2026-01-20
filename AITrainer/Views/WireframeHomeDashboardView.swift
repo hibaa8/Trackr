@@ -24,15 +24,15 @@ struct WireframeHomeDashboardView: View {
                 .ignoresSafeArea()
 
                 ScrollView(showsIndicators: false) {
-                    VStack(spacing: 24) {
+                    VStack(spacing: 20) {
                         // Header section with refined spacing
                         headerSection
-                            .padding(.horizontal, 24)
-                            .padding(.top, 12)
+                            .padding(.horizontal, 20)
+                            .padding(.top, 8)
 
                         // Date selector with elegant margins
                         WeekDatePicker(selectedDate: .constant(Date()))
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, 20)
 
                         // Hero calorie ring with breathing space
                         MainCalorieRing(
@@ -40,23 +40,23 @@ struct WireframeHomeDashboardView: View {
                             target: appState.userData?.calorieTarget ?? 2000,
                             mealsRemaining: 6
                         )
-                        .padding(.horizontal, 24)
-                        .padding(.vertical, 8)
+                        .padding(.horizontal, 20)
+                        .padding(.vertical, 4)
 
                         // Macro rings with consistent spacing
                         macroRingsSection
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, 20)
 
                         // Recent meals with refined layout
                         recentMealsSection
-                            .padding(.horizontal, 24)
+                            .padding(.horizontal, 20)
 
                         // Explore section with elegant spacing
                         exploreSection
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 120)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 80)
                     }
-                    .padding(.top, 12)
+                    .padding(.top, 8)
                 }
             }
             .navigationBarHidden(true)

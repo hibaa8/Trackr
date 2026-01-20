@@ -24,17 +24,17 @@ struct CoachView: View {
                     // Modern header with AI coach avatar
                     modernHeader
                         .padding(.horizontal, 20)
-                        .padding(.top, 16)
-                        .padding(.bottom, 20)
+                        .padding(.top, 12)
+                        .padding(.bottom, 12)
 
                     // Messages with enhanced scrolling
                     ScrollViewReader { proxy in
                         ScrollView(showsIndicators: false) {
-                            LazyVStack(spacing: 20) {
+                            LazyVStack(spacing: 16) {
                                 // Welcome message when empty
                                 if appState.chatMessages.isEmpty {
                                     welcomeSection
-                                        .padding(.top, 40)
+                                        .padding(.top, 20)
                                 }
 
                                 ForEach(appState.chatMessages) { message in
@@ -48,8 +48,12 @@ struct CoachView: View {
                                 }
                             }
                             .padding(.horizontal, 20)
-                            .padding(.bottom, 20)
+                            .padding(.vertical, 20)
                         }
+                        .background(Color.white.opacity(0.95))
+                        .cornerRadius(24)
+                        .padding(.horizontal, 16)
+                        .padding(.bottom, 12)
                         .onChange(of: appState.chatMessages.count) { _ in
                             if let lastMessage = appState.chatMessages.last {
                                 withAnimation(.spring(response: 0.6, dampingFraction: 0.8)) {
@@ -69,8 +73,8 @@ struct CoachView: View {
                     // Enhanced input area
                     modernInputSection
                         .padding(.horizontal, 20)
-                        .padding(.bottom, 40)
-                        .padding(.top, 16)
+                        .padding(.bottom, 32)
+                        .padding(.top, 12)
                 }
             }
             .navigationBarHidden(true)
