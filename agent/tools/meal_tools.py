@@ -1,0 +1,203 @@
+from __future__ import annotations
+
+import sqlite3
+from datetime import date, datetime
+from typing import List, Optional
+
+from langchain_core.tools import tool
+
+from agent.config.constants import CACHE_TTL_LONG, DB_PATH, _draft_meal_logs_key
+from agent.redis.cache import _redis_get_json, _redis_set_json
+from agent.state import SESSION_CACHE
+
+
+def _estimate_meal_item_calories(item: str) -> int:
+    lookup = {
+        "egg": 78,
+        "eggs": 78,
+        "chicken breast": 165,
+        "chicken": 180,
+        "rice": 200,
+        "pasta": 220,
+        "salad": 120,
+        "apple": 95,
+        "banana": 105,
+        "oatmeal": 150,
+        "yogurt": 120,
+        "greek yogurt": 130,
+        "protein shake": 200,
+        "sandwich": 350,
+        "burger": 550,
+        "pizza": 285,
+        "steak": 400,
+        "fish": 250,
+        "tuna": 200,
+        "tofu": 180,
+        "beans": 220,
+        "avocado": 240,
+    }
+    lowered = item.lower()
+    for key, calories in lookup.items():
+        if key in lowered:
+            return calories
+    return 150
+
+
+def _estimate_meal_calories(items: List[str]) -> int:
+    return sum(_estimate_meal_item_calories(item) for item in items if item.strip())
+
+
+def _normalize_meal_time(consumed_at: Optional[str]) -> str:
+    now = datetime.now()
+    if not consumed_at:
+        return now.isoformat(timespec="seconds")
+    value = consumed_at.strip()
+    if not value:
+        return now.isoformat(timespec="seconds")
+    lowered = value.lower()
+    if "today" in lowered:
+        value = value.replace("today", "").strip()
+        lowered = value.lower()
+    for fmt in ("%I %p", "%I:%M %p", "%H:%M"):
+        try:
+            parsed = datetime.strptime(value, fmt).time()
+            return datetime.combine(now.date(), parsed).isoformat(timespec="seconds")
+        except ValueError:
+            continue
+    return value
+
+
+def _load_meal_logs_draft(user_id: int) -> dict:
+    draft_key = _draft_meal_logs_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, logged_at, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+            FROM meal_logs
+            WHERE user_id = ?
+            ORDER BY logged_at DESC
+            """,
+            (user_id,),
+        )
+        meals = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "logged_at": row[2],
+                "description": row[3],
+                "calories": row[4],
+                "protein_g": row[5],
+                "carbs_g": row[6],
+                "fat_g": row[7],
+                "confidence": row[8],
+                "confirmed": row[9],
+            }
+            for row in cur.fetchall()
+        ]
+    draft = {"meals": meals}
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    return draft
+
+
+def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM meal_logs WHERE user_id = ?", (user_id,))
+        for meal in meals:
+            logged_at = meal.get("logged_at")
+            description = meal.get("description")
+            if not logged_at or not description:
+                continue
+            cur.execute(
+                """
+                INSERT INTO meal_logs (
+                    user_id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    logged_at,
+                    None,
+                    description,
+                    meal.get("calories", 0),
+                    meal.get("protein_g", 0),
+                    meal.get("carbs_g", 0),
+                    meal.get("fat_g", 0),
+                    meal.get("confidence", 0.5),
+                    meal.get("confirmed", 1),
+                ),
+            )
+        conn.commit()
+
+
+@tool("log_meal")
+def log_meal(
+    user_id: int,
+    items: Optional[List[str]] = None,
+    consumed_at: Optional[str] = None,
+    total_calories: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Log a meal entry into the cache and database."""
+    if not items:
+        return "What items were included in the meal?"
+    meal_items = [item.strip() for item in items if str(item).strip()]
+    if not meal_items:
+        return "What items were included in the meal?"
+    if total_calories is None:
+        total_calories = _estimate_meal_calories(meal_items)
+    logged_at = _normalize_meal_time(consumed_at)
+    description = ", ".join(meal_items)
+    if notes:
+        description = f"{description}. Notes: {notes}"
+    draft = _load_meal_logs_draft(user_id)
+    new_entry = {
+        "id": None,
+        "user_id": user_id,
+        "logged_at": logged_at,
+        "description": description,
+        "calories": total_calories,
+        "protein_g": 0,
+        "carbs_g": 0,
+        "fat_g": 0,
+        "confidence": 0.5,
+        "confirmed": 1,
+    }
+    draft.setdefault("meals", []).insert(0, new_entry)
+    _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
+    _sync_meal_logs_to_db(user_id, draft.get("meals", []))
+    return "Meal logged."
+
+
+@tool("get_meal_logs")
+def get_meal_logs(user_id: int) -> str:
+    """Return meal logs from the cache."""
+    draft = SESSION_CACHE.get(user_id, {}).get("meal_logs") or _redis_get_json(_draft_meal_logs_key(user_id))
+    if draft is None:
+        return "No cached meal logs found. Start a session to load them."
+    meals = draft.get("meals", []) if isinstance(draft, dict) else []
+    if not meals:
+        return "No meal logs found."
+    lines = []
+    for meal in meals[:20]:
+        logged_at = meal.get("logged_at") or "unknown time"
+        description = meal.get("description") or "Meal"
+        calories = meal.get("calories")
+        calorie_label = f"{calories} kcal" if calories is not None else "calories unknown"
+        lines.append(f"{logged_at}: {description} ({calorie_label})")
+    return "\n".join(lines)
+
+
+@tool("delete_all_meal_logs")
+def delete_all_meal_logs(user_id: int) -> str:
+    """Delete all meal logs for the user from cache and database."""
+    draft = {"meals": []}
+    _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
+    _sync_meal_logs_to_db(user_id, [])
+    return "All meal logs deleted."
