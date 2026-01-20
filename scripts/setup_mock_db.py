@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sqlite3
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -436,31 +437,57 @@ def seed_data(conn: sqlite3.Connection) -> None:
     workout_rows = [
         (
             1,
-            iso_date(today - timedelta(days=2)),
+            iso_date(today - timedelta(days=4)),
             "Upper body strength",
             55,
             360,
-            "Felt strong, added extra set on bench.",
+            json.dumps(
+                {
+                    "exercises": [
+                        {"name": "Bench Press", "sets": 4, "reps": 6, "rpe": 7, "weight_lbs": 135},
+                        {"name": "Row", "sets": 4, "reps": 6, "rpe": 7, "weight_lbs": 120},
+                        {"name": "Overhead Press", "sets": 3, "reps": 8, "rpe": 7, "weight_lbs": 85},
+                        {"name": "Pull-down", "sets": 3, "reps": 10, "rpe": 7, "weight_lbs": 110},
+                    ],
+                    "notes": "Felt strong, added extra set on bench.",
+                }
+            ),
             1,
             "manual",
         ),
         (
             1,
-            iso_date(today - timedelta(days=1)),
+            iso_date(today - timedelta(days=3)),
             "Interval cardio",
             30,
             290,
-            "Skipped the last interval due to time.",
+            json.dumps(
+                {
+                    "exercises": [
+                        {"name": "Treadmill", "duration_min": 30},
+                    ],
+                    "notes": "Skipped the last interval due to time.",
+                }
+            ),
             0,
             "manual",
         ),
         (
             1,
-            iso_date(today),
+            iso_date(today - timedelta(days=2)),
             "Lower body strength",
             50,
             410,
-            "Soreness in hamstrings, reduced load.",
+            json.dumps(
+                {
+                    "exercises": [
+                        {"name": "Squat", "sets": 4, "reps": 6, "rpe": 8, "weight_lbs": 185},
+                        {"name": "RDL", "sets": 3, "reps": 8, "rpe": 7, "weight_lbs": 155},
+                        {"name": "Leg Press", "sets": 3, "reps": 10, "rpe": 7, "weight_lbs": 270},
+                    ],
+                    "notes": "Soreness in hamstrings, reduced load.",
+                }
+            ),
             1,
             "healthkit",
         ),
@@ -470,7 +497,14 @@ def seed_data(conn: sqlite3.Connection) -> None:
             "Pilates",
             45,
             220,
-            "Good mobility session.",
+            json.dumps(
+                {
+                    "exercises": [
+                        {"name": "Pilates", "duration_min": 45},
+                    ],
+                    "notes": "Good mobility session.",
+                }
+            ),
             1,
             "manual",
         ),
@@ -480,7 +514,14 @@ def seed_data(conn: sqlite3.Connection) -> None:
             "Walk",
             40,
             180,
-            "Easy pace, short hills.",
+            json.dumps(
+                {
+                    "exercises": [
+                        {"name": "Walk", "duration_min": 40},
+                    ],
+                    "notes": "Easy pace, short hills.",
+                }
+            ),
             1,
             "healthkit",
         ),

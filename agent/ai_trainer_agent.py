@@ -60,9 +60,23 @@ If the user asks a nutrition or exercise question that requires external info,
 call the tool `search_web` with a concise search query.
 
 If the user asks to calculate a plan for weight loss or a workout schedule,
-call the tool `generate_plan` using user_id=1 and days between 14 and 60.
+call the tool `generate_plan` using user_id=1 and their requested timeframe
+(clamp to 14–60 days). If the requested timeframe is not feasible given a
+specific target loss/gain, use the next best fit and explain the adjustment.
 If they specify a weight loss amount, pass target_loss_lbs.
 If they ask to gain muscle or stay fit, pass goal_override="gain" or "maintain".
+If the user wants to log a workout session, call `log_workout_session` and include
+the exercises list with name, sets, reps, weight, and RPE for strength work, and
+duration_min for cardio.
+If the user asks to show their logged workouts, call `get_workout_sessions`.
+If the user asks to remove an exercise from a logged workout, call `remove_workout_exercise`
+with the exercise name and date (default to today if not provided).
+If the user asks to remove cardio entries, pass exercise_name="all cardio".
+If the user asks to remove a workout log (not just an exercise), call `delete_workout_from_draft`.
+If the user wants to log a meal, call `log_meal` with a list of items and the time consumed.
+If the user asks to show meal logs, call `get_meal_logs`.
+If the user asks to delete all meal logs, call `delete_all_meal_logs`.
+If the user asks for today's date, call `get_current_date`.
 
 If the user says they are taking days off, ask only if missing: how many days and which dates. Then call `shift_active_plan_end_date`.
 If the user says the workouts are too intense or they dislike exercises, ask:
@@ -75,6 +89,8 @@ If the user asks how to do an exercise, provide 4–6 form cues, 2 common mistak
 
 Small changes should use patch, not full regeneration. For pause days or workout swaps, return a plan_patch JSON:
 {"end_date_shift_days": N, "overrides":[{date, override_type, workout_json, calorie_target|calorie_delta}], "notes": "..."}.
+The assistant must never claim a data change unless a mutation tool has succeeded.
+If no draft state exists, the assistant must ask to load or confirm an editable session.
 """)
 
 
@@ -106,7 +122,7 @@ def _run_async(coro):
     return loop.run_until_complete(coro)
 
 
-def _redis_get_json(key: str) -> Optional[Dict[str, Any]]:
+def _redis_get_json(key: str) -> Optional[Any]:
     if not REDIS:
         return None
     if AsyncRedis and isinstance(REDIS, AsyncRedis.Redis):
@@ -121,7 +137,7 @@ def _redis_get_json(key: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-def _redis_set_json(key: str, value: Dict[str, Any], ttl_seconds: int) -> None:
+def _redis_set_json(key: str, value: Any, ttl_seconds: int) -> None:
     if not REDIS:
         return
     payload = json.dumps(value)
@@ -138,6 +154,26 @@ def _redis_delete(key: str) -> None:
         _run_async(REDIS.delete(key))
     else:
         REDIS.delete(key)
+
+
+def _draft_plan_key(user_id: int) -> str:
+    return f"draft:{user_id}:plan"
+
+
+def _draft_plan_patches_key(user_id: int) -> str:
+    return f"draft:{user_id}:plan:patches"
+
+
+def _draft_workout_sessions_key(user_id: int) -> str:
+    return f"draft:{user_id}:workout_sessions"
+
+
+def _draft_workout_sessions_ops_key(user_id: int) -> str:
+    return f"draft:{user_id}:workout_sessions:ops"
+
+
+def _draft_meal_logs_key(user_id: int) -> str:
+    return f"draft:{user_id}:meal_logs"
 
 
 REDIS = _redis_client()
@@ -412,6 +448,167 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
     return bundle
 
 
+def _load_active_plan_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_plan_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+    _redis_set_json(draft_key, bundle, ttl_seconds=6 * 60 * 60)
+    if _redis_get_json(_draft_plan_patches_key(user_id)) is None:
+        _redis_set_json(_draft_plan_patches_key(user_id), [], ttl_seconds=6 * 60 * 60)
+    return bundle
+
+
+def _append_plan_patch(user_id: int, patch: Dict[str, Any]) -> None:
+    patches = _redis_get_json(_draft_plan_patches_key(user_id))
+    if not isinstance(patches, list):
+        patches = []
+    patches.append(patch)
+    _redis_set_json(_draft_plan_patches_key(user_id), patches, ttl_seconds=6 * 60 * 60)
+
+
+def _append_workout_session_op(user_id: int, op: Dict[str, Any]) -> None:
+    ops = _redis_get_json(_draft_workout_sessions_ops_key(user_id))
+    if not isinstance(ops, list):
+        ops = []
+    ops.append(op)
+    _redis_set_json(_draft_workout_sessions_ops_key(user_id), ops, ttl_seconds=6 * 60 * 60)
+
+
+def _load_workout_sessions_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_workout_sessions_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, date, workout_type, duration_min, calories_burned, notes, completed, source
+            FROM workout_sessions
+            WHERE user_id = ?
+            ORDER BY date DESC
+            """,
+            (user_id,),
+        )
+        sessions = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "date": row[2],
+                "workout_type": row[3],
+                "duration_min": row[4],
+                "calories_burned": row[5],
+                "notes": row[6],
+                "completed": row[7],
+                "source": row[8],
+            }
+            for row in cur.fetchall()
+        ]
+    draft = {"sessions": sessions, "new_sessions": []}
+    _redis_set_json(draft_key, draft, ttl_seconds=6 * 60 * 60)
+    if _redis_get_json(_draft_workout_sessions_ops_key(user_id)) is None:
+        _redis_set_json(_draft_workout_sessions_ops_key(user_id), [], ttl_seconds=6 * 60 * 60)
+    return draft
+
+
+def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM workout_sessions WHERE user_id = ?", (user_id,))
+        for session in sessions:
+            session_date = session.get("date")
+            workout_type = session.get("workout_type") or "Workout"
+            if not session_date:
+                continue
+            cur.execute(
+                """
+                INSERT INTO workout_sessions (
+                    user_id, date, workout_type, duration_min, calories_burned, notes, completed, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    session_date,
+                    workout_type,
+                    session.get("duration_min"),
+                    session.get("calories_burned"),
+                    session.get("notes"),
+                    session.get("completed", 1),
+                    session.get("source", "manual"),
+                ),
+            )
+        conn.commit()
+
+
+def _load_meal_logs_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_meal_logs_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, logged_at, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+            FROM meal_logs
+            WHERE user_id = ?
+            ORDER BY logged_at DESC
+            """,
+            (user_id,),
+        )
+        meals = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "logged_at": row[2],
+                "description": row[3],
+                "calories": row[4],
+                "protein_g": row[5],
+                "carbs_g": row[6],
+                "fat_g": row[7],
+                "confidence": row[8],
+                "confirmed": row[9],
+            }
+            for row in cur.fetchall()
+        ]
+    draft = {"meals": meals}
+    _redis_set_json(draft_key, draft, ttl_seconds=6 * 60 * 60)
+    return draft
+
+
+def _sync_meal_logs_to_db(user_id: int, meals: List[Dict[str, Any]]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM meal_logs WHERE user_id = ?", (user_id,))
+        for meal in meals:
+            logged_at = meal.get("logged_at")
+            description = meal.get("description")
+            if not logged_at or not description:
+                continue
+            cur.execute(
+                """
+                INSERT INTO meal_logs (
+                    user_id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    logged_at,
+                    None,
+                    description,
+                    meal.get("calories", 0),
+                    meal.get("protein_g", 0),
+                    meal.get("carbs_g", 0),
+                    meal.get("fat_g", 0),
+                    meal.get("confidence", 0.5),
+                    meal.get("confirmed", 1),
+                ),
+            )
+        conn.commit()
+
+
 def _summarize_active_plan_for_context(active_plan: Dict[str, Any]) -> Dict[str, Any]:
     plan = active_plan.get("plan")
     plan_days = active_plan.get("plan_days", [])
@@ -469,19 +666,38 @@ def _compact_context_summary(context: Dict[str, Any], active_plan: Dict[str, Any
 
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
     context = _load_user_context_data(user_id)
-    active_plan = _get_active_plan_bundle_data(user_id)
-    SESSION_CACHE[user_id] = {"context": context, "active_plan": active_plan}
-    return {"context": context, "active_plan": active_plan}
+    active_plan = _load_active_plan_draft(user_id)
+    workout_sessions = _load_workout_sessions_draft(user_id)
+    meal_logs = _load_meal_logs_draft(user_id)
+    SESSION_CACHE[user_id] = {
+        "context": context,
+        "active_plan": active_plan,
+        "workout_sessions": workout_sessions,
+        "meal_logs": meal_logs,
+    }
+    return {
+        "context": context,
+        "active_plan": active_plan,
+        "workout_sessions": workout_sessions,
+        "meal_logs": meal_logs,
+    }
 
 
 def _invalidate_active_plan_cache(user_id: int) -> None:
     _redis_delete(f"user:{user_id}:active_plan")
+    _redis_delete(_draft_plan_key(user_id))
+    _redis_delete(_draft_plan_patches_key(user_id))
 
 
 @tool("get_current_plan_summary")
 def get_current_plan_summary(user_id: int) -> str:
     """Return a basic plan summary for the given user_id."""
-    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
+    bundle = (
+        SESSION_CACHE.get(user_id, {}).get("active_plan")
+        or _redis_get_json(_draft_plan_key(user_id))
+        or _redis_get_json(f"user:{user_id}:active_plan")
+        or {}
+    )
     if bundle and user_id not in SESSION_CACHE:
         SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
     plan = bundle.get("plan")
@@ -662,7 +878,20 @@ def validate_workout_volume(goal_type: str, sessions: int, sets_per_week: Option
 
 def _is_cardio_exercise(name: str) -> bool:
     lower = name.lower()
-    keywords = ["run", "jog", "bike", "cycle", "row", "elliptical", "swim", "walk", "cardio", "hiit"]
+    keywords = [
+        "run",
+        "jog",
+        "bike",
+        "cycle",
+        "rowing",
+        "rower",
+        "elliptical",
+        "swim",
+        "walk",
+        "cardio",
+        "hiit",
+        "treadmill",
+    ]
     return any(keyword in lower for keyword in keywords)
 
 
@@ -722,6 +951,106 @@ def _reduce_rpe_in_label(label: str) -> str:
     label = re.sub(r"RPE\s*7-8", "RPE6-7", label)
     label = re.sub(r"RPE\s*7", "RPE6", label)
     return label
+
+
+def _estimate_met_for_exercise(name: str) -> float:
+    lower = name.lower()
+    if any(k in lower for k in ["run", "jog", "treadmill"]):
+        return 9.0
+    if any(k in lower for k in ["bike", "cycle"]):
+        return 7.0
+    if "row" in lower:
+        return 7.0
+    if any(k in lower for k in ["elliptical", "swim"]):
+        return 6.5
+    if "walk" in lower:
+        return 4.0
+    if "hiit" in lower:
+        return 10.0
+    return 6.0
+
+
+def _estimate_workout_calories(
+    weight_kg: float,
+    exercises: List[Dict[str, Any]],
+    duration_min: int,
+) -> int:
+    if weight_kg <= 0:
+        return 0
+    if not exercises:
+        met = 6.0
+        return int((met * 3.5 * weight_kg / 200) * max(1, duration_min))
+    total = 0.0
+    fallback_per_ex = max(1, int(duration_min / max(1, len(exercises))))
+    for exercise in exercises:
+        if not isinstance(exercise, dict):
+            continue
+        name = str(exercise.get("name") or exercise.get("exercise") or "").strip()
+        minutes = exercise.get("duration_min")
+        if minutes is None:
+            minutes = fallback_per_ex
+        if _is_cardio_exercise(name):
+            met = _estimate_met_for_exercise(name)
+        else:
+            met = 6.0
+        total += (met * 3.5 * weight_kg / 200) * max(1, int(minutes))
+    return int(total)
+
+
+def _estimate_meal_item_calories(item: str) -> int:
+    lookup = {
+        "egg": 78,
+        "eggs": 78,
+        "chicken breast": 165,
+        "chicken": 180,
+        "rice": 200,
+        "pasta": 220,
+        "salad": 120,
+        "apple": 95,
+        "banana": 105,
+        "oatmeal": 150,
+        "yogurt": 120,
+        "greek yogurt": 130,
+        "protein shake": 200,
+        "sandwich": 350,
+        "burger": 550,
+        "pizza": 285,
+        "steak": 400,
+        "fish": 250,
+        "tuna": 200,
+        "tofu": 180,
+        "beans": 220,
+        "avocado": 240,
+    }
+    lowered = item.lower()
+    for key, calories in lookup.items():
+        if key in lowered:
+            return calories
+    return 150
+
+
+def _estimate_meal_calories(items: List[str]) -> int:
+    return sum(_estimate_meal_item_calories(item) for item in items if item.strip())
+
+
+def _normalize_meal_time(consumed_at: Optional[str]) -> str:
+    now = datetime.now()
+    if not consumed_at:
+        return now.isoformat(timespec="seconds")
+    value = consumed_at.strip()
+    if not value:
+        return now.isoformat(timespec="seconds")
+    lowered = value.lower()
+    if "today" in lowered:
+        value = value.replace("today", "").strip()
+        lowered = value.lower()
+    for fmt in ("%I %p", "%I:%M %p", "%H:%M"):
+        try:
+            parsed = datetime.strptime(value, fmt).time()
+            return datetime.combine(now.date(), parsed).isoformat(timespec="seconds")
+        except ValueError:
+            continue
+    return value
 
 
 def _movement_category(exercise: str) -> Optional[str]:
@@ -805,6 +1134,12 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
         ),
         "Workout schedule:",
     ]
+    requested_days = plan_data.get("requested_days")
+    if requested_days and requested_days != plan_data["days"]:
+        lines.insert(
+            1,
+            f"Requested timeframe: {requested_days} days; adjusted to {plan_data['days']} days for a safer pace.",
+        )
     if plan_data["checkpoints"]:
         first_checkpoint = plan_data["checkpoints"][0]
         lines.append(
@@ -886,10 +1221,13 @@ def compute_weight_checkpoints(
     requested_days: int,
     target_weight_override: Optional[float],
     goal_override: Optional[str] = None,
+    use_pref_target_weight: bool = True,
 ) -> Dict[str, Any]:
     weight_kg = user_row[2]
     goal_type = goal_override or (pref_row[2] if pref_row else "lose")
-    target_weight = target_weight_override or (pref_row[3] if pref_row else None)
+    target_weight = target_weight_override
+    if use_pref_target_weight and target_weight is None:
+        target_weight = pref_row[3] if pref_row else None
     if target_weight is None:
         if goal_type in {"gain", "maintain"}:
             planned_days = requested_days
@@ -1012,6 +1350,7 @@ def _build_plan_data(
     target_loss_lbs: Optional[float],
     goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
+    requested_days = days
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -1037,6 +1376,7 @@ def _build_plan_data(
         days,
         target_weight_override,
         goal_override=goal_override,
+        use_pref_target_weight=target_loss_lbs is not None,
     )
     days = weight_info["planned_days"]
     if targets["goal_type"] == "gain":
@@ -1087,6 +1427,7 @@ def _build_plan_data(
         "start_date": start.isoformat(),
         "end_date": (start + timedelta(days=days - 1)).isoformat(),
         "days": days,
+        "requested_days": requested_days,
         "calorie_target": targets["calorie_target"],
         "macros": targets["macros"],
         "step_goal": targets["step_goal"],
@@ -1140,7 +1481,7 @@ def generate_plan(
         "plan_days": plan_data["plan_days"],
         "checkpoints": plan_data.get("checkpoints", []),
     }
-    _redis_set_json(f"user:{user_id}:active_plan", cache_bundle, ttl_seconds=30 * 60)
+    _redis_set_json(_draft_plan_key(user_id), cache_bundle, ttl_seconds=6 * 60 * 60)
     SESSION_CACHE[user_id] = {
         "context": SESSION_CACHE.get(user_id, {}).get("context"),
         "active_plan": cache_bundle,
@@ -1208,6 +1549,7 @@ def shift_active_plan_end_date(
 
         cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end, plan_id))
         conn.commit()
+
     _invalidate_active_plan_cache(user_id)
     SESSION_CACHE[user_id] = {
         "context": SESSION_CACHE.get(user_id, {}).get("context"),
@@ -1247,7 +1589,7 @@ def replace_active_plan_workouts(
     else:
         preferred_list = []
 
-    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
     if bundle and user_id not in SESSION_CACHE:
         SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
     plan = bundle.get("plan")
@@ -1260,7 +1602,6 @@ def replace_active_plan_workouts(
     today = date.today().isoformat()
     affected = []
     overrides = []
-
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -1371,6 +1712,468 @@ def get_weight_checkpoint_for_current_week(user_id: int) -> str:
         )
     return response
 
+
+@tool("log_meal")
+def log_meal(
+    user_id: int,
+    items: Optional[List[str]] = None,
+    consumed_at: Optional[str] = None,
+    total_calories: Optional[int] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Log a meal entry into the cache and database."""
+    if not items:
+        return "What items were included in the meal?"
+    meal_items = [item.strip() for item in items if str(item).strip()]
+    if not meal_items:
+        return "What items were included in the meal?"
+    if total_calories is None:
+        total_calories = _estimate_meal_calories(meal_items)
+    logged_at = _normalize_meal_time(consumed_at)
+    description = ", ".join(meal_items)
+    if notes:
+        description = f"{description}. Notes: {notes}"
+    draft = _load_meal_logs_draft(user_id)
+    new_entry = {
+        "id": None,
+        "user_id": user_id,
+        "logged_at": logged_at,
+        "description": description,
+        "calories": total_calories,
+        "protein_g": 0,
+        "carbs_g": 0,
+        "fat_g": 0,
+        "confidence": 0.5,
+        "confirmed": 1,
+    }
+    draft.setdefault("meals", []).insert(0, new_entry)
+    _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+    SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
+    _sync_meal_logs_to_db(user_id, draft.get("meals", []))
+    return "Meal logged."
+
+
+@tool("get_meal_logs")
+def get_meal_logs(user_id: int) -> str:
+    """Return meal logs from the cache."""
+    draft = SESSION_CACHE.get(user_id, {}).get("meal_logs") or _redis_get_json(_draft_meal_logs_key(user_id))
+    if draft is None:
+        return "No cached meal logs found. Start a session to load them."
+    meals = draft.get("meals", []) if isinstance(draft, dict) else []
+    if not meals:
+        return "No meal logs found."
+    lines = []
+    for meal in meals[:20]:
+        logged_at = meal.get("logged_at") or "unknown time"
+        description = meal.get("description") or "Meal"
+        calories = meal.get("calories")
+        calorie_label = f"{calories} kcal" if calories is not None else "calories unknown"
+        lines.append(f"{logged_at}: {description} ({calorie_label})")
+    return "\n".join(lines)
+
+
+@tool("get_current_date")
+def get_current_date() -> str:
+    """Return today's date in ISO format."""
+    return date.today().isoformat()
+
+
+@tool("delete_all_meal_logs")
+def delete_all_meal_logs(user_id: int) -> str:
+    """Delete all meal logs for the user from cache and database."""
+    draft = {"meals": []}
+    _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+    SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
+    _sync_meal_logs_to_db(user_id, [])
+    return "All meal logs deleted."
+
+
+@tool("log_workout_session")
+def log_workout_session(
+    user_id: int,
+    date: Optional[str] = None,
+    workout_type: Optional[str] = None,
+    duration_min: Optional[int] = None,
+    calories_burned: Optional[int] = None,
+    notes: Optional[str] = None,
+    completed: bool = True,
+    exercises: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Log a workout session (with detailed exercises) into the draft."""
+    session_date = date or datetime.now().date().isoformat()
+    draft = _load_workout_sessions_draft(user_id)
+    exercise_list = exercises or []
+    if not exercise_list and workout_type and _is_cardio_exercise(workout_type):
+        exercise_list = [{"name": workout_type, "duration_min": duration_min}]
+    missing = []
+    normalized = []
+    for index, exercise in enumerate(exercise_list, start=1):
+        if not isinstance(exercise, dict):
+            missing.append(f"exercise #{index} name")
+            continue
+        name = exercise.get("name") or exercise.get("exercise")
+        if not name:
+            missing.append(f"exercise #{index} name")
+            continue
+        name = str(name).strip()
+        normalized.append({**exercise, "name": name})
+        if _is_cardio_exercise(name):
+            if exercise.get("duration_min") is None:
+                missing.append(f"{name} duration (minutes)")
+        else:
+            if exercise.get("sets") is None:
+                missing.append(f"{name} sets")
+            if exercise.get("reps") is None:
+                missing.append(f"{name} reps")
+            if exercise.get("rpe") is None and exercise.get("RPE") is None:
+                missing.append(f"{name} RPE")
+            if (
+                exercise.get("weight") is None
+                and exercise.get("weight_kg") is None
+                and exercise.get("weight_lbs") is None
+            ):
+                missing.append(f"{name} weight")
+    if missing:
+        missing_list = ", ".join(missing)
+        return f"I can log that. Please provide: {missing_list}."
+    exercise_list = normalized
+    if not workout_type:
+        if exercise_list:
+            names = [str(ex.get("name") or "").strip() for ex in exercise_list if ex.get("name")]
+            workout_type = ", ".join(names[:3]) or "Workout"
+        else:
+            workout_type = "Workout"
+    if duration_min is None:
+        durations = [
+            int(ex.get("duration_min"))
+            for ex in exercise_list
+            if ex.get("duration_min") is not None
+        ]
+        duration_min = max(1, sum(durations)) if durations else 30
+    if calories_burned is None:
+        context = _load_user_context_data(user_id)
+        user = context.get("user") if isinstance(context, dict) else None
+        weight_kg = user[4] if user and len(user) > 4 else 0
+        calories_burned = _estimate_workout_calories(weight_kg, exercise_list, duration_min)
+    detail_payload = {"exercises": exercise_list}
+    if notes:
+        detail_payload["notes"] = notes
+    existing = None
+    for entry in draft.get("sessions", []):
+        if entry.get("date") == session_date:
+            existing = entry
+            break
+    if existing:
+        existing_details = None
+        raw_notes = existing.get("notes")
+        if isinstance(raw_notes, str):
+            try:
+                existing_details = json.loads(raw_notes)
+            except json.JSONDecodeError:
+                existing_details = None
+        existing_exercises = []
+        if isinstance(existing_details, dict):
+            existing_exercises = existing_details.get("exercises", []) or []
+        merged_exercises = existing_exercises + exercise_list
+        if not merged_exercises and workout_type and _is_cardio_exercise(workout_type):
+            merged_exercises = [{"name": workout_type, "duration_min": duration_min}]
+        merged_payload = {"exercises": merged_exercises}
+        if notes:
+            merged_payload["notes"] = notes
+        merged_duration = existing.get("duration_min") or 0
+        if duration_min:
+            merged_duration = max(merged_duration, duration_min)
+        context = _load_user_context_data(user_id)
+        user = context.get("user") if isinstance(context, dict) else None
+        weight_kg = user[4] if user and len(user) > 4 else 0
+        merged_calories = _estimate_workout_calories(weight_kg, merged_exercises, merged_duration)
+        existing["workout_type"] = existing.get("workout_type") or workout_type
+        existing["duration_min"] = merged_duration
+        existing["calories_burned"] = merged_calories
+        existing["notes"] = json.dumps(merged_payload)
+        _redis_set_json(_draft_workout_sessions_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+        SESSION_CACHE.setdefault(user_id, {})["workout_sessions"] = draft
+        _append_workout_session_op(
+            user_id,
+            {
+                "op": "update_workout",
+                "date": session_date,
+                "workout_type": workout_type,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+        return "Workout session updated for this session."
+    new_entry = {
+        "id": None,
+        "user_id": user_id,
+        "date": session_date,
+        "workout_type": workout_type,
+        "duration_min": duration_min,
+        "calories_burned": calories_burned,
+        "notes": json.dumps(detail_payload),
+        "completed": 1 if completed else 0,
+        "source": "manual",
+    }
+    draft.setdefault("new_sessions", []).append(new_entry)
+    draft.setdefault("sessions", []).insert(0, new_entry)
+    _redis_set_json(_draft_workout_sessions_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+    SESSION_CACHE.setdefault(user_id, {})["workout_sessions"] = draft
+    _append_workout_session_op(
+        user_id,
+        {
+            "op": "add_workout",
+            "date": session_date,
+            "workout_type": workout_type,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+    return "Workout session logged for this session."
+
+
+@tool("remove_workout_exercise")
+def remove_workout_exercise(
+    user_id: int,
+    date: Optional[str] = None,
+    exercise_name: Optional[str] = None,
+) -> str:
+    """Remove a specific exercise from a workout session by date."""
+    session_date = date or datetime.now().date().isoformat()
+    if not exercise_name:
+        return "Which exercise should I remove?"
+    draft = _load_workout_sessions_draft(user_id)
+    target = exercise_name.strip().lower()
+    remove_all_cardio = target in {
+        "cardio",
+        "all cardio",
+        "all cardio entries",
+        "cardio entries",
+        "both",
+        "remove both",
+    }
+    updated = False
+
+    def _update_entry(entry: Dict[str, Any]) -> bool:
+        raw_notes = entry.get("notes")
+        details = None
+        if isinstance(raw_notes, str):
+            try:
+                details = json.loads(raw_notes)
+            except json.JSONDecodeError:
+                details = None
+        if not isinstance(details, dict):
+            if remove_all_cardio and _is_cardio_exercise(entry.get("workout_type") or ""):
+                entry["notes"] = json.dumps({"exercises": []})
+                entry["duration_min"] = 0
+                entry["calories_burned"] = 0
+                return True
+            return False
+        exercises = details.get("exercises", [])
+        if not isinstance(exercises, list):
+            return False
+        kept = []
+        for ex in exercises:
+            if not isinstance(ex, dict):
+                kept.append(ex)
+                continue
+            name = str(ex.get("name") or ex.get("exercise") or "").strip().lower()
+            if remove_all_cardio:
+                if _is_cardio_exercise(name):
+                    continue
+            else:
+                if name == target:
+                    continue
+            kept.append(ex)
+        if len(kept) == len(exercises):
+            return False
+        details["exercises"] = kept
+        entry["notes"] = json.dumps(details)
+        minutes = 0
+        if kept:
+            for ex in kept:
+                if isinstance(ex, dict) and ex.get("duration_min") is not None:
+                    minutes += int(ex.get("duration_min") or 0)
+        if minutes:
+            entry["duration_min"] = minutes
+        context = _load_user_context_data(user_id)
+        user = context.get("user") if isinstance(context, dict) else None
+        weight_kg = user[4] if user and len(user) > 4 else 0
+        entry["calories_burned"] = _estimate_workout_calories(weight_kg, kept, entry.get("duration_min") or 0)
+        return True
+
+    updated_sessions = []
+    for entry in draft.get("sessions", []):
+        if entry.get("date") == session_date:
+            if remove_all_cardio and _is_cardio_exercise(entry.get("workout_type") or ""):
+                raw_notes = entry.get("notes")
+                details = None
+                if isinstance(raw_notes, str):
+                    try:
+                        details = json.loads(raw_notes)
+                    except json.JSONDecodeError:
+                        details = None
+                exercises = details.get("exercises", []) if isinstance(details, dict) else []
+                if not exercises:
+                    updated = True
+                    continue
+            if _update_entry(entry):
+                updated = True
+        updated_sessions.append(entry)
+    draft["sessions"] = updated_sessions
+    if updated:
+        for entry in draft.get("new_sessions", []):
+            if entry.get("date") == session_date:
+                _update_entry(entry)
+                break
+        _redis_set_json(_draft_workout_sessions_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+        SESSION_CACHE.setdefault(user_id, {})["workout_sessions"] = draft
+        label = "all cardio entries" if remove_all_cardio else exercise_name
+        _append_workout_session_op(
+            user_id,
+            {
+                "op": "remove_exercise",
+                "date": session_date,
+                "exercise_name": label,
+                "timestamp": datetime.now().isoformat(timespec="seconds"),
+            },
+        )
+        _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+        return f"Removed {label} from {session_date}."
+    return "No matching exercise found for that date."
+
+
+@tool("delete_workout_from_draft")
+def delete_workout_from_draft(
+    user_id: int,
+    date: str,
+    workout_type: str,
+) -> str:
+    """Remove workout entries from the Redis draft."""
+    if not date or not workout_type:
+        return "Please provide the date and workout type to remove."
+    draft = _load_workout_sessions_draft(user_id)
+    target = workout_type.strip().lower()
+    remove_all_cardio = target in {"cardio", "all cardio", "all cardio entries", "cardio entries"}
+    sessions = draft.get("sessions", [])
+    updated = False
+    kept_sessions = []
+
+    for session in sessions:
+        if session.get("date") != date:
+            kept_sessions.append(session)
+            continue
+        workout_label = (session.get("workout_type") or "").strip().lower()
+        raw_notes = session.get("notes")
+        details = None
+        if isinstance(raw_notes, str):
+            try:
+                details = json.loads(raw_notes)
+            except json.JSONDecodeError:
+                details = None
+        exercises = details.get("exercises", []) if isinstance(details, dict) else []
+        if remove_all_cardio:
+            if _is_cardio_exercise(workout_label):
+                updated = True
+                continue
+            if exercises:
+                kept = [ex for ex in exercises if not _is_cardio_exercise(str(ex.get("name") or "").lower())]
+                if len(kept) != len(exercises):
+                    details["exercises"] = kept
+                    session["notes"] = json.dumps(details)
+                    updated = True
+            kept_sessions.append(session)
+            continue
+        if workout_label == target:
+            updated = True
+            continue
+        kept_sessions.append(session)
+
+    if not updated:
+        return "No matching workout entries found for that date."
+    draft["sessions"] = kept_sessions
+    _redis_set_json(_draft_workout_sessions_key(user_id), draft, ttl_seconds=6 * 60 * 60)
+    SESSION_CACHE.setdefault(user_id, {})["workout_sessions"] = draft
+    _append_workout_session_op(
+        user_id,
+        {
+            "op": "delete_workout",
+            "date": date,
+            "workout_type": workout_type,
+            "timestamp": datetime.now().isoformat(timespec="seconds"),
+        },
+    )
+    _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+    return f"Removed {workout_type} on {date}."
+
+
+@tool("get_workout_sessions")
+def get_workout_sessions(user_id: int) -> str:
+    """Return logged workout sessions from the draft cache."""
+    draft = SESSION_CACHE.get(user_id, {}).get("workout_sessions") or _redis_get_json(
+        _draft_workout_sessions_key(user_id)
+    )
+    if draft is None:
+        return "No cached workout logs found. Start a session to load them."
+    sessions = draft.get("sessions", []) if isinstance(draft, dict) else []
+    plan_bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
+    plan = plan_bundle.get("plan") if isinstance(plan_bundle, dict) else None
+    plan_start = plan.get("start_date") if isinstance(plan, dict) else None
+    if not sessions:
+        return "No workout sessions logged yet."
+    lines = []
+    for session in sessions:
+        date_str = session.get("date") or "unknown date"
+        if plan_start and date_str != "unknown date" and date_str < plan_start:
+            continue
+        workout_type = session.get("workout_type") or "Workout"
+        lines.append(f"{date_str}: {workout_type}")
+        details = None
+        raw_notes = session.get("notes")
+        if isinstance(raw_notes, str):
+            try:
+                details = json.loads(raw_notes)
+            except json.JSONDecodeError:
+                details = None
+        exercises = details.get("exercises", []) if isinstance(details, dict) else []
+        if exercises:
+            for exercise in exercises:
+                if not isinstance(exercise, dict):
+                    continue
+                name = exercise.get("name") or exercise.get("exercise") or "Exercise"
+                name = str(name).strip() or "Exercise"
+                if _is_cardio_exercise(name):
+                    duration = exercise.get("duration_min") or session.get("duration_min")
+                    duration_label = f"{duration} min" if duration is not None else "duration unknown"
+                    lines.append(f"- {name}: {duration_label}")
+                else:
+                    sets = exercise.get("sets")
+                    reps = exercise.get("reps")
+                    rpe = exercise.get("rpe") or exercise.get("RPE")
+                    weight = exercise.get("weight")
+                    weight_kg = exercise.get("weight_kg")
+                    weight_lbs = exercise.get("weight_lbs")
+                    if weight is None:
+                        if weight_kg is not None:
+                            weight = f"{weight_kg} kg"
+                        elif weight_lbs is not None:
+                            weight = f"{weight_lbs} lb"
+                    sets_label = sets if sets is not None else "N/A"
+                    reps_label = reps if reps is not None else "N/A"
+                    rpe_label = rpe if rpe is not None else "N/A"
+                    weight_label = weight if weight is not None else "N/A"
+                    lines.append(
+                        f"- {name}: {sets_label}x{reps_label}, RPE {rpe_label}, weight {weight_label}"
+                    )
+        else:
+            if _is_cardio_exercise(workout_type):
+                duration = session.get("duration_min")
+                duration_label = f"{duration} min" if duration is not None else "duration unknown"
+                lines.append(f"- {workout_type}: {duration_label}")
+            else:
+                lines.append("- Exercise details not recorded.")
+    return "\n".join(lines) if lines else "No workout sessions logged yet for the active plan."
+
 def assistant(state: AgentState):
     context = state.get("context")
     active_plan = state.get("active_plan")
@@ -1379,11 +2182,18 @@ def assistant(state: AgentState):
         context = session["context"]
     if session.get("active_plan"):
         active_plan = session["active_plan"]
+    if session.get("workout_sessions"):
+        state["workout_sessions"] = session["workout_sessions"]
     if context is None or active_plan is None:
         preload = _preload_session_cache(1)
         context = preload["context"]
         active_plan = preload["active_plan"]
-    SESSION_CACHE[1] = {"context": context, "active_plan": active_plan}
+    if 1 not in SESSION_CACHE:
+        SESSION_CACHE[1] = {}
+    if "workout_sessions" not in SESSION_CACHE[1]:
+        SESSION_CACHE[1]["workout_sessions"] = _load_workout_sessions_draft(1)
+    SESSION_CACHE[1]["context"] = context
+    SESSION_CACHE[1]["active_plan"] = active_plan
     last_user_message = ""
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):
@@ -1410,6 +2220,14 @@ tools = [
     shift_active_plan_end_date,
     replace_active_plan_workouts,
     get_weight_checkpoint_for_current_week,
+    log_meal,
+    get_meal_logs,
+    get_current_date,
+    delete_all_meal_logs,
+    log_workout_session,
+    get_workout_sessions,
+    remove_workout_exercise,
+    delete_workout_from_draft,
 ]
 llm = ChatOpenAI(model="gpt-4o", temperature=0)
 llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
@@ -1450,7 +2268,6 @@ def apply_plan(state: AgentState) -> AgentState:
         cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
         pref_row = cur.fetchone()
         timezone = pref_row[0] if pref_row else None
-        
         cur.execute(
             """
             INSERT INTO plans (
@@ -1525,13 +2342,193 @@ def apply_plan(state: AgentState) -> AgentState:
                 ),
             )
         conn.commit()
+
     _invalidate_active_plan_cache(user_id)
     SESSION_CACHE[user_id] = {
         "context": SESSION_CACHE.get(user_id, {}).get("context"),
         "active_plan": _get_active_plan_bundle_data(user_id),
     }
-
     return {"messages": [AIMessage(content="Plan updated and saved.")]}
+
+
+def _commit_session_drafts(user_id: int) -> None:
+    plan_patches = _redis_get_json(_draft_plan_patches_key(user_id))
+    workout_draft = _redis_get_json(_draft_workout_sessions_key(user_id))
+    new_sessions = []
+    if isinstance(workout_draft, dict):
+        new_sessions = workout_draft.get("new_sessions", [])
+        workout_sessions = workout_draft.get("sessions", [])
+    else:
+        workout_sessions = []
+
+    has_plan_patches = isinstance(plan_patches, list) and plan_patches
+    if not has_plan_patches and not workout_sessions and not new_sessions:
+        return
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        plan_id_current = None
+        draft_bundle = _redis_get_json(_draft_plan_key(user_id)) or {}
+        plan_in_draft = draft_bundle.get("plan") if isinstance(draft_bundle, dict) else None
+        if isinstance(plan_in_draft, dict):
+            plan_id_current = plan_in_draft.get("id")
+
+        for patch in plan_patches or []:
+            patch_type = patch.get("type")
+            if patch_type == "replace_plan":
+                plan_data = patch.get("plan_data")
+                if not plan_data:
+                    continue
+                cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
+                cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
+                pref_row = cur.fetchone()
+                timezone = pref_row[0] if pref_row else None
+                cur.execute(
+                    """
+                    INSERT INTO plans (
+                        user_id, start_date, end_date, daily_calorie_target,
+                        protein_g, carbs_g, fat_g, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        plan_data["start_date"],
+                        plan_data["end_date"],
+                        plan_data["calorie_target"],
+                        plan_data["macros"]["protein_g"],
+                        plan_data["macros"]["carbs_g"],
+                        plan_data["macros"]["fat_g"],
+                        "active",
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                plan_id_current = cur.lastrowid
+                cycle_length = min(7, len(plan_data["plan_days"]))
+                cur.execute(
+                    """
+                    INSERT INTO plan_templates (
+                        plan_id, cycle_length_days, timezone, default_calories,
+                        default_protein_g, default_carbs_g, default_fat_g, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        plan_id_current,
+                        cycle_length,
+                        timezone,
+                        plan_data["calorie_target"],
+                        plan_data["macros"]["protein_g"],
+                        plan_data["macros"]["carbs_g"],
+                        plan_data["macros"]["fat_g"],
+                        datetime.now().isoformat(timespec="seconds"),
+                    ),
+                )
+                template_id = cur.lastrowid
+                for day_index in range(cycle_length):
+                    day = plan_data["plan_days"][day_index]
+                    workout_json = json.dumps({"label": day["workout"]})
+                    calorie_delta = day["calorie_target"] - plan_data["calorie_target"]
+                    cur.execute(
+                        """
+                        INSERT INTO plan_template_days (
+                            template_id, day_index, workout_json, calorie_delta, notes
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            template_id,
+                            day_index,
+                            workout_json,
+                            calorie_delta,
+                            None,
+                        ),
+                    )
+                for checkpoint in plan_data["checkpoints"]:
+                    cur.execute(
+                        """
+                        INSERT INTO plan_checkpoints (
+                            plan_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
+                        ) VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            plan_id_current,
+                            checkpoint["week"],
+                            checkpoint["expected_weight_kg"],
+                            checkpoint["min_weight_kg"],
+                            checkpoint["max_weight_kg"],
+                        ),
+                    )
+            elif patch_type == "shift_end_date":
+                target_plan_id = patch.get("plan_id") or plan_id_current
+                if not target_plan_id:
+                    continue
+                new_end_date = patch.get("new_end_date")
+                if new_end_date:
+                    cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end_date, target_plan_id))
+                for day in patch.get("pause_dates", []):
+                    cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (target_plan_id, day))
+                    cur.execute(
+                        """
+                        INSERT INTO plan_overrides (
+                            plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            target_plan_id,
+                            day,
+                            "pause",
+                            json.dumps({"label": "Rest day"}),
+                            None,
+                            patch.get("calorie_delta"),
+                            datetime.now().isoformat(timespec="seconds"),
+                        ),
+                    )
+            elif patch_type == "replace_workouts":
+                target_plan_id = patch.get("plan_id") or plan_id_current
+                if not target_plan_id:
+                    continue
+                for override in patch.get("overrides", []):
+                    cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (target_plan_id, override["date"]))
+                    cur.execute(
+                        """
+                        INSERT INTO plan_overrides (
+                            plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            target_plan_id,
+                            override["date"],
+                            override["override_type"],
+                            override["workout_json"],
+                            None,
+                            None,
+                            datetime.now().isoformat(timespec="seconds"),
+                        ),
+                    )
+
+        if workout_sessions:
+            cur.execute("DELETE FROM workout_sessions WHERE user_id = ?", (user_id,))
+            for entry in workout_sessions:
+                cur.execute(
+                    """
+                    INSERT INTO workout_sessions (
+                        user_id, date, workout_type, duration_min, calories_burned, notes, completed, source
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        entry.get("user_id") or user_id,
+                        entry.get("date"),
+                        entry.get("workout_type"),
+                        entry.get("duration_min"),
+                        entry.get("calories_burned"),
+                        entry.get("notes"),
+                        entry.get("completed", 1),
+                        entry.get("source", "manual"),
+                    ),
+                )
+        conn.commit()
+
+    _invalidate_active_plan_cache(user_id)
+    _redis_delete(_draft_workout_sessions_key(user_id))
+    _redis_delete(_draft_workout_sessions_ops_key(user_id))
 
 
 def build_graph() -> StateGraph:
@@ -1605,6 +2602,7 @@ def run_cli() -> None:
             )
             state = graph.invoke(None, config)
         print("\nAssistant:", state["messages"][-1].content, "\n")
+    _commit_session_drafts(1)
 
 
 def main() -> None:
