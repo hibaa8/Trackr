@@ -1,5 +1,8 @@
 .venv
 .env
+python_backend/.env
+python_backend/venv/
+python_backend/__pycache__/
 agent/__pycache__/
 agent/config/__pycache__/
 agent/db/__pycache__/
