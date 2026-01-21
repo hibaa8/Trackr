@@ -15,7 +15,11 @@ from agent.config.constants import (
     DB_PATH,
     _draft_plan_key,
     _draft_plan_patches_key,
+    _draft_checkins_key,
+    _draft_health_activity_key,
+    _draft_plan_status_key,
 )
+from agent.config.constants import _draft_meal_logs_key, _draft_workout_sessions_key
 from agent.db import queries
 from agent.plan.plan_generation import (
     _age_from_birthdate,
@@ -25,6 +29,7 @@ from agent.plan.plan_generation import (
 )
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
+from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
 
 
 def _workout_label_from_json(workout_json: Optional[str]) -> str:
@@ -37,25 +42,6 @@ def _workout_label_from_json(workout_json: Optional[str]) -> str:
     if isinstance(payload, dict):
         return payload.get("label") or payload.get("type") or "Workout"
     return str(payload)
-
-
-def _is_cardio_exercise(name: str) -> bool:
-    lower = name.lower()
-    keywords = [
-        "run",
-        "jog",
-        "bike",
-        "cycle",
-        "rowing",
-        "rower",
-        "elliptical",
-        "swim",
-        "walk",
-        "cardio",
-        "hiit",
-        "treadmill",
-    ]
-    return any(keyword in lower for keyword in keywords)
 
 
 def _render_plan_days(
@@ -281,6 +267,97 @@ def _invalidate_active_plan_cache(user_id: int) -> None:
     _redis_delete(f"user:{user_id}:active_plan")
     _redis_delete(_draft_plan_key(user_id))
     _redis_delete(_draft_plan_patches_key(user_id))
+
+
+def _load_checkins_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_checkins_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, checkin_date, weight_kg, mood, notes
+            FROM checkins
+            WHERE user_id = ?
+            ORDER BY checkin_date DESC
+            """,
+            (user_id,),
+        )
+        checkins = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "checkin_date": row[2],
+                "weight_kg": row[3],
+                "mood": row[4],
+                "notes": row[5],
+            }
+            for row in cur.fetchall()
+        ]
+    draft = {"checkins": checkins}
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    return draft
+
+
+def _sync_checkins_to_db(user_id: int, checkins: List[Dict[str, Any]]) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM checkins WHERE user_id = ?", (user_id,))
+        for checkin in checkins:
+            checkin_date = checkin.get("checkin_date")
+            weight_kg = checkin.get("weight_kg")
+            if not checkin_date:
+                continue
+            cur.execute(
+                """
+                INSERT INTO checkins (
+                    user_id, checkin_date, weight_kg, mood, notes
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    user_id,
+                    checkin_date,
+                    weight_kg,
+                    checkin.get("mood"),
+                    checkin.get("notes"),
+                ),
+            )
+        conn.commit()
+
+
+def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_health_activity_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, date, steps, calories_burned, workouts_summary, source
+            FROM health_activity
+            WHERE user_id = ?
+            ORDER BY date DESC
+            """,
+            (user_id,),
+        )
+        activity = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "date": row[2],
+                "steps": row[3],
+                "calories_burned": row[4],
+                "workouts_summary": row[5],
+                "source": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+    draft = {"activity": activity}
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    return draft
 
 
 @tool("get_current_plan_summary")
@@ -763,3 +840,372 @@ def search_web(query: str) -> str:
             for doc in search_docs
         ]
     )
+
+
+@tool("compute_plan_status")
+def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
+    """Compute plan status from cached check-ins, meals, workouts, and checkpoints."""
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(_draft_plan_key(user_id)) or {}
+    plan = bundle.get("plan") if isinstance(bundle, dict) else None
+    checkpoints = bundle.get("checkpoints", []) if isinstance(bundle, dict) else []
+    if not plan or not checkpoints:
+        return json.dumps({"status": "insufficient_data"})
+
+    as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date() if as_of_date else date.today()
+    start_date = datetime.strptime(plan["start_date"], "%Y-%m-%d").date()
+    weeks_since_start = max(1, int(((as_of - start_date).days + 1 + 6) / 7))
+
+    checkpoint = None
+    for cp in checkpoints:
+        if cp["week"] >= weeks_since_start:
+            checkpoint = cp
+            break
+    if checkpoint is None:
+        checkpoint = checkpoints[-1]
+
+    checkins = _redis_get_json(_draft_checkins_key(user_id)) or _load_checkins_draft(user_id)
+    checkin_rows = checkins.get("checkins", []) if isinstance(checkins, dict) else []
+    recent_checkins = [
+        c for c in checkin_rows if c.get("checkin_date") and c.get("weight_kg") is not None
+    ]
+    recent_checkins.sort(key=lambda c: c["checkin_date"], reverse=True)
+    trend_weights = []
+    recent_weighins_count = 0
+    for c in recent_checkins:
+        try:
+            c_date = datetime.strptime(c["checkin_date"], "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if (as_of - c_date).days <= 14:
+            recent_weighins_count += 1
+        if (as_of - c_date).days <= 7:
+            trend_weights.append(c["weight_kg"])
+        if len(trend_weights) >= 7:
+            break
+    if len(trend_weights) == 0:
+        recent_14 = []
+        for c in recent_checkins:
+            try:
+                c_date = datetime.strptime(c["checkin_date"], "%Y-%m-%d").date()
+            except ValueError:
+                continue
+            if 0 <= (as_of - c_date).days <= 14:
+                recent_14.append(c["weight_kg"])
+            if len(recent_14) >= 2:
+                break
+        trend_weights = recent_14
+    if len(trend_weights) < 2 and recent_weighins_count < 2:
+        return json.dumps({"status": "insufficient_data"})
+
+    current_trend = sum(trend_weights) / len(trend_weights)
+    expected_kg = checkpoint["expected_weight_kg"]
+    min_kg = checkpoint["min_weight_kg"]
+    max_kg = checkpoint["max_weight_kg"]
+    band = max(0.5, max(abs(expected_kg - min_kg), abs(max_kg - expected_kg)))
+    weight_error = current_trend - expected_kg
+
+    context = _load_user_context_data(user_id)
+    pref = context.get("preferences") or ()
+    goal_type = pref[2] if len(pref) > 2 else "lose"
+
+    meals = _redis_get_json(_draft_meal_logs_key(user_id)) or {"meals": []}
+    meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
+    workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or {"sessions": []}
+    workout_rows = workouts.get("sessions", []) if isinstance(workouts, dict) else []
+    activity = _redis_get_json(_draft_health_activity_key(user_id)) or _load_health_activity_draft(user_id)
+    activity_rows = activity.get("activity", []) if isinstance(activity, dict) else []
+
+    def _within_last_7(date_str: str) -> bool:
+        try:
+            parsed = datetime.fromisoformat(date_str).date()
+        except ValueError:
+            try:
+                parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
+            except ValueError:
+                return False
+        return 0 <= (as_of - parsed).days <= 6
+
+    intake_total = sum(m.get("calories", 0) for m in meal_rows if m.get("logged_at") and _within_last_7(m["logged_at"]))
+    burn_workouts = sum(
+        w.get("calories_burned", 0) for w in workout_rows if w.get("date") and _within_last_7(w["date"])
+    )
+    burn_activity = sum(
+        a.get("calories_burned", 0) for a in activity_rows if a.get("date") and _within_last_7(a["date"])
+    )
+    burn_total = burn_activity if burn_activity else burn_workouts
+
+    days_with_meals = {m.get("logged_at", "")[:10] for m in meal_rows if m.get("logged_at") and _within_last_7(m["logged_at"])}
+    days_with_workouts = {w.get("date") for w in workout_rows if w.get("date") and _within_last_7(w["date"])}
+    days_with_activity = {a.get("date") for a in activity_rows if a.get("date") and _within_last_7(a["date"])}
+    burn_days = days_with_workouts | days_with_activity
+    avg_burn = int(burn_total / max(1, len(burn_days))) if burn_total else 0
+    if not days_with_meals:
+        avg_intake = None
+        avg_intake_error = None
+        nutrition_ok = None
+    else:
+        avg_intake = int(intake_total / max(1, len(days_with_meals)))
+
+    planned_days = [
+        d for d in bundle.get("plan_days", [])
+        if d.get("date") and _within_last_7(d["date"])
+    ]
+    planned_by_date = {d.get("date"): d for d in planned_days if d.get("date")}
+    intake_target_days = days_with_meals & set(planned_by_date.keys())
+    if intake_target_days:
+        avg_target = int(
+            sum(planned_by_date[day].get("calorie_target", 0) for day in intake_target_days)
+            / max(1, len(intake_target_days))
+        )
+    else:
+        avg_target = int(sum(d.get("calorie_target", 0) for d in planned_days) / max(1, len(planned_days)))
+    if avg_intake is not None:
+        avg_intake_error = avg_intake - avg_target
+    planned_workouts = 0
+    for d in planned_days:
+        is_rest = (d.get("rest_day") == 1) or ("rest" in (d.get("workout_plan", "").lower()))
+        if not is_rest:
+            planned_workouts += 1
+    workouts_done = len(days_with_workouts)
+    meal_log_days = len(days_with_meals)
+
+    if meal_log_days < 3 and len(trend_weights) < 2:
+        status = "insufficient_data"
+    else:
+        if avg_intake_error is None:
+            nutrition_ok = None
+        else:
+            nutrition_ok = abs(avg_intake_error) <= 150
+        if planned_workouts <= 0:
+            training_ok = True
+        else:
+            training_ok = workouts_done >= max(1, planned_workouts - 1)
+        weight_ok = min_kg <= current_trend <= max_kg
+        if weight_ok and ((nutrition_ok is True) or (nutrition_ok is None and training_ok) or training_ok):
+            status = "on_track"
+        elif not weight_ok:
+            if goal_type == "gain":
+                status = "behind" if current_trend < min_kg else "ahead"
+            elif goal_type == "maintain":
+                status = "behind" if current_trend > max_kg else "ahead"
+            else:
+                status = "behind" if current_trend > max_kg else "ahead"
+        else:
+            if (avg_intake_error is not None and avg_intake_error > 300) or (planned_workouts - workouts_done) >= 2:
+                if goal_type == "gain":
+                    status = "behind" if avg_intake_error is not None and avg_intake_error < 0 else "ahead"
+                else:
+                    status = "behind" if avg_intake_error is not None and avg_intake_error > 0 else "ahead"
+            else:
+                status = "on_track"
+
+    if status == "behind":
+        if goal_type == "gain":
+            suggestion = "Consider +100–200 kcal/day or add 1 extra strength session."
+        else:
+            suggestion = "Consider -150–250 kcal/day or add 1–2 cardio sessions."
+    elif status == "ahead":
+        if goal_type == "gain":
+            suggestion = "Consider reducing intake by ~100 kcal/day to avoid overshooting."
+        else:
+            suggestion = "Consider a small increase of ~100 kcal/day to avoid excessive deficit."
+    elif status == "insufficient_data":
+        suggestion = "Log at least 3 days of meals and 2 weigh-ins to assess progress."
+    else:
+        suggestion = "Keep current targets; you are aligned with the plan."
+
+    if avg_intake is None:
+        intake_phrase = "No meal logs in the last 7 days."
+    else:
+        intake_phrase = f"Avg intake is ~{avg_intake} kcal/day vs target ~{avg_target} kcal/day (error {avg_intake_error:+.0f})."
+    # Compare expected vs actual workout burn for intensity check.
+    expected_burn = 0
+    user = context.get("user") if isinstance(context, dict) else None
+    weight_for_burn = user[4] if user and len(user) > 4 else 0
+    for day, plan_day in planned_by_date.items():
+        if day not in days_with_workouts:
+            continue
+        workout_label = plan_day.get("workout_plan") or ""
+        if "rest" in workout_label.lower():
+            continue
+        if "cardio" in workout_label.lower() or _is_cardio_exercise(workout_label):
+            minutes = _estimate_cardio_minutes(workout_label)
+        else:
+            minutes = 45
+        expected_burn += _estimate_workout_calories(weight_for_burn, [], minutes)
+    actual_burn = burn_workouts
+    intensity_ok = True
+    if expected_burn > 0:
+        intensity_ok = actual_burn >= int(0.8 * expected_burn)
+
+    explanation = (
+        f"{intake_phrase} "
+        f"Weight trend is {weight_error:+.1f}kg vs checkpoint, "
+        f"and {max(0, planned_workouts - workouts_done)} workout(s) were missed. "
+        f"Workout intensity is {'OK' if intensity_ok else 'below target'} based on logged calories. "
+        f"{suggestion}"
+    )
+
+    status_payload = {
+        "status": status,
+        "confidence": 0.7 if trend_weights else 0.4,
+        "as_of": as_of.isoformat(),
+        "goal_type": goal_type,
+        "checkpoint": {
+            "week": checkpoint["week"],
+            "expected_kg": expected_kg,
+            "min_kg": min_kg,
+            "max_kg": max_kg,
+        },
+        "current_weight_trend_kg": round(current_trend, 2),
+        "weight_error_kg": round(weight_error, 2),
+        "last_7d": {
+            "avg_intake_kcal": avg_intake,
+            "avg_burn_kcal": avg_burn,
+            "avg_net_kcal": (avg_intake - avg_burn) if avg_intake is not None else None,
+            "avg_target_kcal": avg_target,
+            "workouts_done": workouts_done,
+            "workouts_planned": planned_workouts,
+            "meal_log_days": meal_log_days,
+        },
+        "estimated_required_delta_kcal_per_day": int(avg_target - avg_intake) if avg_intake is not None else None,
+        "explanation": explanation,
+    }
+    _redis_set_json(_draft_plan_status_key(user_id), status_payload, ttl_seconds=CACHE_TTL_LONG)
+    return json.dumps(status_payload)
+
+
+@tool("apply_plan_patch")
+def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
+    """Apply a plan patch (overrides + optional end_date) to cache and DB."""
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan:
+        return "No active plan found."
+
+    overrides = patch.get("overrides", [])
+    new_end_date = patch.get("new_end_date")
+
+    if new_end_date:
+        plan["end_date"] = new_end_date
+    plan_days_by_date = {day.get("date"): day for day in plan_days if day.get("date")}
+    for override in overrides:
+        day = plan_days_by_date.get(override.get("date"))
+        if not day:
+            continue
+        if override.get("calorie_target") is not None:
+            day["calorie_target"] = override["calorie_target"]
+        elif override.get("calorie_delta") is not None:
+            base = plan.get("daily_calorie_target") or day.get("calorie_target") or 0
+            day["calorie_target"] = base + int(override["calorie_delta"])
+        if override.get("workout_json"):
+            try:
+                label = json.loads(override["workout_json"]).get("label")
+            except json.JSONDecodeError:
+                label = None
+            if label:
+                day["workout_plan"] = label
+    bundle["plan_days"] = list(plan_days_by_date.values())
+    _set_active_plan_cache(user_id, bundle)
+
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            return "No active plan found."
+        plan_id = row[0]
+        if new_end_date:
+            cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end_date, plan_id))
+        for override in overrides:
+            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, override["date"]))
+            cur.execute(
+                """
+                INSERT INTO plan_overrides (
+                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    plan_id,
+                    override.get("date"),
+                    override.get("override_type", "adjust"),
+                    override.get("workout_json"),
+                    override.get("calorie_target"),
+                    override.get("calorie_delta"),
+                    datetime.now().isoformat(timespec="seconds"),
+                ),
+            )
+        conn.commit()
+    return "Plan patch applied."
+
+
+@tool("log_checkin")
+def log_checkin(
+    user_id: int,
+    checkin_date: Optional[str] = None,
+    weight_kg: Optional[float] = None,
+    mood: Optional[str] = None,
+    notes: Optional[str] = None,
+) -> str:
+    """Log or update a weight check-in."""
+    if weight_kg is None:
+        return "What was your weight in kg?"
+    checkin_date = checkin_date or date.today().isoformat()
+    draft = _load_checkins_draft(user_id)
+    checkins = draft.get("checkins", [])
+    updated = False
+    for entry in checkins:
+        if entry.get("checkin_date") == checkin_date:
+            entry["weight_kg"] = weight_kg
+            entry["mood"] = mood
+            entry["notes"] = notes
+            updated = True
+            break
+    if not updated:
+        checkins.insert(
+            0,
+            {
+                "id": None,
+                "user_id": user_id,
+                "checkin_date": checkin_date,
+                "weight_kg": weight_kg,
+                "mood": mood,
+                "notes": notes,
+            },
+        )
+    draft["checkins"] = checkins
+    _redis_set_json(_draft_checkins_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
+    _sync_checkins_to_db(user_id, checkins)
+    if checkin_date == date.today().isoformat():
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute("UPDATE users SET weight_kg = ? WHERE id = ?", (weight_kg, user_id))
+            conn.commit()
+        cached_context = SESSION_CACHE.get(user_id, {}).get("context") or _redis_get_json(f"user:{user_id}:profile")
+        if isinstance(cached_context, dict) and cached_context.get("user"):
+            user_list = list(cached_context["user"])
+            if len(user_list) > 4:
+                user_list[4] = weight_kg
+                cached_context["user"] = user_list
+                _redis_set_json(f"user:{user_id}:profile", cached_context, ttl_seconds=CACHE_TTL_LONG)
+                SESSION_CACHE.setdefault(user_id, {})["context"] = cached_context
+    return "Check-in logged."
+
+
+@tool("delete_checkin")
+def delete_checkin(user_id: int, checkin_date: str) -> str:
+    """Delete a weight check-in for a specific date."""
+    if not checkin_date:
+        return "Which date should I delete?"
+    draft = _load_checkins_draft(user_id)
+    checkins = [c for c in draft.get("checkins", []) if c.get("checkin_date") != checkin_date]
+    draft["checkins"] = checkins
+    _redis_set_json(_draft_checkins_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, checkin_date))
+        conn.commit()
+    return "Check-in deleted."

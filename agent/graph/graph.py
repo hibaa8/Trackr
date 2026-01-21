@@ -17,17 +17,23 @@ from agent.prompts.system_prompt import SYSTEM_PROMPT
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
 from agent.state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
-from agent.redis.cache import _redis_set_json
+from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.tools.plan_tools import (
     _compact_context_summary,
     _get_active_plan_bundle_data,
     _invalidate_active_plan_cache,
+    _load_checkins_draft,
+    _load_health_activity_draft,
     _load_active_plan_draft,
     _load_user_context_data,
+    apply_plan_patch,
+    compute_plan_status,
     generate_plan,
     get_current_date,
     get_current_plan_summary,
     get_weight_checkpoint_for_current_week,
+    log_checkin,
+    delete_checkin,
     replace_active_plan_workouts,
     search_web,
     shift_active_plan_end_date,
@@ -58,17 +64,23 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
     active_plan = _load_active_plan_draft(user_id)
     workout_sessions = _load_workout_sessions_draft(user_id)
     meal_logs = _load_meal_logs_draft(user_id)
+    checkins = _load_checkins_draft(user_id)
+    health_activity = _load_health_activity_draft(user_id)
     SESSION_CACHE[user_id] = {
         "context": context,
         "active_plan": active_plan,
         "workout_sessions": workout_sessions,
         "meal_logs": meal_logs,
+        "checkins": checkins,
+        "health_activity": health_activity,
     }
     return {
         "context": context,
         "active_plan": active_plan,
         "workout_sessions": workout_sessions,
         "meal_logs": meal_logs,
+        "checkins": checkins,
+        "health_activity": health_activity,
     }
 
 
@@ -120,6 +132,10 @@ tools = [
     shift_active_plan_end_date,
     replace_active_plan_workouts,
     get_weight_checkpoint_for_current_week,
+    compute_plan_status,
+    apply_plan_patch,
+    log_checkin,
+    delete_checkin,
     log_meal,
     get_meal_logs,
     get_current_date,
@@ -269,6 +285,14 @@ def apply_plan(state: AgentState) -> AgentState:
                 ),
             )
         conn.commit()
+    cached_context = SESSION_CACHE.get(user_id, {}).get("context") or _redis_get_json(f"user:{user_id}:profile")
+    if isinstance(cached_context, dict) and "preferences" in cached_context:
+        prefs = list(cached_context["preferences"])
+        if len(prefs) > 2 and plan_data.get("goal_type"):
+            prefs[2] = plan_data["goal_type"]
+            cached_context["preferences"] = prefs
+            _redis_set_json(f"user:{user_id}:profile", cached_context, ttl_seconds=CACHE_TTL_LONG)
+            SESSION_CACHE.setdefault(user_id, {})["context"] = cached_context
     return {"messages": [AIMessage(content="Plan updated and saved.")]}
 
 

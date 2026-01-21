@@ -10,51 +10,10 @@ from langchain_core.tools import tool
 from agent.config.constants import CACHE_TTL_LONG, DB_PATH, _draft_workout_sessions_key, _draft_workout_sessions_ops_key
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
-from agent.tools.plan_tools import _is_cardio_exercise, _load_user_context_data
+from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
+from agent.tools.plan_tools import _load_user_context_data
 
 
-def _estimate_met_for_exercise(name: str) -> float:
-    lower = name.lower()
-    if any(k in lower for k in ["run", "jog", "treadmill"]):
-        return 9.0
-    if any(k in lower for k in ["bike", "cycle"]):
-        return 7.0
-    if "row" in lower:
-        return 7.0
-    if any(k in lower for k in ["elliptical", "swim"]):
-        return 6.5
-    if "walk" in lower:
-        return 4.0
-    if "hiit" in lower:
-        return 10.0
-    return 6.0
-
-
-def _estimate_workout_calories(
-    weight_kg: float,
-    exercises: List[Dict[str, Any]],
-    duration_min: int,
-) -> int:
-    if weight_kg <= 0:
-        return 0
-    if not exercises:
-        met = 6.0
-        return int((met * 3.5 * weight_kg / 200) * max(1, duration_min))
-    total = 0.0
-    fallback_per_ex = max(1, int(duration_min / max(1, len(exercises))))
-    for exercise in exercises:
-        if not isinstance(exercise, dict):
-            continue
-        name = str(exercise.get("name") or exercise.get("exercise") or "").strip()
-        minutes = exercise.get("duration_min")
-        if minutes is None:
-            minutes = fallback_per_ex
-        if _is_cardio_exercise(name):
-            met = _estimate_met_for_exercise(name)
-        else:
-            met = 6.0
-        total += (met * 3.5 * weight_kg / 200) * max(1, int(minutes))
-    return int(total)
 
 
 def _append_workout_session_op(user_id: int, op: Dict[str, Any]) -> None:

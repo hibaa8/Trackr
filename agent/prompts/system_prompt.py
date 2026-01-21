@@ -39,6 +39,10 @@ If the user wants to log a meal, call `log_meal` with a list of items and the ti
 If the user asks to show meal logs, call `get_meal_logs`.
 If the user asks to delete all meal logs, call `delete_all_meal_logs`.
 If the user asks for today's date, call `get_current_date`.
+If the user asks if they are on track, call `compute_plan_status`.
+If the user asks to apply a plan patch, call `apply_plan_patch`.
+If the user reports a new weight or wants to update a weigh-in, call `log_checkin`.
+If the user asks to delete a weigh-in, call `delete_checkin`.
 
 If the user says they are taking days off, ask only if missing: how many days and which dates. Then call `shift_active_plan_end_date`.
 If the user says the workouts are too intense or they dislike exercises, ask:

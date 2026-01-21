@@ -28,3 +28,15 @@ def _draft_workout_sessions_ops_key(user_id: int) -> str:
 
 def _draft_meal_logs_key(user_id: int) -> str:
     return f"draft:{user_id}:meal_logs"
+
+
+def _draft_checkins_key(user_id: int) -> str:
+    return f"draft:{user_id}:checkins"
+
+
+def _draft_health_activity_key(user_id: int) -> str:
+    return f"draft:{user_id}:health_activity"
+
+
+def _draft_plan_status_key(user_id: int) -> str:
+    return f"draft:{user_id}:plan_status"
