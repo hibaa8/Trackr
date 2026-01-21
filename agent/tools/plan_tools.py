@@ -6,7 +6,9 @@ import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
+from langchain_openai import ChatOpenAI
 try:
     from langchain_tavily import TavilySearch
 except ImportError:  # optional dependency
@@ -29,6 +31,7 @@ from agent.plan.plan_generation import (
     _build_plan_data,
     _format_plan_text,
     _macro_split,
+    generate_workout_plan,
 )
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
@@ -395,10 +398,13 @@ def get_current_plan_summary(user_id: int) -> str:
         workout_label = "Rest day" if rest_day else workout_plan
         workout_lines.append(f"{day['date']}: {workout_label}")
     workout_summary = "\n".join(workout_lines) if workout_lines else "No workouts scheduled."
+    template_note = ""
+    if len(plan_days) in {7, 14}:
+        template_note = f" Template repeats until {end_date}."
     return (
         f"Plan {status}: {start_date} to {end_date}. "
         f"Calories {calories}, macros (g) P{protein}/C{carbs}/F{fat}. "
-        f"Next 14 days:\n{workout_summary}"
+        f"Next 14 days:\n{workout_summary}{template_note}"
     )
 
 
@@ -631,6 +637,15 @@ def _reduce_rpe_in_label(label: str) -> str:
     return label
 
 
+def _parse_iso_date(value: Optional[str]) -> Optional[date]:
+    if not value:
+        return None
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").date()
+    except ValueError:
+        return None
+
+
 def _movement_category(exercise: str) -> Optional[str]:
     lower = exercise.lower()
     if any(k in lower for k in ["squat", "leg press", "goblet"]):
@@ -668,7 +683,7 @@ def _swap_exercises_by_pattern(label: str, preferred: List[str]) -> str:
     parts = [p.strip() for p in label.split(",")]
     updated = []
     for part in parts:
-        match = re.match(r"([A-Za-z \\-/]+)\\s+(\\d+x[^\\@]+)(.*)", part)
+        match = re.match(r"([A-Za-z \\/\\-]+)\\s+(\\d+x[^\\@]+)(.*)", part)
         if not match:
             updated.append(part)
             continue
@@ -690,7 +705,7 @@ def replace_active_plan_workouts(
     reduce_intensity: bool = False,
     cardio_preference: Optional[str] = None,
 ) -> str:
-    """Replace active plan workouts using preferred exercises while matching volume."""
+    """Legacy: replace active plan workouts using preferred exercises."""
     if isinstance(preferred_exercises, str):
         preferred_list = [ex.strip() for ex in preferred_exercises.split(",") if ex.strip()]
     elif isinstance(preferred_exercises, list):
@@ -711,6 +726,17 @@ def replace_active_plan_workouts(
     today = date.today().isoformat()
     affected = []
     overrides = []
+    replacement_labels = []
+    if not preferred_list:
+        context = _load_user_context_data(user_id)
+        pref = context.get("preferences") or ()
+        goal_type = pref[2] if len(pref) > 2 else "lose"
+        days_per_week = 5 if goal_type == "gain" else 4
+        workout_cycle = generate_workout_plan(goal_type, days_per_week=days_per_week)
+        replacement_labels = [label for label in workout_cycle if "Upper A" in label or "Lower A" in label]
+        if not replacement_labels:
+            replacement_labels = workout_cycle
+    replacement_index = 0
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
@@ -732,8 +758,12 @@ def replace_active_plan_workouts(
             if day["date"] < today or day["date"] > end_date:
                 continue
             before_label = day["workout_plan"]
-            new_label = _replace_workout_label(before_label, preferred_list)
-            new_label = _swap_exercises_by_pattern(new_label, preferred_list)
+            if not preferred_list and "preferred strength" in (before_label or "").lower() and replacement_labels:
+                new_label = replacement_labels[replacement_index % len(replacement_labels)]
+                replacement_index += 1
+            else:
+                new_label = _replace_workout_label(before_label, preferred_list)
+                new_label = _swap_exercises_by_pattern(new_label, preferred_list)
             if cardio_preference and "cardio" in new_label.lower():
                 new_label = _build_cardio_workout_label([cardio_preference], _estimate_cardio_minutes(new_label))
             if reduce_intensity:
@@ -786,6 +816,222 @@ def replace_active_plan_workouts(
         "changes": affected,
     }
     return json.dumps(payload)
+
+
+def _compact_status_summary(status_raw: str) -> Optional[Dict[str, Any]]:
+    try:
+        status_data = json.loads(status_raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(status_data, dict):
+        return None
+    if status_data.get("status") == "insufficient_data":
+        return {"status": "insufficient_data"}
+    last_7d = status_data.get("last_7d", {}) if isinstance(status_data.get("last_7d"), dict) else {}
+    return {
+        "status": status_data.get("status"),
+        "as_of": status_data.get("as_of"),
+        "goal_type": status_data.get("goal_type"),
+        "explanation": status_data.get("explanation"),
+        "last_7d": {
+            "avg_intake_kcal": last_7d.get("avg_intake_kcal"),
+            "avg_burn_kcal": last_7d.get("avg_burn_kcal"),
+            "avg_target_kcal": last_7d.get("avg_target_kcal"),
+            "workouts_done": last_7d.get("workouts_done"),
+            "workouts_planned": last_7d.get("workouts_planned"),
+            "workouts_missed": last_7d.get("workouts_missed"),
+            "meal_log_days": last_7d.get("meal_log_days"),
+        },
+    }
+
+
+def validate_patch(
+    bundle: Dict[str, Any],
+    patch: Dict[str, Any],
+    as_of_date: Optional[str],
+) -> tuple[bool, List[str]]:
+    errors: List[str] = []
+    if not isinstance(bundle, dict):
+        return False, ["Active plan bundle missing."]
+    plan = bundle.get("plan") if isinstance(bundle.get("plan"), dict) else None
+    plan_days = bundle.get("plan_days", []) if isinstance(bundle.get("plan_days"), list) else []
+    if not plan or not plan_days:
+        return False, ["Active plan data unavailable."]
+
+    overrides = patch.get("overrides")
+    if not isinstance(overrides, list):
+        return False, ["Patch must include an overrides list."]
+    if len(overrides) > 30:
+        errors.append("At most 30 overrides are allowed per patch.")
+
+    today = date.today()
+    as_of = _parse_iso_date(as_of_date) or today
+    start_date = max(today, as_of)
+    end_date = _parse_iso_date(plan.get("end_date"))
+    if end_date is None:
+        errors.append("Plan end date is missing or invalid.")
+    plan_day_dates = {d.get("date") for d in plan_days if d.get("date")}
+
+    user_id = patch.pop("_user_id", None)
+    min_calories = 1200
+    if user_id is not None:
+        context = _load_user_context_data(int(user_id))
+        user = context.get("user") if isinstance(context, dict) else None
+        gender = user[5] if user and len(user) > 5 else None
+        if isinstance(gender, str) and gender.lower().startswith("m"):
+            min_calories = 1500
+
+    for idx, override in enumerate(overrides):
+        if not isinstance(override, dict):
+            errors.append(f"Override #{idx + 1} must be an object.")
+            continue
+        date_str = override.get("date")
+        parsed_date = _parse_iso_date(date_str)
+        if not parsed_date:
+            errors.append(f"Override #{idx + 1} has invalid date.")
+            continue
+        if parsed_date < start_date:
+            errors.append(f"Override date {date_str} is before allowed window.")
+        if end_date and parsed_date > end_date:
+            errors.append(f"Override date {date_str} is after plan end date.")
+        if date_str not in plan_day_dates:
+            errors.append(f"Override date {date_str} is not in plan days.")
+
+        override_type = override.get("override_type")
+        if override_type not in {"adjust", "pause", "deload"}:
+            errors.append(f"Override date {date_str} has invalid override_type.")
+
+        workout_json = override.get("workout_json")
+        if workout_json is not None:
+            label = None
+            if isinstance(workout_json, dict):
+                label = workout_json.get("label")
+            elif isinstance(workout_json, str):
+                try:
+                    parsed = json.loads(workout_json)
+                except json.JSONDecodeError:
+                    parsed = None
+                if isinstance(parsed, dict) and parsed.get("label"):
+                    label = parsed.get("label")
+                else:
+                    label = workout_json
+            if not isinstance(label, str) or not label.strip():
+                errors.append(f"Override date {date_str} has invalid workout label.")
+            elif len(label) > 2500:
+                errors.append(f"Override date {date_str} workout label too long.")
+            else:
+                override["workout_json"] = json.dumps({"label": label})
+
+        calorie_target = override.get("calorie_target")
+        calorie_delta = override.get("calorie_delta")
+        if calorie_target is not None:
+            if calorie_target < min_calories:
+                errors.append(f"Override date {date_str} calorie_target below minimum.")
+        elif calorie_delta is not None:
+            base_target = plan.get("daily_calorie_target")
+            day_target = next((d.get("calorie_target") for d in plan_days if d.get("date") == date_str), None)
+            base = day_target if day_target is not None else base_target or 0
+            if base + int(calorie_delta) < min_calories:
+                errors.append(f"Override date {date_str} calorie_delta below minimum.")
+
+    return len(errors) == 0, errors
+
+
+@tool("propose_plan_patch_with_llm")
+def propose_plan_patch_with_llm(
+    user_id: int,
+    user_request: str,
+    as_of_date: Optional[str] = None,
+    apply: bool = False,
+) -> str:
+    """Propose (and optionally apply) a plan patch based on user request."""
+    if not user_request or not user_request.strip():
+        return json.dumps({"applied": False, "validation_errors": ["Missing user request."], "patch": None, "apply_result": None})
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan or not plan_days:
+        return json.dumps({"applied": False, "validation_errors": ["No active plan found."], "patch": None, "apply_result": None})
+
+    today = date.today()
+    as_of = _parse_iso_date(as_of_date) or today
+    start_day = max(today, as_of).isoformat()
+    end_day = plan.get("end_date")
+    plan_start = plan.get("start_date")
+    plan_days_sorted = sorted([d for d in plan_days if d.get("date")], key=lambda d: d["date"])
+    upcoming = [d for d in plan_days_sorted if d["date"] >= start_day]
+    next_days = upcoming[:14]
+
+    status_raw = compute_plan_status.func(user_id, as_of_date=as_of.isoformat())
+    status_summary = _compact_status_summary(status_raw)
+
+    day_lines = [
+        f"{day['date']} | rest_day={day.get('rest_day', 0)} | workout_plan={day.get('workout_plan')}"
+        for day in next_days
+    ]
+    status_block = json.dumps(status_summary) if status_summary else "null"
+    system_prompt = (
+        "You are a plan patch generator. Return ONLY valid JSON with the schema:\n"
+        '{"overrides":[{"date":"YYYY-MM-DD","override_type":"adjust","workout_json":{"label":"..."},"calorie_target":null,"calorie_delta":null}],"new_end_date":null,"notes":"..."}\n'
+        "Use only the dates provided. If no changes are needed, return overrides as an empty list. No markdown."
+    )
+    human_prompt = (
+        f"User request: {user_request}\n"
+        f"As of: {as_of.isoformat()}\n"
+        f"Plan range: {plan_start} to {end_day}\n"
+        f"Next 14 plan days starting {start_day}:\n"
+        + "\n".join(day_lines)
+        + f"\nStatus summary (compact): {status_block}"
+    )
+    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)])
+    raw_content = response.content if isinstance(response.content, str) else ""
+    try:
+        patch = json.loads(raw_content)
+    except json.JSONDecodeError:
+        return json.dumps(
+            {
+                "applied": False,
+                "validation_errors": ["LLM response was not valid JSON."],
+                "patch": None,
+                "apply_result": None,
+            }
+        )
+    if not isinstance(patch, dict):
+        return json.dumps(
+            {
+                "applied": False,
+                "validation_errors": ["LLM response must be a JSON object."],
+                "patch": None,
+                "apply_result": None,
+            }
+        )
+    patch.setdefault("overrides", [])
+    patch.setdefault("new_end_date", None)
+    patch.setdefault("notes", "")
+    patch["_user_id"] = user_id
+    is_ok, errors = validate_patch(bundle, patch, as_of.isoformat())
+    sanitized_patch = {k: v for k, v in patch.items() if k != "_user_id"}
+    if not is_ok:
+        return json.dumps(
+            {
+                "applied": False,
+                "validation_errors": errors,
+                "patch": sanitized_patch,
+                "apply_result": None,
+            }
+        )
+    apply_result = None
+    if apply:
+        apply_result = apply_plan_patch.func(user_id, sanitized_patch)
+    return json.dumps(
+        {
+            "applied": bool(apply),
+            "validation_errors": errors,
+            "patch": sanitized_patch,
+            "apply_result": apply_result,
+        }
+    )
 
 
 @tool("get_weight_checkpoint_for_current_week")
@@ -1112,9 +1358,6 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
             "avg_intake_kcal": avg_intake,
             "avg_burn_kcal": avg_burn,
             "avg_target_kcal": avg_target,
-            "weekly_intake_delta": weekly_intake_delta,
-            "weekly_burn_delta": weekly_burn_delta,
-            "weekly_net_delta_est": weekly_net_delta_est,
             "workouts_done": workouts_done,
             "workouts_planned": workouts_planned,
             "workouts_missed": workouts_missed,
@@ -1158,7 +1401,7 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
                 label = None
             if label:
                 day["workout_plan"] = label
-    bundle["plan_days"] = list(plan_days_by_date.values())
+    bundle["plan_days"] = sorted(plan_days_by_date.values(), key=lambda d: d.get("date") or "")
     _set_active_plan_cache(user_id, bundle)
 
     with sqlite3.connect(DB_PATH) as conn:
@@ -1268,7 +1511,7 @@ def propose_plan_corrections(
     )
 
     if apply and correction_needed:
-        apply_plan_patch(user_id, patch)
+        apply_plan_patch.func(user_id, patch)
 
     return json.dumps(
         {
