@@ -10,6 +10,8 @@ class AppState: ObservableObject {
     @Published var workoutCompleted: Bool = true
     @Published var meals: [MealEntry] = []
     @Published var chatMessages: [ChatMessage] = []
+    private var coachThreadId: String?
+    private var awaitingPlanApproval = false
 
     // Macros
     @Published var proteinCurrent: Int = 75
@@ -54,21 +56,86 @@ class AppState: ObservableObject {
     func sendMessage(_ text: String) {
         let userMessage = ChatMessage(text: text, isFromUser: true, timestamp: Date())
         chatMessages.append(userMessage)
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if awaitingPlanApproval {
+            handlePlanApprovalResponse(trimmed)
+            return
+        }
 
-        // Simulate AI response
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let responses = [
-                "That's a great question! Based on your current progress, I'd recommend...",
-                "You're doing amazing! Keep up the great work with your nutrition.",
-                "I notice you've been consistent with your calorie goals. Consider adding more protein to help with muscle recovery.",
-                "Great job staying on track! Remember to stay hydrated throughout the day."
-            ]
-            let aiMessage = ChatMessage(
-                text: responses.randomElement() ?? "How can I assist you further?",
-                isFromUser: false,
-                timestamp: Date()
+        AICoachService.shared.sendMessage(trimmed, threadId: coachThreadId) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let response):
+                    self?.coachThreadId = response.thread_id
+                    let replyText = response.reply.isEmpty ? "How can I help you further?" : response.reply
+                    self?.chatMessages.append(ChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+
+                    if response.requires_feedback {
+                        if let planText = response.plan_text, !planText.isEmpty {
+                            self?.chatMessages.append(ChatMessage(text: planText, isFromUser: false, timestamp: Date()))
+                        }
+                        self?.chatMessages.append(
+                            ChatMessage(
+                                text: "Would you like me to apply this plan? Reply with 'yes' or 'no'.",
+                                isFromUser: false,
+                                timestamp: Date()
+                            )
+                        )
+                        self?.awaitingPlanApproval = true
+                    }
+                case .failure:
+                    self?.chatMessages.append(
+                        ChatMessage(
+                            text: "I couldn’t reach the coach service. Please make sure the backend is running.",
+                            isFromUser: false,
+                            timestamp: Date()
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private func handlePlanApprovalResponse(_ message: String) {
+        let lower = message.lowercased()
+        let approve: Bool?
+        if ["yes", "y", "sure", "ok", "okay"].contains(lower) {
+            approve = true
+        } else if ["no", "n", "nope", "cancel"].contains(lower) {
+            approve = false
+        } else {
+            chatMessages.append(
+                ChatMessage(
+                    text: "Please reply with 'yes' or 'no' so I can apply or discard the plan.",
+                    isFromUser: false,
+                    timestamp: Date()
+                )
             )
-            self.chatMessages.append(aiMessage)
+            return
+        }
+
+        guard let threadId = coachThreadId else {
+            awaitingPlanApproval = false
+            return
+        }
+
+        AICoachService.shared.sendFeedback(threadId: threadId, approve: approve ?? false) { [weak self] result in
+            DispatchQueue.main.async {
+                self?.awaitingPlanApproval = false
+                switch result {
+                case .success(let response):
+                    let replyText = response.reply.isEmpty ? "Plan updated." : response.reply
+                    self?.chatMessages.append(ChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                case .failure:
+                    self?.chatMessages.append(
+                        ChatMessage(
+                            text: "I couldn’t submit your decision. Please try again.",
+                            isFromUser: false,
+                            timestamp: Date()
+                        )
+                    )
+                }
+            }
         }
     }
 

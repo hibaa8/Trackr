@@ -4,8 +4,9 @@ Serves workout videos from curated YouTube playlists
 """
 
 import os
+import sys
 import time
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import json
 import urllib.parse
@@ -16,9 +17,16 @@ from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from googleapiclient.discovery import build
+from langchain_core.messages import HumanMessage, ToolMessage
+from pydantic import BaseModel
 
 # Configuration
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+_ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
@@ -74,6 +82,67 @@ app.add_middleware(
 )
 
 youtube = build("youtube", "v3", developerKey=YOUTUBE_API_KEY)
+
+# Agent integration (lazy-loaded so env vars are available)
+_AGENT_GRAPH = None
+_AGENT_PRELOADED: set[str] = set()
+_AGENT_PRELOAD_FN = None
+_AGENT_RAG_INIT = None
+_PENDING_PLANS: Dict[str, Dict[str, Any]] = {}
+
+
+def _get_agent_graph():
+    global _AGENT_GRAPH, _AGENT_PRELOAD_FN, _AGENT_RAG_INIT
+    if _AGENT_GRAPH is None:
+        from agent.graph.graph import build_graph, _preload_session_cache
+        from agent.rag.rag import _build_rag_index
+
+        _AGENT_GRAPH = build_graph()
+        _AGENT_PRELOAD_FN = _preload_session_cache
+        _AGENT_RAG_INIT = _build_rag_index
+        _AGENT_RAG_INIT()
+    return _AGENT_GRAPH, _AGENT_PRELOAD_FN
+
+
+def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
+    plan_text = None
+    proposed_plan = None
+    for message in reversed(messages):
+        if isinstance(message, ToolMessage):
+            try:
+                payload = json.loads(message.content)
+            except json.JSONDecodeError:
+                payload = None
+            if isinstance(payload, dict):
+                plan_text = payload.get("plan_text")
+                proposed_plan = payload.get("plan_data")
+            else:
+                plan_text = message.content
+            break
+    return {"plan_text": plan_text, "proposed_plan": proposed_plan}
+
+
+class CoachChatRequest(BaseModel):
+    message: str
+    user_id: int = 1
+    thread_id: Optional[str] = None
+
+
+class CoachChatResponse(BaseModel):
+    reply: str
+    thread_id: str
+    requires_feedback: bool = False
+    plan_text: Optional[str] = None
+
+
+class CoachFeedbackRequest(BaseModel):
+    thread_id: str
+    approve_plan: bool
+
+
+class CoachFeedbackResponse(BaseModel):
+    reply: str
+    thread_id: str
 
 # Simple in-memory cache
 _CACHE: Dict[str, Dict] = {}
@@ -408,6 +477,69 @@ def get_gym_photo(
         return Response(content=data, media_type=content_type)
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Photo fetch failed: {e}")
+
+
+@app.get("/coach/health")
+def coach_health_check():
+    """Health check for the AI coach backend."""
+    return {"status": "healthy", "service": "ai-coach"}
+
+
+@app.post("/coach/chat", response_model=CoachChatResponse)
+def coach_chat(payload: CoachChatRequest):
+    """Chat with the AI coach using the agent graph."""
+    graph, preload_fn = _get_agent_graph()
+    thread_id = payload.thread_id or f"user:{payload.user_id}"
+    config = {"configurable": {"thread_id": thread_id}}
+
+    if thread_id not in _AGENT_PRELOADED:
+        preload_fn(payload.user_id)
+        _AGENT_PRELOADED.add(thread_id)
+
+    try:
+        state = graph.invoke(
+            {
+                "messages": [HumanMessage(content=payload.message)],
+            },
+            config,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Coach error: {exc}") from exc
+
+    graph_state = graph.get_state(config)
+    reply = state["messages"][-1].content if state.get("messages") else ""
+    if graph_state.next and "human_feedback" in graph_state.next:
+        plan_data = _extract_plan_from_messages(state.get("messages", []))
+        if plan_data.get("proposed_plan"):
+            _PENDING_PLANS[thread_id] = plan_data["proposed_plan"]
+        return CoachChatResponse(
+            reply=reply or (plan_data.get("plan_text") or ""),
+            thread_id=thread_id,
+            requires_feedback=True,
+            plan_text=plan_data.get("plan_text"),
+        )
+    return CoachChatResponse(reply=reply, thread_id=thread_id)
+
+
+@app.post("/coach/feedback", response_model=CoachFeedbackResponse)
+def coach_feedback(payload: CoachFeedbackRequest):
+    """Submit human feedback for a proposed plan."""
+    graph, _ = _get_agent_graph()
+    config = {"configurable": {"thread_id": payload.thread_id}}
+    try:
+        proposed_plan = _PENDING_PLANS.get(payload.thread_id)
+        graph.update_state(
+            config,
+            {"approve_plan": payload.approve_plan, "proposed_plan": proposed_plan},
+            as_node="human_feedback",
+        )
+        if payload.thread_id in _PENDING_PLANS:
+            _PENDING_PLANS.pop(payload.thread_id, None)
+        state = graph.invoke(None, config)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Coach feedback error: {exc}") from exc
+    reply = state["messages"][-1].content if state.get("messages") else ""
+    return CoachFeedbackResponse(reply=reply, thread_id=payload.thread_id)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 # Start the AI Trainer YouTube API Backend
 
 echo "🚀 Starting AI Trainer YouTube API Backend..."

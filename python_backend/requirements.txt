@@ -2,3 +2,14 @@ fastapi==0.104.1
 uvicorn==0.24.0
 google-api-python-client==2.108.0
 python-dotenv==1.0.0
+langgraph==0.2.52
+langgraph-prebuilt==0.1.7
+langgraph-checkpoint-sqlite==2.0.10
+langchain-core==0.2.43
+langchain-openai==0.1.23
+langchain-community==0.2.16
+langchain-text-splitters==0.2.4
+upstash-redis==1.0.0
+redis==5.0.8
+pypdf==4.3.1
+faiss-cpu==1.13.2

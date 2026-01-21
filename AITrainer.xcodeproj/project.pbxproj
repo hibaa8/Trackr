@@ -14,22 +14,9 @@
 		3D93F1942F1855FC00A8D3CB /* AITrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AITrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
-/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
-		3D93F1C92F185AD200A8D3CB /* Exceptions for "AITrainer" folder in "AITrainer" target */ = {
-			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
-			membershipExceptions = (
-				Info.plist,
-			);
-			target = 3D93F1932F1855FC00A8D3CB /* AITrainer */;
-		};
-/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
-
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		3D93F1962F1855FC00A8D3CB /* AITrainer */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
-			exceptions = (
-				3D93F1C92F185AD200A8D3CB /* Exceptions for "AITrainer" folder in "AITrainer" target */,
-			);
 			path = AITrainer;
 			sourceTree = "<group>";
 		};
@@ -272,8 +259,8 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AITrainer/Info.plist;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "AITrainer needs access to your camera to scan food and log your meals";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "AITrainer needs to read your health data to track calories burned and activity";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "AITrainer needs to write workout and weight data to your Health profile";
@@ -320,8 +307,8 @@
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
-				GENERATE_INFOPLIST_FILE = YES;
-				INFOPLIST_FILE = AITrainer/Info.plist;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = Config/Info.plist;
 				INFOPLIST_KEY_NSCameraUsageDescription = "AITrainer needs access to your camera to scan food and log your meals";
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "AITrainer needs to read your health data to track calories burned and activity";
 				INFOPLIST_KEY_NSHealthUpdateUsageDescription = "AITrainer needs to write workout and weight data to your Health profile";

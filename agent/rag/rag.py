@@ -18,7 +18,7 @@ def _build_rag_index() -> None:
     if RAG_READY:
         return
     RAG_READY = True
-    index_path = Path("/Users/admin/Documents/AI-trainer-agent/data/faiss_index")
+    index_path = Path(__file__).resolve().parents[2] / "data" / "faiss_index"
     if not index_path.exists():
         return
     try:

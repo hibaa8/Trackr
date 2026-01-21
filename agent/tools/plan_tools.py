@@ -7,7 +7,10 @@ from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
-from langchain_tavily import TavilySearch
+try:
+    from langchain_tavily import TavilySearch
+except ImportError:  # optional dependency
+    TavilySearch = None
 
 from agent.config.constants import (
     CACHE_TTL_LONG,
@@ -831,6 +834,8 @@ def get_current_date() -> str:
 @tool("search_web")
 def search_web(query: str) -> str:
     """Search the web and return formatted source snippets."""
+    if TavilySearch is None:
+        return "Web search is unavailable (missing Tavily dependency)."
     tavily_search = TavilySearch(max_results=3)
     data = tavily_search.invoke({"query": query})
     search_docs = data.get("results", data)
