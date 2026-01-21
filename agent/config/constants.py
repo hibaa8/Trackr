@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DB_PATH = "/Users/admin/Documents/AI-trainer-agent/data/ai_trainer.db"
+_ROOT_DIR = Path(__file__).resolve().parents[2]
+DB_PATH = str(_ROOT_DIR / "data" / "ai_trainer.db")
 DEFAULT_USER_ID = 1
 CACHE_TTL_LONG = 6 * 60 * 60
 CACHE_TTL_PLAN = 30 * 60
 
-RAG_SOURCES_DIR = Path("/Users/admin/Documents/AI-trainer-agent/sources")
+RAG_SOURCES_DIR = _ROOT_DIR / "sources"
 
 
 def _draft_plan_key(user_id: int) -> str:
