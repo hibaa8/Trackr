@@ -907,6 +907,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     context = _load_user_context_data(user_id)
     pref = context.get("preferences") or ()
     goal_type = pref[2] if len(pref) > 2 else "lose"
+    user = context.get("user") if isinstance(context, dict) else None
+    weight_for_burn = user[4] if user and len(user) > 4 else 0
 
     meals = _redis_get_json(_draft_meal_logs_key(user_id)) or {"meals": []}
     meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
@@ -925,63 +927,129 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
                 return False
         return 0 <= (as_of - parsed).days <= 6
 
-    intake_total = sum(m.get("calories", 0) for m in meal_rows if m.get("logged_at") and _within_last_7(m["logged_at"]))
-    burn_workouts = sum(
-        w.get("calories_burned", 0) for w in workout_rows if w.get("date") and _within_last_7(w["date"])
-    )
-    burn_activity = sum(
-        a.get("calories_burned", 0) for a in activity_rows if a.get("date") and _within_last_7(a["date"])
-    )
-    burn_total = burn_activity if burn_activity else burn_workouts
+    def _plan_day_for_date(day_str: str) -> Optional[Dict[str, Any]]:
+        for d in bundle.get("plan_days", []) or []:
+            if d.get("date") == day_str:
+                return d
+        return None
 
-    days_with_meals = {m.get("logged_at", "")[:10] for m in meal_rows if m.get("logged_at") and _within_last_7(m["logged_at"])}
-    days_with_workouts = {w.get("date") for w in workout_rows if w.get("date") and _within_last_7(w["date"])}
-    days_with_activity = {a.get("date") for a in activity_rows if a.get("date") and _within_last_7(a["date"])}
-    burn_days = days_with_workouts | days_with_activity
-    avg_burn = int(burn_total / max(1, len(burn_days))) if burn_total else 0
-    if not days_with_meals:
-        avg_intake = None
-        avg_intake_error = None
-        nutrition_ok = None
-    else:
-        avg_intake = int(intake_total / max(1, len(days_with_meals)))
+    def _is_rest_day(plan_day: Optional[Dict[str, Any]]) -> bool:
+        if not plan_day:
+            return False
+        if plan_day.get("rest_day") == 1:
+            return True
+        return "rest" in (plan_day.get("workout_plan", "").lower())
 
-    planned_days = [
-        d for d in bundle.get("plan_days", [])
-        if d.get("date") and _within_last_7(d["date"])
-    ]
-    planned_by_date = {d.get("date"): d for d in planned_days if d.get("date")}
-    intake_target_days = days_with_meals & set(planned_by_date.keys())
-    if intake_target_days:
-        avg_target = int(
-            sum(planned_by_date[day].get("calorie_target", 0) for day in intake_target_days)
-            / max(1, len(intake_target_days))
+    def _expected_burn_for_day(plan_day: Optional[Dict[str, Any]]) -> Optional[int]:
+        if not plan_day:
+            return None
+        workout_label = plan_day.get("workout_plan") or ""
+        if "rest" in workout_label.lower():
+            return 0
+        if "cardio" in workout_label.lower() or _is_cardio_exercise(workout_label):
+            minutes = _estimate_cardio_minutes(workout_label)
+        else:
+            minutes = 45
+        return _estimate_workout_calories(weight_for_burn, [], minutes)
+
+    last_7d_days = []
+    for offset in range(7):
+        day = as_of - timedelta(days=offset)
+        day_str = day.isoformat()
+        plan_day = _plan_day_for_date(day_str)
+        planned_rest = _is_rest_day(plan_day)
+        planned_label = plan_day.get("workout_plan") if plan_day else None
+
+        meals_for_day = [m for m in meal_rows if m.get("logged_at", "").startswith(day_str)]
+        actual_intake = sum(m.get("calories", 0) for m in meals_for_day) if meals_for_day else None
+        intake_target = plan_day.get("calorie_target") if plan_day else plan.get("daily_calorie_target")
+        intake_delta = (actual_intake - intake_target) if actual_intake is not None and intake_target is not None else None
+
+        activity_for_day = [a for a in activity_rows if a.get("date") == day_str]
+        workout_for_day = [w for w in workout_rows if w.get("date") == day_str]
+        if activity_for_day:
+            actual_burn = sum(a.get("calories_burned", 0) for a in activity_for_day)
+        elif workout_for_day:
+            actual_burn = sum(w.get("calories_burned", 0) for w in workout_for_day)
+        else:
+            actual_burn = None
+
+        exercised = bool(workout_for_day) or any(
+            (a.get("workouts_summary") or "").strip() for a in activity_for_day
         )
-    else:
-        avg_target = int(sum(d.get("calorie_target", 0) for d in planned_days) / max(1, len(planned_days)))
-    if avg_intake is not None:
-        avg_intake_error = avg_intake - avg_target
-    planned_workouts = 0
-    for d in planned_days:
-        is_rest = (d.get("rest_day") == 1) or ("rest" in (d.get("workout_plan", "").lower()))
-        if not is_rest:
-            planned_workouts += 1
-    workouts_done = len(days_with_workouts)
-    meal_log_days = len(days_with_meals)
 
-    if meal_log_days < 3 and len(trend_weights) < 2:
+        expected_burn = _expected_burn_for_day(plan_day)
+        burn_delta = (actual_burn - expected_burn) if actual_burn is not None and expected_burn is not None else None
+
+        nutrition_ok = None if actual_intake is None or intake_delta is None else abs(intake_delta) <= 150
+        training_ok = True if planned_rest else exercised
+        if expected_burn and actual_burn is not None:
+            intensity_ok = actual_burn >= int(0.8 * expected_burn)
+        else:
+            intensity_ok = None
+
+        missing_flags = []
+        if actual_intake is None:
+            missing_flags.append("missing_meal_log")
+        if actual_burn is None:
+            missing_flags.append("missing_burn")
+        if plan_day is None:
+            missing_flags.append("missing_plan_day")
+
+        last_7d_days.append(
+            {
+                "date": day_str,
+                "planned_workout_label": planned_label,
+                "planned_rest_day": planned_rest,
+                "intake": actual_intake,
+                "intake_target": intake_target,
+                "intake_delta": intake_delta,
+                "actual_burn": actual_burn,
+                "expected_burn": expected_burn,
+                "burn_delta": burn_delta,
+                "exercised": exercised,
+                "nutrition_ok": nutrition_ok,
+                "training_ok": training_ok,
+                "intensity_ok": intensity_ok,
+                "notes_missing_data_flags": missing_flags,
+            }
+        )
+
+    intake_days = [d for d in last_7d_days if d.get("intake") is not None and d.get("intake_target") is not None]
+    burn_days = [d for d in last_7d_days if d.get("actual_burn") is not None]
+    workouts_planned = sum(1 for d in last_7d_days if not d.get("planned_rest_day"))
+    workouts_done = len({w.get("date") for w in workout_rows if w.get("date") and _within_last_7(w["date"])})
+    workouts_missed = max(
+        0,
+        workouts_planned
+        - sum(1 for d in last_7d_days if d.get("training_ok") and not d.get("planned_rest_day")),
+    )
+    meal_log_days = sum(1 for d in last_7d_days if d.get("intake") is not None)
+
+    avg_intake = int(sum(d["intake"] for d in intake_days) / max(1, len(intake_days))) if intake_days else None
+    avg_target = int(sum(d["intake_target"] for d in intake_days) / max(1, len(intake_days))) if intake_days else None
+    avg_burn = int(sum(d["actual_burn"] for d in burn_days) / max(1, len(burn_days))) if burn_days else None
+
+    weekly_intake_delta = sum(d["intake_delta"] for d in intake_days if d.get("intake_delta") is not None)
+    weekly_burn_delta = sum(d["burn_delta"] for d in burn_days if d.get("burn_delta") is not None)
+    weekly_net_delta_est = weekly_intake_delta - weekly_burn_delta
+
+    if meal_log_days < 3 and recent_weighins_count < 2:
         status = "insufficient_data"
     else:
-        if avg_intake_error is None:
-            nutrition_ok = None
-        else:
-            nutrition_ok = abs(avg_intake_error) <= 150
-        if planned_workouts <= 0:
-            training_ok = True
-        else:
-            training_ok = workouts_done >= max(1, planned_workouts - 1)
         weight_ok = min_kg <= current_trend <= max_kg
-        if weight_ok and ((nutrition_ok is True) or (nutrition_ok is None and training_ok) or training_ok):
+        nutrition_ok_week = None if not intake_days else abs(avg_intake - avg_target) <= 150
+        training_ok_week = True if workouts_planned <= 0 else workouts_missed <= 1
+        intensity_checks = [
+            d for d in last_7d_days
+            if not d.get("planned_rest_day") and d.get("expected_burn") and d.get("intensity_ok") is not None
+        ]
+        if intensity_checks:
+            intensity_ok_week = (sum(1 for d in intensity_checks if d["intensity_ok"]) / len(intensity_checks)) >= 0.7
+        else:
+            intensity_ok_week = None
+
+        if weight_ok and (nutrition_ok_week is True or training_ok_week):
             status = "on_track"
         elif not weight_ok:
             if goal_type == "gain":
@@ -991,11 +1059,11 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
             else:
                 status = "behind" if current_trend > max_kg else "ahead"
         else:
-            if (avg_intake_error is not None and avg_intake_error > 300) or (planned_workouts - workouts_done) >= 2:
+            if nutrition_ok_week is False or training_ok_week is False:
                 if goal_type == "gain":
-                    status = "behind" if avg_intake_error is not None and avg_intake_error < 0 else "ahead"
+                    status = "behind" if avg_intake is not None and avg_intake < avg_target else "ahead"
                 else:
-                    status = "behind" if avg_intake_error is not None and avg_intake_error > 0 else "ahead"
+                    status = "behind" if avg_intake is not None and avg_intake > avg_target else "ahead"
             else:
                 status = "on_track"
 
@@ -1014,35 +1082,10 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     else:
         suggestion = "Keep current targets; you are aligned with the plan."
 
-    if avg_intake is None:
-        intake_phrase = "No meal logs in the last 7 days."
-    else:
-        intake_phrase = f"Avg intake is ~{avg_intake} kcal/day vs target ~{avg_target} kcal/day (error {avg_intake_error:+.0f})."
-    # Compare expected vs actual workout burn for intensity check.
-    expected_burn = 0
-    user = context.get("user") if isinstance(context, dict) else None
-    weight_for_burn = user[4] if user and len(user) > 4 else 0
-    for day, plan_day in planned_by_date.items():
-        if day not in days_with_workouts:
-            continue
-        workout_label = plan_day.get("workout_plan") or ""
-        if "rest" in workout_label.lower():
-            continue
-        if "cardio" in workout_label.lower() or _is_cardio_exercise(workout_label):
-            minutes = _estimate_cardio_minutes(workout_label)
-        else:
-            minutes = 45
-        expected_burn += _estimate_workout_calories(weight_for_burn, [], minutes)
-    actual_burn = burn_workouts
-    intensity_ok = True
-    if expected_burn > 0:
-        intensity_ok = actual_burn >= int(0.8 * expected_burn)
-
     explanation = (
-        f"{intake_phrase} "
-        f"Weight trend is {weight_error:+.1f}kg vs checkpoint, "
-        f"and {max(0, planned_workouts - workouts_done)} workout(s) were missed. "
-        f"Workout intensity is {'OK' if intensity_ok else 'below target'} based on logged calories. "
+        f"{workouts_done}/{workouts_planned} workouts completed; "
+        f"avg intake {avg_intake} kcal vs target {avg_target} kcal; "
+        f"intensity below target on {sum(1 for d in last_7d_days if d.get('intensity_ok') is False)} day(s). "
         f"{suggestion}"
     )
 
@@ -1059,13 +1102,17 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
         },
         "current_weight_trend_kg": round(current_trend, 2),
         "weight_error_kg": round(weight_error, 2),
+        "last_7d_days": list(reversed(last_7d_days)),
         "last_7d": {
             "avg_intake_kcal": avg_intake,
             "avg_burn_kcal": avg_burn,
-            "avg_net_kcal": (avg_intake - avg_burn) if avg_intake is not None else None,
             "avg_target_kcal": avg_target,
+            "weekly_intake_delta": weekly_intake_delta,
+            "weekly_burn_delta": weekly_burn_delta,
+            "weekly_net_delta_est": weekly_net_delta_est,
             "workouts_done": workouts_done,
-            "workouts_planned": planned_workouts,
+            "workouts_planned": workouts_planned,
+            "workouts_missed": workouts_missed,
             "meal_log_days": meal_log_days,
         },
         "estimated_required_delta_kcal_per_day": int(avg_target - avg_intake) if avg_intake is not None else None,
@@ -1138,6 +1185,95 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
             )
         conn.commit()
     return "Plan patch applied."
+
+
+@tool("propose_plan_corrections")
+def propose_plan_corrections(
+    user_id: int,
+    as_of_date: Optional[str] = None,
+    apply: bool = False,
+) -> str:
+    """Propose (and optionally apply) plan corrections from today forward."""
+    status_raw = compute_plan_status.func(user_id, as_of_date=as_of_date)
+    try:
+        status_data = json.loads(status_raw)
+    except json.JSONDecodeError:
+        return status_raw
+    if status_data.get("status") == "insufficient_data":
+        return json.dumps(
+            {
+                "status_summary": status_data,
+                "correction_needed": False,
+                "correction_plan": None,
+                "rationale": "Insufficient data to recommend changes.",
+                "safety_checks": {},
+            }
+        )
+
+    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(_draft_plan_key(user_id)) or {}
+    plan = bundle.get("plan") if isinstance(bundle, dict) else None
+    if not plan:
+        return json.dumps({"status": "insufficient_data"})
+    as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date() if as_of_date else date.today()
+    end_date = datetime.strptime(plan["end_date"], "%Y-%m-%d").date()
+    days_remaining = max(1, (end_date - as_of).days + 1)
+
+    goal_type = status_data.get("goal_type", "lose")
+    avg_target = status_data.get("last_7d", {}).get("avg_target_kcal")
+    avg_intake = status_data.get("last_7d", {}).get("avg_intake_kcal")
+    if avg_target is None or avg_intake is None:
+        return json.dumps(
+            {
+                "status_summary": status_data,
+                "correction_needed": False,
+                "correction_plan": None,
+                "rationale": "Missing intake data to compute calorie corrections.",
+                "safety_checks": {},
+            }
+        )
+
+    delta_per_day = avg_target - avg_intake
+    bounded_delta = max(-250, min(250, delta_per_day))
+    correction_needed = status_data.get("status") in {"behind", "ahead"}
+
+    override_dates = []
+    for i in range(days_remaining):
+        day = as_of + timedelta(days=i)
+        override_dates.append(day.isoformat())
+
+    overrides = [
+        {"date": day, "override_type": "adjust", "calorie_delta": int(bounded_delta)}
+        for day in override_dates
+    ]
+
+    patch = {
+        "overrides": overrides,
+        "notes": "Adjustment to hit checkpoint without extending end date.",
+    }
+
+    safety_checks = {
+        "calorie_delta_bounds_ok": -250 <= bounded_delta <= 250,
+        "minimum_calories_ok": True,
+        "max_weekly_change_ok": True,
+    }
+
+    rationale = (
+        f"Adjusting daily calories by {int(bounded_delta)} kcal for {days_remaining} day(s) "
+        f"to align intake with target."
+    )
+
+    if apply and correction_needed:
+        apply_plan_patch(user_id, patch)
+
+    return json.dumps(
+        {
+            "status_summary": status_data,
+            "correction_needed": correction_needed,
+            "correction_plan": patch if correction_needed else None,
+            "rationale": rationale,
+            "safety_checks": safety_checks,
+        }
+    )
 
 
 @tool("log_checkin")
