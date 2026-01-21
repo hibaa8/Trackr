@@ -186,6 +186,8 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
         )
     for day in plan_data["plan_days"]:
         lines.append(f"{day['date']}: {day['workout']} | {day['calorie_target']} kcal")
+    if len(plan_data.get("plan_days", [])) in {7, 14} and plan_data.get("end_date"):
+        lines.append(f"Repeat this template until {plan_data['end_date']}.")
     if plan_data["target_weight_kg"] is not None:
         lines.append(f"Target weight: {plan_data['target_weight_kg']:.1f} kg.")
     if plan_data["checkpoints"]:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
@@ -102,12 +102,16 @@ def get_workout_sessions(user_id: int) -> str:
     if not sessions:
         return "No workout sessions logged yet for the active plan."
     lines = []
-    plan_bundle = SESSION_CACHE.get(user_id, {}).get("active_plan")
-    plan = plan_bundle.get("plan") if isinstance(plan_bundle, dict) else None
-    plan_start = plan.get("start_date") if isinstance(plan, dict) else None
+    cutoff = date.today() - timedelta(days=6)
     for session in sessions:
         date_str = session.get("date") or "unknown date"
-        if plan_start and date_str != "unknown date" and date_str < plan_start:
+        if date_str == "unknown date":
+            continue
+        try:
+            session_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if session_date < cutoff:
             continue
         workout_type = session.get("workout_type") or "Workout"
         lines.append(f"{date_str}: {workout_type}")
