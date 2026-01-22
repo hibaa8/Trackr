@@ -1,6 +1,5 @@
 """
-FastAPI YouTube Backend for AI Trainer
-Serves workout videos from curated YouTube playlists
+AI Trainer unified backend (videos, gyms, coach).
 """
 
 import os

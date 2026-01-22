@@ -1,22 +1,57 @@
-## AI Trainer Agent
+# AI Trainer
 
-Brief CLI-based AI trainer with plan generation, workout logging, and meal logging.
+Unified iOS app + Python backend for workout videos, local gyms, and an AI coach.
 
-### Requirements
+## Repository Layout
+- `AITrainer/`: iOS app (SwiftUI)
+- `agent/`: unified FastAPI backend (videos + gyms + coach) and agent logic
+- `data/`: SQLite data used by the agent
+- `sources/`: RAG source documents
+
+## Requirements
 - Python 3.12+
-- Virtual environment (recommended)
+- Xcode (for iOS app)
 
-### Setup
-1. Create and activate a virtual environment.
-2. Install dependencies:
-   - `pip install -r requirements.txt`
-3. Configure environment variables in a `.env` file if needed:
-   - `OPENAI_API_KEY`
-   - `TAVILY_API_KEY` (optional, for `search_web`)
-   - `REDIS_URL` or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+## Environment Variables
+Create a `.env` in the repo root (or `agent/.env`). See `env.example`.
 
-### Run
+Required:
+- `OPENAI_API_KEY`
+- `YOUTUBE_API_KEY`
+- `GOOGLE_PLACES_API_KEY`
+
+Optional:
+- `REDIS_URL` or `UPSTASH_REDIS_REST_URL` + `UPSTASH_REDIS_REST_TOKEN`
+
+## Run the Backend
 From the repo root:
-- `python -m agent.cli`
+```bash
+cd agent
+./start.sh
+```
 
-Type `exit` to quit.
+Backend will be available at:
+- `http://localhost:8000/health`
+- `http://localhost:8000/docs`
+
+## Run the Agent CLI
+From the repo root:
+```bash
+python -m agent.cli
+```
+
+## iOS App
+Open `AITrainer.xcodeproj` in Xcode and run on a simulator.
+
+The app calls the backend here:
+- `AITrainer/Models/Services/YouTubeService.swift`
+- `AITrainer/Models/Services/GymFinderService.swift`
+- `AITrainer/Models/Services/AICoachService.swift`
+
+If you change the backend host, update the `baseURL` in those files.
+
+## Notes
+- The AI coach endpoints are served by the agent logic via FastAPI:
+  - `POST /coach/chat`
+  - `POST /coach/feedback`
+- RAG index is loaded from `data/faiss_index` when present.

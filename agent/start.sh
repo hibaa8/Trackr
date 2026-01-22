@@ -1,8 +1,11 @@
 #!/bin/bash
 set -e
-# Start the AI Trainer YouTube API Backend
+# Start the AI Trainer backend (videos, gyms, coach)
 
-echo "🚀 Starting AI Trainer YouTube API Backend..."
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR"
+
+echo "🚀 Starting AI Trainer backend..."
 
 # Install dependencies if not already installed
 if [ ! -d "venv" ]; then

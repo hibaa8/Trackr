@@ -1,6 +1,6 @@
-# 🎥 AI Trainer YouTube API Backend
+# 🤖 AI Trainer Backend
 
-Python FastAPI backend that serves curated workout videos from YouTube playlists to the iOS app.
+Unified FastAPI backend for workout videos, local gyms, and AI coach.
 
 ## 🚀 Quick Start
 
@@ -13,10 +13,11 @@ Python FastAPI backend that serves curated workout videos from YouTube playlists
    The server will start automatically at `http://localhost:8000`
    
 3. **Environment Variables**
-   Set these before starting the backend:
+   Set these before starting the backend (in `.env` at repo root or `agent/.env`):
    ```bash
-   export GOOGLE_PLACES_API_KEY="your_key_here"
-   export YOUTUBE_API_KEY="your_key_here"
+   OPENAI_API_KEY="your_key_here"
+   GOOGLE_PLACES_API_KEY="your_key_here"
+   YOUTUBE_API_KEY="your_key_here"
    ```
 
 ## 🔗 API Endpoints
@@ -24,6 +25,12 @@ Python FastAPI backend that serves curated workout videos from YouTube playlists
 ### Health Check
 ```
 GET /health
+```
+
+### AI Coach
+```
+POST /coach/chat
+POST /coach/feedback
 ```
 
 ### Get Categories
@@ -62,14 +69,12 @@ private let baseURL = "http://your-server-url:8000"
 - ✅ **Smart Caching**: 5-minute cache to reduce API calls
 - ✅ **Fallback Support**: Graceful degradation if API fails
 - ✅ **CORS Enabled**: Ready for iOS app integration
+- ✅ **AI Coach**: Agent-backed coaching endpoints
 
 ## 🔧 Configuration
 
-### API Key
-The YouTube API key is embedded in the code. For production:
-1. Move the API key to environment variables
-2. Set up proper authentication
-3. Deploy to a cloud service
+### API Keys
+Use environment variables for YouTube, Google Places, and OpenAI.
 
 ### Playlists
 Current playlists are curated fitness content from popular channels:
