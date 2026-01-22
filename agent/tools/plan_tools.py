@@ -20,6 +20,7 @@ from agent.config.constants import (
     _draft_checkins_key,
     _draft_health_activity_key,
     _draft_plan_status_key,
+    _draft_reminders_key,
 )
 from agent.config.constants import _draft_meal_logs_key, _draft_workout_sessions_key
 from agent.db import queries
@@ -363,6 +364,51 @@ def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
     return draft
 
 
+def _load_reminders_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_reminders_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    draft = _load_reminders_from_db(user_id)
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["reminders"] = draft
+    return draft
+
+
+def _load_reminders_from_db(user_id: int) -> Dict[str, Any]:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE user_id = ?
+            ORDER BY scheduled_at
+            """,
+            (user_id,),
+        )
+        reminders = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "reminder_type": row[2],
+                "scheduled_at": row[3],
+                "status": row[4],
+                "channel": row[5],
+                "related_plan_override_id": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+    return {"reminders": reminders}
+
+
+def _refresh_reminders_cache(user_id: int) -> Dict[str, Any]:
+    draft = _load_reminders_from_db(user_id)
+    _redis_set_json(_draft_reminders_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["reminders"] = draft
+    return draft
+
+
 @tool("get_current_plan_summary")
 def get_current_plan_summary(user_id: int) -> str:
     """Return a basic plan summary for the given user_id."""
@@ -403,6 +449,94 @@ def get_current_plan_summary(user_id: int) -> str:
         f"Calories {calories}, macros (g) P{protein}/C{carbs}/F{fat}. "
         f"Next 14 days:\n{workout_summary}{template_note}"
     )
+
+
+@tool("get_reminders")
+def get_reminders(user_id: int) -> str:
+    """Return reminders for the user from cache."""
+    draft = _load_reminders_draft(user_id)
+    reminders = draft.get("reminders", []) if isinstance(draft, dict) else []
+    return json.dumps({"reminders": reminders})
+
+
+@tool("add_reminder")
+def add_reminder(
+    user_id: int,
+    reminder_type: Optional[str] = None,
+    scheduled_at: Optional[str] = None,
+    status: str = "active",
+    channel: str = "push",
+    related_plan_override_id: Optional[int] = None,
+) -> str:
+    """Add a reminder and update cache + DB."""
+    if not reminder_type or not scheduled_at:
+        return "Please provide reminder_type and scheduled_at."
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id),
+        )
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder added."
+
+
+@tool("update_reminder")
+def update_reminder(
+    user_id: int,
+    reminder_id: int,
+    reminder_type: Optional[str] = None,
+    scheduled_at: Optional[str] = None,
+    status: Optional[str] = None,
+    channel: Optional[str] = None,
+    related_plan_override_id: Optional[int] = None,
+) -> str:
+    """Update a reminder and refresh cache."""
+    fields = []
+    values: List[Any] = []
+    if reminder_type is not None:
+        fields.append("reminder_type = ?")
+        values.append(reminder_type)
+    if scheduled_at is not None:
+        fields.append("scheduled_at = ?")
+        values.append(scheduled_at)
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+    if channel is not None:
+        fields.append("channel = ?")
+        values.append(channel)
+    if related_plan_override_id is not None:
+        fields.append("related_plan_override_id = ?")
+        values.append(related_plan_override_id)
+    if not fields:
+        return "No fields provided to update."
+    values.extend([user_id, reminder_id])
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE reminders SET {', '.join(fields)} WHERE user_id = ? AND id = ?",
+            tuple(values),
+        )
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder updated."
+
+
+@tool("delete_reminder")
+def delete_reminder(user_id: int, reminder_id: int) -> str:
+    """Delete a reminder and refresh cache."""
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM reminders WHERE user_id = ? AND id = ?", (user_id, reminder_id))
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder deleted."
 
 
 @tool("generate_plan")

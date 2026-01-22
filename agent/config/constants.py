@@ -40,3 +40,7 @@ def _draft_health_activity_key(user_id: int) -> str:
 
 def _draft_plan_status_key(user_id: int) -> str:
     return f"draft:{user_id}:plan_status"
+
+
+def _draft_reminders_key(user_id: int) -> str:
+    return f"draft:{user_id}:reminders"

@@ -25,18 +25,23 @@ from agent.tools.plan_tools import (
     _load_checkins_draft,
     _load_health_activity_draft,
     _load_active_plan_draft,
+    _load_reminders_draft,
     _load_user_context_data,
     apply_plan_patch,
     compute_plan_status,
     generate_plan,
     get_current_date,
     get_current_plan_summary,
+    get_reminders,
     get_weight_checkpoint_for_current_week,
     log_checkin,
     delete_checkin,
     propose_plan_corrections,
     propose_plan_patch_with_llm,
     replace_active_plan_workouts,
+    add_reminder,
+    update_reminder,
+    delete_reminder,
     search_web,
     shift_active_plan_end_date,
 )
@@ -68,6 +73,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
     meal_logs = _load_meal_logs_draft(user_id)
     checkins = _load_checkins_draft(user_id)
     health_activity = _load_health_activity_draft(user_id)
+    reminders = _load_reminders_draft(user_id)
     SESSION_CACHE[user_id] = {
         "context": context,
         "active_plan": active_plan,
@@ -75,6 +81,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "meal_logs": meal_logs,
         "checkins": checkins,
         "health_activity": health_activity,
+        "reminders": reminders,
     }
     return {
         "context": context,
@@ -83,6 +90,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "meal_logs": meal_logs,
         "checkins": checkins,
         "health_activity": health_activity,
+        "reminders": reminders,
     }
 
 
@@ -138,6 +146,10 @@ tools = [
     apply_plan_patch,
     propose_plan_corrections,
     propose_plan_patch_with_llm,
+    get_reminders,
+    add_reminder,
+    update_reminder,
+    delete_reminder,
     log_checkin,
     delete_checkin,
     log_meal,
