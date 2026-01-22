@@ -777,6 +777,96 @@ def _parse_iso_date(value: Optional[str]) -> Optional[date]:
         return None
 
 
+def _reminder_timestamp(day: date, hour: int = 18) -> str:
+    return f"{day.isoformat()}T{hour:02d}:00:00"
+
+
+def _upsert_status_reminder(
+    user_id: int,
+    reminder_type: str,
+    scheduled_at: str,
+    status: str = "active",
+    channel: str = "push",
+) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND reminder_type = ? AND scheduled_at = ?",
+            (user_id, reminder_type, scheduled_at),
+        )
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, reminder_type, scheduled_at, status, channel, None),
+        )
+        conn.commit()
+
+
+def _update_status_reminders(
+    user_id: int,
+    status_payload: Dict[str, Any],
+    bundle: Dict[str, Any],
+    as_of: date,
+) -> None:
+    today_str = as_of.isoformat()
+    last_7d_days = status_payload.get("last_7d_days", [])
+    if not isinstance(last_7d_days, list):
+        return
+    today_entry = next((d for d in last_7d_days if d.get("date") == today_str), None)
+    if not isinstance(today_entry, dict):
+        return
+
+    plan = bundle.get("plan") if isinstance(bundle, dict) else None
+    default_target = plan.get("daily_calorie_target") if isinstance(plan, dict) else None
+    intake_target = today_entry.get("intake_target") if today_entry.get("intake_target") is not None else default_target
+    actual_intake = today_entry.get("intake")
+    goal_type = status_payload.get("goal_type")
+
+    scheduled_at = _reminder_timestamp(as_of)
+    if intake_target is not None:
+        if actual_intake is None:
+            if goal_type == "gain":
+                message = f"meal: Log your food. Target {intake_target} kcal today; eat to hit your goal."
+            elif goal_type == "lose":
+                message = f"meal: Log your food. Target {intake_target} kcal today; stay on track."
+            else:
+                message = f"meal: Log your food. Target {intake_target} kcal today."
+            _upsert_status_reminder(user_id, message, scheduled_at)
+        else:
+            delta = int(actual_intake) - int(intake_target)
+            if goal_type == "gain" and delta < -150:
+                remaining = int(intake_target) - int(actual_intake)
+                message = f"meal: You have {remaining} kcal left today. Log your food and eat to hit target."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+            elif goal_type == "lose" and delta > 150:
+                message = f"meal: You're {delta} kcal over target today. Log what you eat and ease intake."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+            elif goal_type not in {"gain", "lose"} and abs(delta) > 150:
+                direction = "over" if delta > 0 else "under"
+                message = f"meal: You're {abs(delta)} kcal {direction} target today. Log your food."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+
+    if not today_entry.get("planned_rest_day") and not today_entry.get("exercised"):
+        workout_label = today_entry.get("planned_workout_label") or "Workout"
+        context = _load_user_context_data(user_id)
+        user = context.get("user") if isinstance(context, dict) else None
+        weight_kg = user[4] if user and len(user) > 4 else 0
+        if "cardio" in workout_label.lower() or _is_cardio_exercise(workout_label):
+            minutes = _estimate_cardio_minutes(workout_label)
+        else:
+            minutes = 45
+        target_burn = _estimate_workout_calories(weight_kg, [], minutes)
+        message = (
+            f"workout: Today's plan: {workout_label}. "
+            f"Target burn ~{target_burn} kcal. Log your workout."
+        )
+        _upsert_status_reminder(user_id, message, scheduled_at)
+    _refresh_reminders_cache(user_id)
+
+
 def _movement_category(exercise: str) -> Optional[str]:
     lower = exercise.lower()
     if any(k in lower for k in ["squat", "leg press", "goblet"]):
@@ -1495,6 +1585,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
         "estimated_required_delta_kcal_per_day": int(avg_target - avg_intake) if avg_intake is not None else None,
         "explanation": explanation,
     }
+    if status == "behind":
+        _update_status_reminders(user_id, status_payload, bundle, as_of)
     _redis_set_json(_draft_plan_status_key(user_id), status_payload, ttl_seconds=CACHE_TTL_LONG)
     return json.dumps(status_payload)
 
