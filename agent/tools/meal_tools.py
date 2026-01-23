@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import date, datetime
 from typing import List, Optional
 
 from langchain_core.tools import tool
 
-from agent.config.constants import CACHE_TTL_LONG, DB_PATH, _draft_meal_logs_key
+from agent.config.constants import CACHE_TTL_LONG, _draft_meal_logs_key
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
+from agent.db.connection import get_db_conn
 
 
 def _estimate_meal_item_calories(item: str) -> int:
@@ -72,7 +72,7 @@ def _load_meal_logs_draft(user_id: int) -> dict:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -104,7 +104,7 @@ def _load_meal_logs_draft(user_id: int) -> dict:
 
 
 def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM meal_logs WHERE user_id = ?", (user_id,))
         for meal in meals:

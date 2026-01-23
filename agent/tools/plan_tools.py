@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -14,7 +13,6 @@ from langchain_tavily import TavilySearch
 from agent.config.constants import (
     CACHE_TTL_LONG,
     CACHE_TTL_PLAN,
-    DB_PATH,
     _draft_plan_key,
     _draft_plan_patches_key,
     _draft_checkins_key,
@@ -34,6 +32,7 @@ from agent.plan.plan_generation import (
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
+from agent.db.connection import get_db_conn
 
 
 def _workout_label_from_json(workout_json: Optional[str]) -> str:
@@ -100,7 +99,7 @@ def _load_user_context_data(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(cache_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(queries.SELECT_USER_PROFILE, (user_id,))
         user_row = cur.fetchone()
@@ -118,7 +117,7 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         return cached
     if not allow_db_fallback:
         return {"plan": None, "plan_days": []}
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(queries.SELECT_ACTIVE_PLAN, (user_id,))
         plan_row = cur.fetchone()
@@ -278,7 +277,7 @@ def _load_checkins_draft(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -306,7 +305,7 @@ def _load_checkins_draft(user_id: int) -> Dict[str, Any]:
 
 
 def _sync_checkins_to_db(user_id: int, checkins: List[Dict[str, Any]]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM checkins WHERE user_id = ?", (user_id,))
         for checkin in checkins:
@@ -336,7 +335,7 @@ def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -376,7 +375,7 @@ def _load_reminders_draft(user_id: int) -> Dict[str, Any]:
 
 
 def _load_reminders_from_db(user_id: int) -> Dict[str, Any]:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -471,7 +470,7 @@ def add_reminder(
     """Add a reminder and update cache + DB."""
     if not reminder_type or not scheduled_at:
         return "Please provide reminder_type and scheduled_at."
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -517,7 +516,7 @@ def update_reminder(
     if not fields:
         return "No fields provided to update."
     values.extend([user_id, reminder_id])
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             f"UPDATE reminders SET {', '.join(fields)} WHERE user_id = ? AND id = ?",
@@ -531,7 +530,7 @@ def update_reminder(
 @tool("delete_reminder")
 def delete_reminder(user_id: int, reminder_id: int) -> str:
     """Delete a reminder and refresh cache."""
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM reminders WHERE user_id = ? AND id = ?", (user_id, reminder_id))
         conn.commit()
@@ -551,6 +550,8 @@ def generate_plan(
         days = 14
     if days > 60:
         days = 60
+    if target_loss_lbs is not None and not goal_override:
+        goal_override = "lose"
 
     plan_data = _build_plan_data(user_id, days, target_loss_lbs, goal_override=goal_override)
     if "error" in plan_data:
@@ -607,7 +608,7 @@ def shift_active_plan_end_date(
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days_off)]
 
     if calorie_delta is None:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT goal_type FROM user_preferences WHERE user_id = ?", (user_id,))
             pref_row = cur.fetchone()
@@ -641,7 +642,7 @@ def shift_active_plan_end_date(
                 existing_by_date[pause_day]["rest_day"] = 1
         bundle["plan_days"] = sorted(existing_by_date.values(), key=lambda d: d["date"])
     _set_active_plan_cache(user_id, bundle)
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -788,7 +789,7 @@ def _upsert_status_reminder(
     status: str = "active",
     channel: str = "push",
 ) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             "DELETE FROM reminders WHERE user_id = ? AND reminder_type = ? AND scheduled_at = ?",
@@ -958,7 +959,7 @@ def replace_active_plan_workouts(
         if not replacement_labels:
             replacement_labels = workout_cycle
     replacement_index = 0
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -1625,7 +1626,7 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
     bundle["plan_days"] = sorted(plan_days_by_date.values(), key=lambda d: d.get("date") or "")
     _set_active_plan_cache(user_id, bundle)
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
@@ -1784,7 +1785,7 @@ def log_checkin(
     SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
     _sync_checkins_to_db(user_id, checkins)
     if checkin_date == date.today().isoformat():
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute("UPDATE users SET weight_kg = ? WHERE id = ?", (weight_kg, user_id))
             conn.commit()
@@ -1809,7 +1810,7 @@ def delete_checkin(user_id: int, checkin_date: str) -> str:
     draft["checkins"] = checkins
     _redis_set_json(_draft_checkins_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, checkin_date))
         conn.commit()

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Annotated
 
@@ -12,12 +11,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing_extensions import TypedDict
 
-from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DB_PATH, DEFAULT_USER_ID, _draft_plan_key
+from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DEFAULT_USER_ID, _draft_plan_key
 from agent.prompts.system_prompt import SYSTEM_PROMPT
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
 from agent.state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
 from agent.redis.cache import _redis_get_json, _redis_set_json
+from agent.db.connection import get_db_conn
 from agent.tools.plan_tools import (
     _compact_context_summary,
     _get_active_plan_bundle_data,
@@ -216,7 +216,7 @@ def apply_plan(state: AgentState) -> AgentState:
         "active_plan": cache_bundle,
     }
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
         if plan_data.get("goal_type"):
@@ -233,6 +233,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 user_id, start_date, end_date, daily_calorie_target,
                 protein_g, carbs_g, fat_g, status, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 user_id,
@@ -246,7 +247,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        plan_id = cur.lastrowid
+        plan_id = cur.fetchone()[0]
         cycle_length = min(7, len(plan_data["plan_days"]))
         cur.execute(
             """
@@ -254,6 +255,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 plan_id, cycle_length_days, timezone, default_calories,
                 default_protein_g, default_carbs_g, default_fat_g, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 plan_id,
@@ -266,7 +268,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        template_id = cur.lastrowid
+        template_id = cur.fetchone()[0]
         for day_index in range(cycle_length):
             day = plan_data["plan_days"][day_index]
             workout_json = json.dumps({"label": day["workout"]})

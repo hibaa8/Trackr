@@ -46,6 +46,7 @@ CREATE TABLE IF NOT EXISTS user_preferences (
     workout_preferences TEXT,
     timezone TEXT,
     created_at TEXT NOT NULL,
+    UNIQUE (user_id),
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
@@ -70,6 +71,7 @@ CREATE TABLE IF NOT EXISTS plan_checkpoints (
     expected_weight_kg REAL NOT NULL,
     min_weight_kg REAL NOT NULL,
     max_weight_kg REAL NOT NULL,
+    UNIQUE (plan_id, checkpoint_week),
     FOREIGN KEY (plan_id) REFERENCES plans (id)
 );
 
@@ -93,6 +95,7 @@ CREATE TABLE IF NOT EXISTS plan_template_days (
     workout_json TEXT,
     calorie_delta INTEGER,
     notes TEXT,
+    UNIQUE (template_id, day_index),
     FOREIGN KEY (template_id) REFERENCES plan_templates (id)
 );
 
@@ -106,6 +109,7 @@ CREATE TABLE IF NOT EXISTS plan_overrides (
     calorie_delta INTEGER,
     reason TEXT,
     created_at TEXT NOT NULL,
+    UNIQUE (plan_id, date),
     FOREIGN KEY (plan_id) REFERENCES plans (id)
 );
 
@@ -145,6 +149,7 @@ CREATE TABLE IF NOT EXISTS health_activity (
     calories_burned INTEGER NOT NULL,
     workouts_summary TEXT,
     source TEXT NOT NULL,
+    UNIQUE (user_id, date),
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
@@ -155,6 +160,7 @@ CREATE TABLE IF NOT EXISTS checkins (
     weight_kg REAL,
     mood TEXT,
     notes TEXT,
+    UNIQUE (user_id, checkin_date),
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
@@ -166,6 +172,7 @@ CREATE TABLE IF NOT EXISTS reminders (
     status TEXT NOT NULL,
     channel TEXT NOT NULL,
     related_plan_override_id INTEGER,
+    UNIQUE (user_id, reminder_type, scheduled_at),
     FOREIGN KEY (user_id) REFERENCES users (id),
     FOREIGN KEY (related_plan_override_id) REFERENCES plan_overrides (id)
 );
@@ -210,6 +217,16 @@ CREATE TABLE IF NOT EXISTS calendar_blocks (
     status TEXT NOT NULL,
     FOREIGN KEY (user_id) REFERENCES users (id)
 );
+
+CREATE INDEX IF NOT EXISTS idx_plans_user_status ON plans (user_id, status);
+CREATE INDEX IF NOT EXISTS idx_plan_overrides_plan_date ON plan_overrides (plan_id, date);
+CREATE INDEX IF NOT EXISTS idx_plan_template_days_template_day ON plan_template_days (template_id, day_index);
+CREATE INDEX IF NOT EXISTS idx_plan_checkpoints_plan_week ON plan_checkpoints (plan_id, checkpoint_week);
+CREATE INDEX IF NOT EXISTS idx_workout_sessions_user_date ON workout_sessions (user_id, date);
+CREATE INDEX IF NOT EXISTS idx_meal_logs_user_logged_at ON meal_logs (user_id, logged_at);
+CREATE INDEX IF NOT EXISTS idx_checkins_user_date ON checkins (user_id, checkin_date);
+CREATE INDEX IF NOT EXISTS idx_health_activity_user_date ON health_activity (user_id, date);
+CREATE INDEX IF NOT EXISTS idx_reminders_user_scheduled ON reminders (user_id, scheduled_at);
 """
 
 

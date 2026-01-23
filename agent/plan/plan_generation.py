@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
-from agent.config.constants import DB_PATH
+from agent.db.connection import get_db_conn
 from agent.db import queries
 
 
@@ -212,6 +211,12 @@ def calc_targets(
     weekly_delta = pref_row[0] if pref_row else -0.5
     activity_level = pref_row[1] if pref_row else "moderate"
     goal_type = goal_override or (pref_row[2] if pref_row else "lose")
+    if goal_type == "lose":
+        weekly_delta = -abs(weekly_delta) if weekly_delta is not None else -0.5
+    elif goal_type == "gain":
+        weekly_delta = abs(weekly_delta) if weekly_delta is not None else 0.25
+    elif goal_type == "maintain":
+        weekly_delta = 0.0
 
     age = _age_from_birthdate(birthdate)
     bmr = _bmr_mifflin(weight_kg, height_cm, age, gender)
@@ -391,7 +396,7 @@ def _build_plan_data(
     goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
     requested_days = days
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?", (user_id,))
         user_row = cur.fetchone()

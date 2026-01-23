@@ -17,4 +17,5 @@ pypdf
 faiss-cpu
 langchain-text-splitters
 redis
+psycopg2-binary
 
