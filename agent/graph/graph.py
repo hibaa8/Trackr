@@ -32,6 +32,7 @@ from agent.tools.plan_tools import (
     generate_plan,
     get_current_date,
     get_current_plan_summary,
+    get_plan_day,
     get_reminders,
     get_weight_checkpoint_for_current_week,
     log_checkin,
@@ -141,6 +142,7 @@ def assistant(state: AgentState):
 
 tools = [
     get_current_plan_summary,
+    get_plan_day,
     search_web,
     generate_plan,
     shift_active_plan_end_date,

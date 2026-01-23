@@ -450,6 +450,33 @@ def get_current_plan_summary(user_id: int) -> str:
     )
 
 
+@tool("get_plan_day")
+def get_plan_day(user_id: int, date_str: Optional[str] = None) -> str:
+    """Return the planned workout for a specific date (defaults to tomorrow)."""
+    bundle = (
+        SESSION_CACHE.get(user_id, {}).get("active_plan")
+        or _redis_get_json(_draft_plan_key(user_id))
+        or _redis_get_json(f"user:{user_id}:active_plan")
+        or {}
+    )
+    if bundle and user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan or not plan_days:
+        return "No cached plan found for this user. Try again or start a new session."
+    target_date = date_str or (date.today() + timedelta(days=1)).isoformat()
+    day = next((d for d in plan_days if d.get("date") == target_date), None)
+    if not day:
+        return f"No planned workout found for {target_date}."
+    workout_plan = day.get("workout_plan") or day.get("workout") or "Workout"
+    rest_day = day.get("rest_day")
+    if rest_day is None:
+        rest_day = "rest" in workout_plan.lower()
+    workout_label = "Rest day" if rest_day else workout_plan
+    return f"{target_date}: {workout_label}"
+
+
 @tool("get_reminders")
 def get_reminders(user_id: int) -> str:
     """Return reminders for the user from cache."""
