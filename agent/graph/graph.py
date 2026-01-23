@@ -67,6 +67,10 @@ class AgentState(TypedDict):
 
 
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
     context = _load_user_context_data(user_id)
     active_plan = _load_active_plan_draft(user_id)
     workout_sessions = _load_workout_sessions_draft(user_id)

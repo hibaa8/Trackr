@@ -1396,6 +1396,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
                 parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 return False
+        if parsed < start_date:
+            return False
         return 0 <= (as_of - parsed).days <= 6
 
     def _plan_day_for_date(day_str: str) -> Optional[Dict[str, Any]]:
@@ -1426,6 +1428,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     last_7d_days = []
     for offset in range(7):
         day = as_of - timedelta(days=offset)
+        if day < start_date:
+            continue
         day_str = day.isoformat()
         plan_day = _plan_day_for_date(day_str)
         planned_rest = _is_rest_day(plan_day)

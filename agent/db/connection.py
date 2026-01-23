@@ -6,6 +6,7 @@ from contextlib import contextmanager
 from typing import Any, Iterable, Optional
 
 import psycopg2
+from psycopg2.pool import ThreadedConnectionPool
 
 
 def _adapt_query(query: str) -> str:
@@ -37,8 +38,9 @@ class CursorAdapter:
 
 
 class ConnectionAdapter:
-    def __init__(self, conn):
+    def __init__(self, conn, pool: Optional[ThreadedConnectionPool] = None):
         self._conn = conn
+        self._pool = pool
 
     def cursor(self):
         return CursorAdapter(self._conn.cursor())
@@ -50,7 +52,10 @@ class ConnectionAdapter:
         self._conn.rollback()
 
     def close(self) -> None:
-        self._conn.close()
+        if self._pool is not None:
+            self._pool.putconn(self._conn)
+        else:
+            self._conn.close()
 
     def __enter__(self):
         return self
@@ -81,8 +86,9 @@ def get_db_conn():
         raise RuntimeError(
             "Database connection string not set. Use SUPABASE_DATABASE_URL or SUPABASE_DB_HOST/USER/PASSWORD."
         )
-    conn = psycopg2.connect(dsn, sslmode="require")
-    adapter = ConnectionAdapter(conn)
+    pool = _get_pool(dsn)
+    conn = pool.getconn()
+    adapter = ConnectionAdapter(conn, pool=pool)
     try:
         yield adapter
         adapter.commit()
@@ -91,3 +97,15 @@ def get_db_conn():
         raise
     finally:
         adapter.close()
+
+
+_POOL: Optional[ThreadedConnectionPool] = None
+_POOL_DSN: Optional[str] = None
+
+
+def _get_pool(dsn: str) -> ThreadedConnectionPool:
+    global _POOL, _POOL_DSN
+    if _POOL is None or _POOL_DSN != dsn:
+        _POOL = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=dsn, sslmode="require")
+        _POOL_DSN = dsn
+    return _POOL
