@@ -11,6 +11,7 @@ import re
 import sqlite3
 import ssl
 import time
+import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -40,6 +41,7 @@ load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AISTUDIO_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 if not YOUTUBE_API_KEY:
@@ -176,6 +178,68 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _extract_ingredients_from_image(image_bytes: bytes) -> List[str]:
+    model = _get_gemini_model()
+    prompt = (
+        "Identify the ingredients in the photo and return JSON only with this schema: "
+        "{\"ingredients\":[\"string\", ...]}. No markdown."
+    )
+    image_obj = Image.open(io.BytesIO(image_bytes))
+    response = model.generate_content(
+        [prompt, image_obj],
+        generation_config={"temperature": 0.1},
+    )
+    content = getattr(response, "text", "") or ""
+    payload = _safe_parse_json(content)
+    ingredients = payload.get("ingredients", []) if isinstance(payload, dict) else []
+    return [item.strip() for item in ingredients if isinstance(item, str) and item.strip()]
+
+
+def _tavily_search(query: str, max_results: int = 6) -> List[Dict[str, Any]]:
+    """Consolidated Tavily search with images."""
+    if not TAVILY_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing TAVILY_API_KEY")
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max(1, min(max_results, 10)),
+        "include_images": True,
+    }
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=data,
+        headers={"Content-Type": "application/json", "User-Agent": "ai-trainer-backend"},
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=15, context=ssl_context) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    return result.get("results", []) or []
+
+
+def _extract_og_image(url: str) -> Optional[str]:
+    try:
+        request = urllib.request.Request(url, headers={"User-Agent": "ai-trainer-backend"})
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=6, context=ssl_context) as response:
+            html = response.read(200_000).decode("utf-8", errors="ignore")
+        match = re.search(
+            r'property=["\']og:image["\']\s*content=["\']([^"\']+)["\']',
+            html,
+            flags=re.IGNORECASE,
+        )
+        if not match:
+            match = re.search(
+                r'name=["\']twitter:image["\']\s*content=["\']([^"\']+)["\']',
+                html,
+                flags=re.IGNORECASE,
+            )
+        return match.group(1) if match else None
+    except Exception:
+        return None
+
+
 def _store_meal_log(payload: FoodLogRequest) -> None:
     logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
     description = payload.food_name
@@ -279,6 +343,68 @@ class MealLogItem(BaseModel):
 class DailyMealLogsResponse(BaseModel):
     date: str
     meals: List[MealLogItem]
+
+
+class RecipeSuggestRequest(BaseModel):
+    user_id: int = 1
+    ingredients: str = ""
+    cuisine: Optional[str] = None
+    flavor: Optional[str] = None
+    dietary: List[str] = []
+    image_base64: Optional[str] = None
+
+
+class RecipeSuggestion(BaseModel):
+    id: str
+    name: str
+    summary: str
+    calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    ingredients: List[str]
+    steps: List[str]
+    tags: List[str] = []
+
+
+class RecipeSuggestResponse(BaseModel):
+    recipes: List[RecipeSuggestion]
+    detected_ingredients: List[str] = []
+
+
+class RecipeSearchRequest(BaseModel):
+    query: str
+    ingredients: Optional[str] = None
+    cuisine: Optional[str] = None
+    flavor: Optional[str] = None
+    dietary: List[str] = []
+    max_results: int = 6
+
+
+class RecipeSearchResult(BaseModel):
+    id: str
+    title: str
+    url: str
+    summary: str
+    image_url: Optional[str] = None
+    source: Optional[str] = None
+
+
+class RecipeSearchResponse(BaseModel):
+    results: List[RecipeSearchResult]
+    detected_ingredients: List[str] = []
+
+
+
+
+class RecipeImageRequest(BaseModel):
+    prompt: str
+    width: int = 1024
+    height: int = 768
+
+
+class RecipeImageResponse(BaseModel):
+    image_url: str
 
 # Simple in-memory cache
 _CACHE: Dict[str, Dict] = {}
@@ -726,6 +852,177 @@ async def scan_food(file: UploadFile = File(...)):
     if not payload.get("total_calories"):
         payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items)
     return FoodScanResponse(**payload)
+
+
+@app.post("/recipes/suggest", response_model=RecipeSuggestResponse)
+def suggest_recipes(payload: RecipeSuggestRequest):
+    ingredients_text = (payload.ingredients or "").strip()
+    if not ingredients_text and not payload.image_base64:
+        raise HTTPException(status_code=400, detail="Provide ingredients text or an image.")
+
+    detected_ingredients: List[str] = []
+    if payload.image_base64:
+        try:
+            image_bytes = base64.b64decode(payload.image_base64)
+            detected_ingredients = _extract_ingredients_from_image(image_bytes)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}") from exc
+
+    typed_ingredients = [
+        item.strip()
+        for item in re.split(r"[,\n;]", ingredients_text)
+        if item.strip()
+    ]
+    combined = list(dict.fromkeys(typed_ingredients + detected_ingredients))
+
+    plan_context: Dict[str, Any] = {}
+    try:
+        from tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(payload.user_id, allow_db_fallback=True)
+        plan_row = bundle.get("plan")
+        if isinstance(plan_row, tuple) and len(plan_row) >= 8:
+            plan_context["daily_calorie_target"] = plan_row[3]
+            plan_context["protein_g"] = plan_row[4]
+            plan_context["carbs_g"] = plan_row[5]
+            plan_context["fat_g"] = plan_row[6]
+        today_key = date.today().isoformat()
+        plan_day = next((d for d in bundle.get("plan_days", []) if d.get("date") == today_key), None)
+        if plan_day:
+            plan_context["workout_plan"] = plan_day.get("workout_plan")
+            plan_context["rest_day"] = plan_day.get("rest_day")
+            plan_context["calorie_target"] = plan_day.get("calorie_target")
+    except Exception:
+        plan_context = {}
+
+    calorie_target = plan_context.get("calorie_target") or plan_context.get("daily_calorie_target") or 2000
+    per_meal_target = int(max(350, min(900, calorie_target * 0.3)))
+    workout_label = plan_context.get("workout_plan") or "Unknown"
+
+    prompt = (
+        "You are a nutrition coach and recipe creator. Generate 3 healthy recipes. "
+        "Return strictly valid JSON with this schema:\n"
+        "{"
+        "\"recipes\":[{"
+        "\"id\":string,"
+        "\"name\":string,"
+        "\"summary\":string,"
+        "\"calories\":number,"
+        "\"protein_g\":number,"
+        "\"carbs_g\":number,"
+        "\"fat_g\":number,"
+        "\"ingredients\":[string],"
+        "\"steps\":[string],"
+        "\"tags\":[string]"
+        "}],"
+        "\"detected_ingredients\":[string]"
+        "}\n"
+        "Use the provided ingredients if possible and allow pantry staples. "
+        "Keep each recipe around "
+        f"{per_meal_target} calories. "
+        f"Workout plan today: {workout_label}. "
+        f"Cuisine preference: {payload.cuisine or 'Any'}. "
+        f"Flavor preference: {payload.flavor or 'Any'}. "
+        f"Dietary preferences: {', '.join(payload.dietary) if payload.dietary else 'None'}. "
+        f"Available ingredients: {', '.join(combined) if combined else 'None provided'}."
+    )
+
+    model = _get_gemini_model()
+    response = model.generate_content(
+        [prompt],
+        generation_config={"temperature": 0.3},
+    )
+    content = getattr(response, "text", "") or ""
+    payload_json = _safe_parse_json(content)
+    recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
+    recipes = []
+    for item in recipes_raw:
+        if not isinstance(item, dict):
+            continue
+        item["id"] = item.get("id") or str(uuid.uuid4())
+        recipes.append(item)
+
+    return RecipeSuggestResponse(
+        recipes=[RecipeSuggestion(**item) for item in recipes],
+        detected_ingredients=payload_json.get("detected_ingredients", []) or detected_ingredients,
+    )
+
+
+@app.post("/recipes/search", response_model=RecipeSearchResponse)
+def search_recipes(payload: RecipeSearchRequest):
+    trimmed = payload.query.strip()
+    if not trimmed:
+        raise HTTPException(status_code=400, detail="Query must not be empty")
+
+    filters = []
+    if payload.ingredients:
+        filters.append(f"ingredients: {payload.ingredients}")
+    if payload.cuisine:
+        filters.append(f"cuisine: {payload.cuisine}")
+    if payload.flavor:
+        filters.append(f"flavor: {payload.flavor}")
+    if payload.dietary:
+        filters.append(f"dietary: {', '.join(payload.dietary)}")
+
+    full_query = trimmed
+    if filters:
+        full_query = f"{trimmed} ({'; '.join(filters)})"
+    full_query = f"healthy recipe {full_query}"
+
+    try:
+        results = _tavily_search(full_query, payload.max_results)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Tavily search failed: {exc}") from exc
+
+    parsed = []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("url") or ""
+        title = item.get("title") or "Recipe"
+        summary = item.get("content") or item.get("snippet") or ""
+        image_url = item.get("image")
+        if not image_url:
+            images = item.get("images") or []
+            if isinstance(images, list) and images:
+                image_url = images[0]
+        source = None
+        if url:
+            try:
+                source = urllib.parse.urlparse(url).netloc.replace("www.", "")
+            except Exception:
+                source = None
+        parsed.append(
+            RecipeSearchResult(
+                id=str(uuid.uuid4()),
+                title=title,
+                url=url,
+                summary=summary.strip(),
+                image_url=image_url,
+                source=source,
+            )
+        )
+
+    return RecipeSearchResponse(results=parsed, detected_ingredients=[])
+
+
+@app.post("/recipes/image", response_model=RecipeImageResponse)
+def generate_recipe_image(payload: RecipeImageRequest):
+    """
+    Generate a recipe image using Unsplash as a fallback.
+    Gemini's Imagen API requires separate setup, so we use a reliable image source.
+    """
+    try:
+        # Use Unsplash as a reliable source for food photography
+        query = payload.prompt.replace(" food photography", "").strip()
+        encoded = urllib.parse.quote(query)
+        image_url = f"https://source.unsplash.com/800x600/?{encoded},food"
+        return RecipeImageResponse(image_url=image_url)
+    except Exception as exc:
+        # Fallback to a generic food image
+        return RecipeImageResponse(image_url="https://source.unsplash.com/800x600/?healthy,food")
 
 
 @app.post("/food/logs")

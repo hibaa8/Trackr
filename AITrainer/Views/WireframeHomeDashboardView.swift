@@ -5,7 +5,7 @@ struct WireframeHomeDashboardView: View {
     @State private var showMealLogging = false
     @State private var showDailyMeals = false
     @State private var showGymClasses = false
-    @State private var showFoodDeals = false
+    @State private var showRecipes = false
     @State private var showWorkoutVideos = false
     @State private var showCommunity = false
     
@@ -71,8 +71,8 @@ struct WireframeHomeDashboardView: View {
             .sheet(isPresented: $showGymClasses) {
                 GymClassesView()
             }
-            .sheet(isPresented: $showFoodDeals) {
-                FoodDealsView()
+            .sheet(isPresented: $showRecipes) {
+                RecipeFinderView()
             }
             .sheet(isPresented: $showWorkoutVideos) {
                 WorkoutVideosView()
@@ -388,13 +388,13 @@ struct WireframeHomeDashboardView: View {
                 }
 
                 EnhancedExploreCard(
-                    icon: "🍎",
+                    icon: "🍽️",
                     iconColor: .green,
-                    title: "Food Deals",
-                    subtitle: "Save on healthy meals",
-                    badge: "20% off"
+                    title: "Recipes",
+                    subtitle: "AI & online recipes",
+                    badge: "New"
                 ) {
-                    showFoodDeals = true
+                    showRecipes = true
                 }
 
                 EnhancedExploreCard(
@@ -402,7 +402,7 @@ struct WireframeHomeDashboardView: View {
                     iconColor: .purple,
                     title: "Workout Videos",
                     subtitle: "Guided exercises",
-                    badge: "New"
+                    badge: "Popular"
                 ) {
                     showWorkoutVideos = true
                 }

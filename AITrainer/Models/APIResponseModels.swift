@@ -53,6 +53,38 @@ struct DailyMealLogsResponse: Codable {
     let meals: [MealLogItemResponse]
 }
 
+struct RecipeSuggestionItem: Codable, Identifiable {
+    let id: String
+    let name: String
+    let summary: String
+    let calories: Int
+    let protein_g: Double
+    let carbs_g: Double
+    let fat_g: Double
+    let ingredients: [String]
+    let steps: [String]
+    let tags: [String]
+}
+
+struct RecipeSuggestionResponse: Codable {
+    let recipes: [RecipeSuggestionItem]
+    let detected_ingredients: [String]
+}
+
+struct RecipeSearchResultItem: Codable, Identifiable {
+    let id: String
+    let title: String
+    let url: String
+    let summary: String
+    let image_url: String?
+    let source: String?
+}
+
+struct RecipeSearchResponse: Codable {
+    let results: [RecipeSearchResultItem]
+    let detected_ingredients: [String]?
+}
+
 // This file intentionally left minimal to avoid conflicts.
 // Most API responses use the same models as defined in:
 // - FoodLog.swift
