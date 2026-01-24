@@ -7,6 +7,7 @@
 
 import SwiftUI
 import CoreLocation
+import MapKit
 import UIKit
 
 struct GymClassesView: View {
@@ -61,6 +62,9 @@ struct GymClassesView: View {
                 locationManager.searchLocation(address: location)
                 showLocationSearch = false
             }
+        }
+        .onAppear {
+            locationManager.getCurrentLocation()
         }
         .onChange(of: locationManager.location) { location in
             if let location = location {
@@ -157,12 +161,13 @@ struct GymClassesView: View {
                     .background(Color.backgroundGradientStart)
                     .cornerRadius(12)
 
-                    // Current location button
+                    // Search / current location button
                     Button(action: {
-                        locationManager.getCurrentLocation()
+                        searchForGyms()
                     }) {
-                        Image(systemName: "location.circle.fill")
-                            .font(.system(size: 24))
+                        let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+                        Image(systemName: trimmed.isEmpty ? "location.circle.fill" : "paperplane.fill")
+                            .font(.system(size: 22, weight: .semibold))
                             .foregroundColor(.fitnessGradientStart)
                     }
                 }
@@ -215,6 +220,14 @@ struct GymClassesView: View {
                     .font(.bodyMedium)
                     .foregroundColor(.textSecondary)
                     .multilineTextAlignment(.center)
+            }
+
+            if let errorMessage = gymFinder.errorMessage ?? locationManager.errorMessage {
+                Text(errorMessage)
+                    .font(.captionMedium)
+                    .foregroundColor(.red)
+                    .multilineTextAlignment(.center)
+                    .padding(.horizontal, 12)
             }
 
             ModernPrimaryButton(title: "Allow Location Access") {
@@ -393,11 +406,11 @@ struct GymCard: View {
     }
 
     private func openInMaps() {
-        let urlString = "http://maps.apple.com/?q=\(gym.name)&ll=\(gym.latitude),\(gym.longitude)"
-        if let encoded = urlString.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
-           let url = URL(string: encoded) {
-            UIApplication.shared.open(url)
-        }
+        let coordinate = CLLocationCoordinate2D(latitude: gym.latitude, longitude: gym.longitude)
+        let placemark = MKPlacemark(coordinate: coordinate)
+        let item = MKMapItem(placemark: placemark)
+        item.name = gym.name
+        item.openInMaps()
     }
 }
 

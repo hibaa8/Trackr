@@ -10,6 +10,49 @@
 
 import Foundation
 
+struct FoodScanItemResponse: Codable {
+    let name: String
+    let amount: String
+    let calories: Int
+    let protein_g: Double
+    let carbs_g: Double
+    let fat_g: Double
+    let confidence: Double
+}
+
+struct FoodScanResponse: Codable {
+    let food_name: String
+    let total_calories: Int
+    let protein_g: Double
+    let carbs_g: Double
+    let fat_g: Double
+    let confidence: Double
+    let items: [FoodScanItemResponse]
+}
+
+struct DailyIntakeResponse: Codable {
+    let date: String
+    let total_calories: Int
+    let total_protein_g: Double
+    let total_carbs_g: Double
+    let total_fat_g: Double
+    let meals_count: Int
+}
+
+struct MealLogItemResponse: Codable {
+    let name: String
+    let calories: Int
+    let protein_g: Double
+    let carbs_g: Double
+    let fat_g: Double
+    let logged_at: String
+}
+
+struct DailyMealLogsResponse: Codable {
+    let date: String
+    let meals: [MealLogItemResponse]
+}
+
 // This file intentionally left minimal to avoid conflicts.
 // Most API responses use the same models as defined in:
 // - FoodLog.swift

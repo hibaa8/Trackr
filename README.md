@@ -16,7 +16,9 @@ Unified iOS app + Python backend for workout videos, local gyms, and an AI coach
 Create a `.env` in the repo root (or `agent/.env`). See `env.example`.
 
 Required:
-- `OPENAI_API_KEY`
+- `OPENAI_API_KEY` (AI coach)
+- `GEMINI_API_KEY` (meal photo scan)
+- `GEMINI_MODEL` (optional override; auto-detected if empty)
 - `YOUTUBE_API_KEY`
 - `GOOGLE_PLACES_API_KEY`
 

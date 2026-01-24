@@ -1,5 +1,6 @@
 import SwiftUI
 import PhotosUI
+import UIKit
 
 struct MealLoggingView: View {
     @EnvironmentObject var appState: AppState
@@ -10,6 +11,10 @@ struct MealLoggingView: View {
     @State private var mealName = ""
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var showPhotoPicker = false
+    @State private var showCameraCapture = false
+    @State private var isAnalyzing = false
+    @State private var errorMessage: String?
+    @State private var scanResponse: FoodScanResponse?
     
     var body: some View {
         NavigationView {
@@ -31,8 +36,23 @@ struct MealLoggingView: View {
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
         .onChange(of: selectedPhoto) { newPhoto in
-            if newPhoto != nil {
-                simulateCapture()
+            if let newPhoto = newPhoto {
+                Task {
+                    if let data = try? await newPhoto.loadTransferable(type: Data.self) {
+                        analyzeImageData(data)
+                    } else {
+                        errorMessage = "Could not load photo data."
+                    }
+                }
+            }
+        }
+        .sheet(isPresented: $showCameraCapture) {
+            CameraImagePicker { image in
+                if let data = image.jpegData(compressionQuality: 0.9) {
+                    analyzeImageData(data)
+                } else {
+                    errorMessage = "Could not process captured photo."
+                }
             }
         }
     }
@@ -55,7 +75,7 @@ struct MealLoggingView: View {
 
                 // Capture + Photo Library (inside the dark area)
                 HStack(spacing: 32) {
-                    Button(action: simulateCapture) {
+                    Button(action: openCameraOrLibrary) {
                         ZStack {
                             Circle()
                                 .stroke(Color.white, lineWidth: 4)
@@ -87,12 +107,33 @@ struct MealLoggingView: View {
                 }
                 .padding(.bottom, 24)
             }
+            .overlay(
+                Group {
+                    if isAnalyzing {
+                        ZStack {
+                            Color.black.opacity(0.35)
+                                .ignoresSafeArea()
+                            VStack(spacing: 12) {
+                                ProgressView()
+                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                                    .scaleEffect(1.2)
+                                Text("Analyzing food...")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.white)
+                            }
+                            .padding(20)
+                            .background(Color.black.opacity(0.7))
+                            .cornerRadius(16)
+                        }
+                    }
+                }
+            )
             
             // Instructions
             VStack(spacing: 8) {
                 Text("AI Food Detection")
                     .font(.system(size: 16, weight: .semibold))
-                Text("Position your food in the frame and tap to capture")
+                Text(isAnalyzing ? "Analyzing your meal..." : "Position your food in the frame and tap to capture")
                     .font(.system(size: 14))
                     .foregroundColor(.secondary)
                     .multilineTextAlignment(.center)
@@ -104,16 +145,37 @@ struct MealLoggingView: View {
     var reviewView: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 20) {
+                if let errorMessage = errorMessage {
+                    Text(errorMessage)
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.red)
+                        .padding(.horizontal)
+                }
                 // Detected foods header
                 Text("Detected Foods")
                     .font(.system(size: 22, weight: .bold))
                     .padding(.horizontal)
                     .padding(.top)
                 
-                // Food items
-                ForEach(detectedFoods) { food in
-                    FoodItemCard(food: food)
+                // Food items (editable)
+                ForEach($detectedFoods) { $food in
+                    EditableFoodItemCard(food: $food, onRemove: {
+                        removeFoodItem(id: food.id)
+                    })
                 }
+                .padding(.horizontal)
+
+                Button(action: addFoodItem) {
+                    HStack(spacing: 8) {
+                        Image(systemName: "plus.circle.fill")
+                            .foregroundColor(.blue)
+                        Text("Add item")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
+                    .padding(.vertical, 8)
+                }
+                .frame(maxWidth: .infinity)
                 .padding(.horizontal)
                 
                 // Total calories
@@ -178,15 +240,41 @@ struct MealLoggingView: View {
         detectedFoods.reduce(0) { $0 + $1.fats }
     }
     
-    func simulateCapture() {
-        // Simulate AI detection
-        detectedFoods = [
-            DetectedFood(name: "Grilled Chicken Breast", portion: "6 oz", calories: 280, protein: 52, carbs: 0, fats: 6),
-            DetectedFood(name: "Brown Rice", portion: "1 cup", calories: 218, protein: 5, carbs: 46, fats: 2),
-            DetectedFood(name: "Steamed Broccoli", portion: "1 cup", calories: 55, protein: 4, carbs: 11, fats: 1)
-        ]
-        withAnimation {
-            currentStep = 1
+    func openCameraOrLibrary() {
+        errorMessage = nil
+        if UIImagePickerController.isSourceTypeAvailable(.camera) {
+            showCameraCapture = true
+        } else {
+            showPhotoPicker = true
+        }
+    }
+
+    func analyzeImageData(_ data: Data) {
+        isAnalyzing = true
+        errorMessage = nil
+        FoodScanService.shared.scanFood(imageData: data) { result in
+            DispatchQueue.main.async {
+                isAnalyzing = false
+                switch result {
+                case .success(let response):
+                    scanResponse = response
+                    detectedFoods = response.items.map {
+                        DetectedFood(
+                            name: $0.name,
+                            portion: $0.amount,
+                            calories: $0.calories,
+                            protein: Int($0.protein_g),
+                            carbs: Int($0.carbs_g),
+                            fats: Int($0.fat_g)
+                        )
+                    }
+                    withAnimation {
+                        currentStep = 1
+                    }
+                case .failure:
+                    errorMessage = "Failed to analyze this photo. Please try another image."
+                }
+            }
         }
     }
     
@@ -200,52 +288,169 @@ struct MealLoggingView: View {
             timestamp: Date()
         )
         appState.logMeal(meal)
+        let payload = buildScanPayload()
+        FoodScanService.shared.logMeal(payload, nameOverride: mealName.isEmpty ? nil : mealName) { _ in
+            DispatchQueue.main.async {
+                appState.refreshDailyData(for: appState.selectedDate)
+            }
+        }
         dismiss()
+    }
+
+    private func addFoodItem() {
+        detectedFoods.append(
+            DetectedFood(
+                name: "New item",
+                portion: "1 serving",
+                calories: 0,
+                protein: 0,
+                carbs: 0,
+                fats: 0
+            )
+        )
+    }
+
+    private func removeFoodItem(id: UUID) {
+        detectedFoods.removeAll { $0.id == id }
+    }
+
+    private func buildScanPayload() -> FoodScanResponse {
+        let foodName = mealName.isEmpty ? "Meal" : mealName
+        let items = detectedFoods.map {
+            FoodScanItemResponse(
+                name: $0.name,
+                amount: $0.portion,
+                calories: $0.calories,
+                protein_g: Double($0.protein),
+                carbs_g: Double($0.carbs),
+                fat_g: Double($0.fats),
+                confidence: 0.7
+            )
+        }
+        return FoodScanResponse(
+            food_name: foodName,
+            total_calories: totalCalories,
+            protein_g: Double(totalProtein),
+            carbs_g: Double(totalCarbs),
+            fat_g: Double(totalFats),
+            confidence: 0.7,
+            items: items
+        )
     }
 }
 
-struct FoodItemCard: View {
-    let food: DetectedFood
-    
+struct CameraImagePicker: UIViewControllerRepresentable {
+    let onImagePicked: (UIImage) -> Void
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = .camera
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(onImagePicked: onImagePicked)
+    }
+
+    class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        let onImagePicked: (UIImage) -> Void
+
+        init(onImagePicked: @escaping (UIImage) -> Void) {
+            self.onImagePicked = onImagePicked
+        }
+
+        func imagePickerController(
+            _ picker: UIImagePickerController,
+            didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]
+        ) {
+            if let image = info[.originalImage] as? UIImage {
+                onImagePicked(image)
+            }
+            picker.dismiss(animated: true)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
+    }
+}
+
+struct EditableFoodItemCard: View {
+    @Binding var food: DetectedFood
+    let onRemove: () -> Void
+
     var body: some View {
-        HStack(spacing: 12) {
-            // Food icon
-            Circle()
-                .fill(Color.orange.opacity(0.2))
-                .frame(width: 50, height: 50)
-                .overlay(
-                    Text("🍽️")
-                        .font(.system(size: 24))
-                )
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text(food.name)
-                    .font(.system(size: 16, weight: .semibold))
-                Text(food.portion)
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-                HStack(spacing: 8) {
-                    Text("\(food.calories) cal")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.blue)
-                    Text("P: \(food.protein)g")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Text("C: \(food.carbs)g")
-                        .font(.system(size: 12))
-                        .foregroundColor(.secondary)
-                    Text("F: \(food.fats)g")
-                        .font(.system(size: 12))
+        VStack(spacing: 12) {
+            HStack(spacing: 12) {
+                // Food icon
+                Circle()
+                    .fill(Color.orange.opacity(0.2))
+                    .frame(width: 50, height: 50)
+                    .overlay(
+                        Text("🍽️")
+                            .font(.system(size: 24))
+                    )
+
+                VStack(alignment: .leading, spacing: 6) {
+                    TextField("Food name", text: $food.name)
+                        .font(.system(size: 16, weight: .semibold))
+                    TextField("Amount", text: $food.portion)
+                        .font(.system(size: 14))
                         .foregroundColor(.secondary)
                 }
+
+                Spacer()
+
+                Button(action: onRemove) {
+                    Image(systemName: "trash")
+                        .foregroundColor(.red)
+                }
+                .accessibilityLabel("Remove item")
             }
-            
-            Spacer()
+
+            HStack(spacing: 10) {
+                NutrientField(label: "Cal", value: $food.calories)
+                NutrientField(label: "P", value: $food.protein)
+                NutrientField(label: "C", value: $food.carbs)
+                NutrientField(label: "F", value: $food.fats)
+            }
         }
         .padding()
         .background(Color.white)
         .cornerRadius(12)
         .shadow(color: .black.opacity(0.05), radius: 4)
+    }
+}
+
+struct NutrientField: View {
+    let label: String
+    @Binding var value: Int
+
+    var body: some View {
+        VStack(spacing: 4) {
+            Text(label)
+                .font(.system(size: 12))
+                .foregroundColor(.secondary)
+            TextField("0", text: bindingString)
+                .keyboardType(.numberPad)
+                .multilineTextAlignment(.center)
+                .frame(width: 60)
+                .padding(.vertical, 6)
+                .background(Color.gray.opacity(0.08))
+                .cornerRadius(8)
+        }
+    }
+
+    private var bindingString: Binding<String> {
+        Binding(
+            get: { String(value) },
+            set: { newValue in
+                value = Int(newValue.filter { $0.isNumber }) ?? 0
+            }
+        )
     }
 }
 

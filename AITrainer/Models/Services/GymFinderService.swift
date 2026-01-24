@@ -53,15 +53,14 @@ class GymFinderService: ObservableObject {
                     }
                 },
                 receiveValue: { [weak self] response in
+                    let results = response.results ?? []
                     if response.status == "OK" {
-                        if let baseURL = self?.baseURL {
-                            self?.nearbyGyms = response.results.map { $0.toGym(baseURL: baseURL) }
-                        } else {
-                            self?.nearbyGyms = response.results.map { $0.toGym(baseURL: "http://localhost:8000") }
-                        }
+                        let baseURL = self?.baseURL ?? "http://localhost:8000"
+                        self?.nearbyGyms = results.map { $0.toGym(baseURL: baseURL) }
                     } else {
                         let message = response.errorMessage ?? "No gyms found in this area"
                         self?.errorMessage = message
+                        self?.nearbyGyms = []
                     }
                 }
             )
@@ -103,15 +102,14 @@ class GymFinderService: ObservableObject {
                     }
                 },
                 receiveValue: { [weak self] response in
+                    let results = response.results ?? []
                     if response.status == "OK" {
-                        if let baseURL = self?.baseURL {
-                            self?.nearbyGyms = response.results.map { $0.toGym(baseURL: baseURL) }
-                        } else {
-                            self?.nearbyGyms = response.results.map { $0.toGym(baseURL: "http://localhost:8000") }
-                        }
+                        let baseURL = self?.baseURL ?? "http://localhost:8000"
+                        self?.nearbyGyms = results.map { $0.toGym(baseURL: baseURL) }
                     } else {
                         let message = response.errorMessage ?? "No gyms found matching your search"
                         self?.errorMessage = message
+                        self?.nearbyGyms = []
                     }
                 }
             )

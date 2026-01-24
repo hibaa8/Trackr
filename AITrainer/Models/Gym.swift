@@ -164,7 +164,7 @@ enum ClassType: String, CaseIterable, Codable {
 // MARK: - Google Places API Response Models
 
 struct GymSearchResponse: Codable {
-    let results: [GymResult]
+    let results: [GymResult]?
     let status: String
     let nextPageToken: String?
     let errorMessage: String?

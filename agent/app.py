@@ -1,34 +1,47 @@
+from __future__ import annotations
+
 """
 AI Trainer unified backend (videos, gyms, coach).
 """
 
+import base64
+import io
 import os
-import sys
+import re
+import sqlite3
+import ssl
 import time
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+import certifi
 import json
 import urllib.parse
 import urllib.request
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from googleapiclient.discovery import build
+import google.generativeai as genai
 from langchain_core.messages import HumanMessage, ToolMessage
+from PIL import Image
 from pydantic import BaseModel
+
+from config.constants import DB_PATH
 
 # Configuration
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
 _ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AISTUDIO_API_KEY", "")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 if not YOUTUBE_API_KEY:
     raise RuntimeError("Missing YOUTUBE_API_KEY env var")
 
@@ -69,7 +82,7 @@ CATEGORY_VIDEOS = {
     ],
 }
 
-app = FastAPI(title="AI Trainer YouTube API", version="1.0.0")
+app = FastAPI(title="AI Trainer Backend", version="1.0.0")
 
 # Allow CORS for iOS app
 app.add_middleware(
@@ -88,19 +101,50 @@ _AGENT_PRELOADED: set[str] = set()
 _AGENT_PRELOAD_FN = None
 _AGENT_RAG_INIT = None
 _PENDING_PLANS: Dict[str, Dict[str, Any]] = {}
+_GEMINI_MODEL = None
 
 
 def _get_agent_graph():
     global _AGENT_GRAPH, _AGENT_PRELOAD_FN, _AGENT_RAG_INIT
     if _AGENT_GRAPH is None:
-        from agent.graph.graph import build_graph, _preload_session_cache
-        from agent.rag.rag import _build_rag_index
+        from graph.graph import build_graph, _preload_session_cache
+        from rag.rag import _build_rag_index
 
         _AGENT_GRAPH = build_graph()
         _AGENT_PRELOAD_FN = _preload_session_cache
         _AGENT_RAG_INIT = _build_rag_index
         _AGENT_RAG_INIT()
     return _AGENT_GRAPH, _AGENT_PRELOAD_FN
+
+
+def _resolve_gemini_model_name() -> str:
+    if GEMINI_MODEL:
+        return GEMINI_MODEL
+    try:
+        models = [
+            m for m in genai.list_models()
+            if "generateContent" in getattr(m, "supported_generation_methods", [])
+        ]
+    except Exception:
+        models = []
+    for model in models:
+        name = getattr(model, "name", "")
+        if any(key in name for key in ("gemini-1.5-flash", "gemini-1.5-pro")):
+            return name
+    if models:
+        return getattr(models[0], "name", "gemini-1.5-flash")
+    return "gemini-1.5-flash"
+
+
+def _get_gemini_model():
+    global _GEMINI_MODEL
+    if _GEMINI_MODEL is None:
+        if not GEMINI_API_KEY:
+            raise RuntimeError("Missing GEMINI_API_KEY env var")
+        genai.configure(api_key=GEMINI_API_KEY)
+        model_name = _resolve_gemini_model_name()
+        _GEMINI_MODEL = genai.GenerativeModel(model_name)
+    return _GEMINI_MODEL
 
 
 def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
@@ -119,6 +163,45 @@ def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
                 plan_text = message.content
             break
     return {"plan_text": plan_text, "proposed_plan": proposed_plan}
+
+
+def _safe_parse_json(text: str) -> Dict[str, Any]:
+    if not text:
+        return {}
+    match = re.search(r"\{.*\}", text, flags=re.DOTALL)
+    payload = match.group(0) if match else text
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return {}
+
+
+def _store_meal_log(payload: FoodLogRequest) -> None:
+    logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
+    description = payload.food_name
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO meal_logs (
+                user_id, logged_at, photo_path, description, calories,
+                protein_g, carbs_g, fat_g, confidence, confirmed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.user_id,
+                logged_at,
+                None,
+                description,
+                payload.total_calories,
+                int(payload.protein_g),
+                int(payload.carbs_g),
+                int(payload.fat_g),
+                max((item.confidence for item in payload.items), default=0.6),
+                1,
+            ),
+        )
+        conn.commit()
 
 
 class CoachChatRequest(BaseModel):
@@ -142,6 +225,60 @@ class CoachFeedbackRequest(BaseModel):
 class CoachFeedbackResponse(BaseModel):
     reply: str
     thread_id: str
+
+
+class FoodScanItem(BaseModel):
+    name: str
+    amount: str
+    calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    confidence: float
+
+
+class FoodScanResponse(BaseModel):
+    food_name: str
+    total_calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    confidence: float
+    items: List[FoodScanItem]
+
+
+class FoodLogRequest(BaseModel):
+    user_id: int = 1
+    food_name: str
+    total_calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    items: List[FoodScanItem]
+    logged_at: Optional[str] = None
+
+
+class DailyIntakeResponse(BaseModel):
+    date: str
+    total_calories: int
+    total_protein_g: float
+    total_carbs_g: float
+    total_fat_g: float
+    meals_count: int
+
+
+class MealLogItem(BaseModel):
+    name: str
+    calories: int
+    protein_g: float
+    carbs_g: float
+    fat_g: float
+    logged_at: str
+
+
+class DailyMealLogsResponse(BaseModel):
+    date: str
+    meals: List[MealLogItem]
 
 # Simple in-memory cache
 _CACHE: Dict[str, Dict] = {}
@@ -315,7 +452,8 @@ def _places_request(path: str, params: Dict[str, str]) -> Dict:
     url = f"https://maps.googleapis.com/maps/api/place/{path}/json?{query}"
     request = urllib.request.Request(url, headers={"User-Agent": "ai-trainer-backend"})
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=10, context=ssl_context) as response:
             data = response.read()
         return json.loads(data.decode("utf-8"))
     except Exception as e:
@@ -470,7 +608,8 @@ def get_gym_photo(
     request = urllib.request.Request(url, headers={"User-Agent": "ai-trainer-backend"})
 
     try:
-        with urllib.request.urlopen(request, timeout=10) as response:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=10, context=ssl_context) as response:
             data = response.read()
             content_type = response.headers.get("Content-Type", "image/jpeg")
         return Response(content=data, media_type=content_type)
@@ -539,6 +678,124 @@ def coach_feedback(payload: CoachFeedbackRequest):
         raise HTTPException(status_code=500, detail=f"Coach feedback error: {exc}") from exc
     reply = state["messages"][-1].content if state.get("messages") else ""
     return CoachFeedbackResponse(reply=reply, thread_id=payload.thread_id)
+
+
+@app.post("/food/scan", response_model=FoodScanResponse)
+async def scan_food(file: UploadFile = File(...)):
+    """Analyze a meal photo and return detected foods and macros."""
+    if file is None:
+        raise HTTPException(status_code=400, detail="Missing image file")
+    image = await file.read()
+    model = _get_gemini_model()
+    encoded = base64.b64encode(image).decode("utf-8")
+    prompt = (
+        "You are a nutrition assistant. Analyze the meal photo and return JSON only. "
+        "Include a short food_name, overall totals, and line items with amounts. "
+        "Use this schema:\n"
+        "{"
+        "\"food_name\": string,"
+        "\"total_calories\": number,"
+        "\"protein_g\": number,"
+        "\"carbs_g\": number,"
+        "\"fat_g\": number,"
+        "\"confidence\": number,"
+        "\"items\": ["
+        "{"
+        "\"name\": string,"
+        "\"amount\": string,"
+        "\"calories\": number,"
+        "\"protein_g\": number,"
+        "\"carbs_g\": number,"
+        "\"fat_g\": number,"
+        "\"confidence\": number"
+        "}"
+        "]"
+        "}"
+    )
+    prompt = "Return strictly valid JSON. No markdown. " + prompt
+    image_obj = Image.open(io.BytesIO(image))
+    response = model.generate_content(
+        [prompt, image_obj],
+        generation_config={"temperature": 0.2},
+    )
+    content = getattr(response, "text", "") or ""
+    payload = _safe_parse_json(content)
+    if not payload:
+        raise HTTPException(status_code=502, detail="Failed to parse AI response")
+    items = payload.get("items", []) or []
+    if not payload.get("total_calories"):
+        payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items)
+    return FoodScanResponse(**payload)
+
+
+@app.post("/food/logs")
+def log_food(payload: FoodLogRequest):
+    """Persist a scanned meal log."""
+    _store_meal_log(payload)
+    return {"status": "ok"}
+
+
+@app.get("/food/intake", response_model=DailyIntakeResponse)
+def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
+    """Return daily calorie intake totals for a user."""
+    target_day = day or date.today().isoformat()
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT calories, protein_g, carbs_g, fat_g
+            FROM meal_logs
+            WHERE user_id = ? AND logged_at BETWEEN ? AND ?
+            """,
+            (user_id, start, end),
+        )
+        rows = cur.fetchall()
+    total_calories = sum(row[0] for row in rows)
+    total_protein = sum(row[1] for row in rows)
+    total_carbs = sum(row[2] for row in rows)
+    total_fat = sum(row[3] for row in rows)
+    return DailyIntakeResponse(
+        date=target_day,
+        total_calories=total_calories,
+        total_protein_g=total_protein,
+        total_carbs_g=total_carbs,
+        total_fat_g=total_fat,
+        meals_count=len(rows),
+    )
+
+
+@app.get("/food/logs", response_model=DailyMealLogsResponse)
+def get_food_logs(user_id: int = 1, day: Optional[str] = None):
+    """Return logged meals for a specific day."""
+    target_day = day or date.today().isoformat()
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT description, calories, protein_g, carbs_g, fat_g, logged_at
+            FROM meal_logs
+            WHERE user_id = ? AND logged_at BETWEEN ? AND ?
+            ORDER BY logged_at DESC
+            """,
+            (user_id, start, end),
+        )
+        rows = cur.fetchall()
+    meals = [
+        MealLogItem(
+            name=row[0] or "Meal",
+            calories=row[1],
+            protein_g=row[2],
+            carbs_g=row[3],
+            fat_g=row[4],
+            logged_at=row[5],
+        )
+        for row in rows
+    ]
+    return DailyMealLogsResponse(date=target_day, meals=meals)
 
 
 if __name__ == "__main__":

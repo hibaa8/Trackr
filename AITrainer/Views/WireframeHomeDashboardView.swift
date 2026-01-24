@@ -3,6 +3,7 @@ import SwiftUI
 struct WireframeHomeDashboardView: View {
     @EnvironmentObject var appState: AppState
     @State private var showMealLogging = false
+    @State private var showDailyMeals = false
     @State private var showGymClasses = false
     @State private var showFoodDeals = false
     @State private var showWorkoutVideos = false
@@ -31,7 +32,7 @@ struct WireframeHomeDashboardView: View {
                             .padding(.top, 8)
 
                         // Date selector with elegant margins
-                        WeekDatePicker(selectedDate: .constant(Date()))
+                        WeekDatePicker(selectedDate: $appState.selectedDate)
                             .padding(.horizontal, 20)
 
                         // Hero calorie ring with breathing space
@@ -64,6 +65,9 @@ struct WireframeHomeDashboardView: View {
                 MealLoggingView()
                     .environmentObject(appState)
             }
+            .sheet(isPresented: $showDailyMeals) {
+                DailyMealsView(meals: appState.meals, date: appState.selectedDate)
+            }
             .sheet(isPresented: $showGymClasses) {
                 GymClassesView()
             }
@@ -75,6 +79,9 @@ struct WireframeHomeDashboardView: View {
             }
             .sheet(isPresented: $showCommunity) {
                 CommunityView()
+            }
+            .onChange(of: appState.selectedDate) { newDate in
+                appState.refreshDailyData(for: newDate)
             }
         }
     }
@@ -173,7 +180,7 @@ struct WireframeHomeDashboardView: View {
 
                 Spacer()
 
-                Button(action: {}) {
+                Button(action: { showDailyMeals = true }) {
                     Text("View All")
                         .font(.bodyMedium)
                         .foregroundColor(.fitnessGradientStart)
@@ -420,3 +427,37 @@ struct WireframeHomeDashboardView: View {
     }
 }
 
+struct DailyMealsView: View {
+    let meals: [MealEntry]
+    let date: Date
+
+    var body: some View {
+        NavigationView {
+            List {
+                if meals.isEmpty {
+                    Text("No meals logged for this day.")
+                        .foregroundColor(.secondary)
+                } else {
+                    ForEach(meals) { meal in
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text(meal.name)
+                                .font(.headline)
+                            Text("\(meal.calories) kcal • P \(meal.protein)g • C \(meal.carbs)g • F \(meal.fats)g")
+                                .font(.subheadline)
+                                .foregroundColor(.secondary)
+                        }
+                        .padding(.vertical, 4)
+                    }
+                }
+            }
+            .navigationTitle(dayTitle)
+            .navigationBarTitleDisplayMode(.inline)
+        }
+    }
+
+    private var dayTitle: String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        return formatter.string(from: date)
+    }
+}

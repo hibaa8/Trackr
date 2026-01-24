@@ -5,20 +5,21 @@ import Combine
 class AppState: ObservableObject {
     @Published var hasCompletedOnboarding: Bool = false
     @Published var userData: UserData?
-    @Published var caloriesIn: Int = 1420
+    @Published var caloriesIn: Int = 0
     @Published var caloriesOut: Int = 2100
     @Published var workoutCompleted: Bool = true
     @Published var meals: [MealEntry] = []
     @Published var chatMessages: [ChatMessage] = []
+    @Published var selectedDate: Date = Date()
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
 
     // Macros
-    @Published var proteinCurrent: Int = 75
+    @Published var proteinCurrent: Int = 0
     @Published var proteinTarget: Int = 150
-    @Published var carbsCurrent: Int = 138
+    @Published var carbsCurrent: Int = 0
     @Published var carbsTarget: Int = 200
-    @Published var fatsCurrent: Int = 35
+    @Published var fatsCurrent: Int = 0
     @Published var fatsTarget: Int = 65
 
     init() {
@@ -27,22 +28,16 @@ class AppState: ObservableObject {
             ChatMessage(text: "Hi! I'm your AI fitness coach. How can I help you today?", isFromUser: false, timestamp: Date())
         ]
 
-        // Sample meal entry
-        meals = [
-            MealEntry(
-                name: "Grilled Salmon",
-                calories: 550,
-                protein: 36,
-                carbs: 40,
-                fats: 28,
-                timestamp: Date()
-            )
-        ]
+        // Start with empty meals; load from backend
+        meals = []
+        updateMacroTargets()
+        refreshDailyData(for: selectedDate)
     }
 
     func completeOnboarding(with data: UserData) {
         self.userData = data
         self.hasCompletedOnboarding = true
+        updateMacroTargets()
     }
 
     func logMeal(_ meal: MealEntry) {
@@ -51,6 +46,53 @@ class AppState: ObservableObject {
         proteinCurrent += meal.protein
         carbsCurrent += meal.carbs
         fatsCurrent += meal.fats
+        refreshDailyData(for: selectedDate)
+    }
+
+    func refreshDailyData(for date: Date) {
+        FoodScanService.shared.getDailyIntake(date: date) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let intake):
+                    self?.caloriesIn = intake.total_calories
+                    self?.proteinCurrent = Int(intake.total_protein_g)
+                    self?.carbsCurrent = Int(intake.total_carbs_g)
+                    self?.fatsCurrent = Int(intake.total_fat_g)
+                case .failure:
+                    break
+                }
+            }
+        }
+
+        FoodScanService.shared.getDailyMeals(date: date) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let response):
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    let mappedMeals = response.meals.map {
+                        MealEntry(
+                            name: $0.name,
+                            calories: $0.calories,
+                            protein: Int($0.protein_g),
+                            carbs: Int($0.carbs_g),
+                            fats: Int($0.fat_g),
+                            timestamp: formatter.date(from: $0.logged_at) ?? Date()
+                        )
+                    }
+                    self?.meals = mappedMeals.sorted { $0.timestamp > $1.timestamp }
+                case .failure:
+                    break
+                }
+            }
+        }
+    }
+
+    private func updateMacroTargets() {
+        let calorieTarget = userData?.calorieTarget ?? 2000
+        proteinTarget = Int((Double(calorieTarget) * 0.30) / 4.0)
+        carbsTarget = Int((Double(calorieTarget) * 0.40) / 4.0)
+        fatsTarget = Int((Double(calorieTarget) * 0.30) / 9.0)
     }
 
     func sendMessage(_ text: String) {

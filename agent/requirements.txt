@@ -9,6 +9,10 @@ langchain-core==0.2.43
 langchain-openai==0.1.23
 langchain-community==0.2.16
 langchain-text-splitters==0.2.4
+openai==1.109.1
+google-generativeai==0.8.5
+pillow==10.4.0
+certifi==2024.12.14
 upstash-redis==1.0.0
 redis==5.0.8
 pypdf==4.3.1
