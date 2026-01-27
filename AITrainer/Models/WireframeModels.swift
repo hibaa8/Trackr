@@ -68,7 +68,7 @@ struct CommunityGroup: Identifiable {
 }
 
 // MARK: - Chat Message
-struct ChatMessage: Identifiable {
+struct WireframeChatMessage: Identifiable {
     let id = UUID()
     var text: String
     var isFromUser: Bool

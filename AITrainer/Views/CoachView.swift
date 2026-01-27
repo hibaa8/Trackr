@@ -316,7 +316,7 @@ struct CoachView: View {
 // MARK: - Enhanced Message Bubble
 
 struct EnhancedMessageBubble: View {
-    let message: ChatMessage
+    let message: WireframeChatMessage
     @State private var showTime = false
 
     var body: some View {

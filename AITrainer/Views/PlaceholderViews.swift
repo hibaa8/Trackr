@@ -28,8 +28,8 @@ struct ProgressTabView: View {
 struct AICoachView: View {
     @Environment(\.dismiss) var dismiss
     @State private var messageText = ""
-    @State private var messages: [ChatMessage] = [
-        ChatMessage(
+    @State private var messages: [WireframeChatMessage] = [
+        WireframeChatMessage(
             text: "Hi! I'm your AI fitness coach. I've been analyzing your progress. How can I help you today?",
             isFromUser: false,
             timestamp: Date()
@@ -76,7 +76,7 @@ struct AICoachView: View {
     }
     
     private func sendMessage() {
-        let userMessage = ChatMessage(
+        let userMessage = WireframeChatMessage(
             text: messageText,
             isFromUser: true,
             timestamp: Date()
@@ -86,7 +86,7 @@ struct AICoachView: View {
 
         // Simulate AI response
         DispatchQueue.main.asyncAfter(deadline: .now() + 1) {
-            let aiResponse = ChatMessage(
+            let aiResponse = WireframeChatMessage(
                 text: "I understand. Based on your recent activity, I have some suggestions for you.",
                 isFromUser: false,
                 timestamp: Date()

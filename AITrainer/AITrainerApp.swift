@@ -21,26 +21,37 @@ struct AITrainerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
-                .environmentObject(appState)
-                .environmentObject(healthKitManager)
-                .environmentObject(authManager)
-                .environmentObject(notificationManager)
-                .onAppear {
-                    // Request permissions on app launch
-                    healthKitManager.requestAuthorization()
-                    notificationManager.requestAuthorization()
-                }
+            SplashScreenView()
+                    .environmentObject(appState)
+                    .environmentObject(healthKitManager)
+                    .environmentObject(authManager)
+                    .environmentObject(notificationManager)
+                    .onAppear {
+                        // Request permissions on app launch
+                        healthKitManager.requestAuthorization()
+                        notificationManager.requestAuthorization()
+            }
         }
     }
 
     private func configureAppearance() {
-        // Configure navigation bar appearance
+        // Configure navigation bar appearance for dark theme
         let appearance = UINavigationBarAppearance()
         appearance.configureWithOpaqueBackground()
-        appearance.backgroundColor = UIColor.systemBackground
+        appearance.backgroundColor = UIColor.black
+        appearance.titleTextAttributes = [.foregroundColor: UIColor.white]
+        appearance.largeTitleTextAttributes = [.foregroundColor: UIColor.white]
 
         UINavigationBar.appearance().standardAppearance = appearance
         UINavigationBar.appearance().scrollEdgeAppearance = appearance
+        UINavigationBar.appearance().compactAppearance = appearance
+
+        // Configure tab bar appearance for dark theme
+        let tabBarAppearance = UITabBarAppearance()
+        tabBarAppearance.configureWithOpaqueBackground()
+        tabBarAppearance.backgroundColor = UIColor.black
+
+        UITabBar.appearance().standardAppearance = tabBarAppearance
+        UITabBar.appearance().scrollEdgeAppearance = tabBarAppearance
     }
 }

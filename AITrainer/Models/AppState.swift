@@ -9,7 +9,7 @@ class AppState: ObservableObject {
     @Published var caloriesOut: Int = 2100
     @Published var workoutCompleted: Bool = true
     @Published var meals: [MealEntry] = []
-    @Published var chatMessages: [ChatMessage] = []
+    @Published var chatMessages: [WireframeChatMessage] = []
     @Published var selectedDate: Date = Date()
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
@@ -25,7 +25,7 @@ class AppState: ObservableObject {
     init() {
         // Initialize with sample chat messages
         chatMessages = [
-            ChatMessage(text: "Hi! I'm your AI fitness coach. How can I help you today?", isFromUser: false, timestamp: Date())
+            WireframeChatMessage(text: "Hi! I'm your AI fitness coach. How can I help you today?", isFromUser: false, timestamp: Date())
         ]
 
         // Start with empty meals; load from backend
@@ -96,7 +96,7 @@ class AppState: ObservableObject {
     }
 
     func sendMessage(_ text: String) {
-        let userMessage = ChatMessage(text: text, isFromUser: true, timestamp: Date())
+        let userMessage = WireframeChatMessage(text: text, isFromUser: true, timestamp: Date())
         chatMessages.append(userMessage)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if awaitingPlanApproval {
@@ -110,14 +110,14 @@ class AppState: ObservableObject {
                 case .success(let response):
                     self?.coachThreadId = response.thread_id
                     let replyText = response.reply.isEmpty ? "How can I help you further?" : response.reply
-                    self?.chatMessages.append(ChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
 
                     if response.requires_feedback {
                         if let planText = response.plan_text, !planText.isEmpty {
-                            self?.chatMessages.append(ChatMessage(text: planText, isFromUser: false, timestamp: Date()))
+                            self?.chatMessages.append(WireframeChatMessage(text: planText, isFromUser: false, timestamp: Date()))
                         }
                         self?.chatMessages.append(
-                            ChatMessage(
+                            WireframeChatMessage(
                                 text: "Would you like me to apply this plan? Reply with 'yes' or 'no'.",
                                 isFromUser: false,
                                 timestamp: Date()
@@ -127,7 +127,7 @@ class AppState: ObservableObject {
                     }
                 case .failure:
                     self?.chatMessages.append(
-                        ChatMessage(
+                        WireframeChatMessage(
                             text: "I couldn’t reach the coach service. Please make sure the backend is running.",
                             isFromUser: false,
                             timestamp: Date()
@@ -147,7 +147,7 @@ class AppState: ObservableObject {
             approve = false
         } else {
             chatMessages.append(
-                ChatMessage(
+                WireframeChatMessage(
                     text: "Please reply with 'yes' or 'no' so I can apply or discard the plan.",
                     isFromUser: false,
                     timestamp: Date()
@@ -167,10 +167,10 @@ class AppState: ObservableObject {
                 switch result {
                 case .success(let response):
                     let replyText = response.reply.isEmpty ? "Plan updated." : response.reply
-                    self?.chatMessages.append(ChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
                 case .failure:
                     self?.chatMessages.append(
-                        ChatMessage(
+                        WireframeChatMessage(
                             text: "I couldn’t submit your decision. Please try again.",
                             isFromUser: false,
                             timestamp: Date()
