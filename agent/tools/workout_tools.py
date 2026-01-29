@@ -1,17 +1,17 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from langchain_core.tools import tool
 
-from agent.config.constants import CACHE_TTL_LONG, DB_PATH, _draft_workout_sessions_key, _draft_workout_sessions_ops_key
+from agent.config.constants import CACHE_TTL_LONG, _draft_workout_sessions_key, _draft_workout_sessions_ops_key
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
 from agent.tools.plan_tools import _load_user_context_data
+from agent.db.connection import get_db_conn
 
 
 
@@ -29,7 +29,7 @@ def _load_workout_sessions_draft(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -62,7 +62,7 @@ def _load_workout_sessions_draft(user_id: int) -> Dict[str, Any]:
 
 
 def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM workout_sessions WHERE user_id = ?", (user_id,))
         for session in sessions:

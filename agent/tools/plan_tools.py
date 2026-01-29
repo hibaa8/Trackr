@@ -2,27 +2,23 @@ from __future__ import annotations
 
 import json
 import re
-import sqlite3
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-try:
-    from langchain_tavily import TavilySearch
-except ImportError:  # optional dependency
-    TavilySearch = None
+from langchain_tavily import TavilySearch
 
 from agent.config.constants import (
     CACHE_TTL_LONG,
     CACHE_TTL_PLAN,
-    DB_PATH,
     _draft_plan_key,
     _draft_plan_patches_key,
     _draft_checkins_key,
     _draft_health_activity_key,
     _draft_plan_status_key,
+    _draft_reminders_key,
 )
 from agent.config.constants import _draft_meal_logs_key, _draft_workout_sessions_key
 from agent.db import queries
@@ -36,6 +32,7 @@ from agent.plan.plan_generation import (
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
+from agent.db.connection import get_db_conn
 
 
 def _workout_label_from_json(workout_json: Optional[str]) -> str:
@@ -102,7 +99,7 @@ def _load_user_context_data(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(cache_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(queries.SELECT_USER_PROFILE, (user_id,))
         user_row = cur.fetchone()
@@ -120,7 +117,7 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         return cached
     if not allow_db_fallback:
         return {"plan": None, "plan_days": []}
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(queries.SELECT_ACTIVE_PLAN, (user_id,))
         plan_row = cur.fetchone()
@@ -280,7 +277,7 @@ def _load_checkins_draft(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -308,7 +305,7 @@ def _load_checkins_draft(user_id: int) -> Dict[str, Any]:
 
 
 def _sync_checkins_to_db(user_id: int, checkins: List[Dict[str, Any]]) -> None:
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM checkins WHERE user_id = ?", (user_id,))
         for checkin in checkins:
@@ -338,7 +335,7 @@ def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
     cached = _redis_get_json(draft_key)
     if cached:
         return cached
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -363,6 +360,51 @@ def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
         ]
     draft = {"activity": activity}
     _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    return draft
+
+
+def _load_reminders_draft(user_id: int) -> Dict[str, Any]:
+    draft_key = _draft_reminders_key(user_id)
+    cached = _redis_get_json(draft_key)
+    if cached:
+        return cached
+    draft = _load_reminders_from_db(user_id)
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["reminders"] = draft
+    return draft
+
+
+def _load_reminders_from_db(user_id: int) -> Dict[str, Any]:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE user_id = ?
+            ORDER BY scheduled_at
+            """,
+            (user_id,),
+        )
+        reminders = [
+            {
+                "id": row[0],
+                "user_id": row[1],
+                "reminder_type": row[2],
+                "scheduled_at": row[3],
+                "status": row[4],
+                "channel": row[5],
+                "related_plan_override_id": row[6],
+            }
+            for row in cur.fetchall()
+        ]
+    return {"reminders": reminders}
+
+
+def _refresh_reminders_cache(user_id: int) -> Dict[str, Any]:
+    draft = _load_reminders_from_db(user_id)
+    _redis_set_json(_draft_reminders_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(user_id, {})["reminders"] = draft
     return draft
 
 
@@ -408,6 +450,121 @@ def get_current_plan_summary(user_id: int) -> str:
     )
 
 
+@tool("get_plan_day")
+def get_plan_day(user_id: int, date_str: Optional[str] = None) -> str:
+    """Return the planned workout for a specific date (defaults to tomorrow)."""
+    bundle = (
+        SESSION_CACHE.get(user_id, {}).get("active_plan")
+        or _redis_get_json(_draft_plan_key(user_id))
+        or _redis_get_json(f"user:{user_id}:active_plan")
+        or {}
+    )
+    if bundle and user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    plan = bundle.get("plan")
+    plan_days = bundle.get("plan_days", [])
+    if not plan or not plan_days:
+        return "No cached plan found for this user. Try again or start a new session."
+    target_date = date_str or (date.today() + timedelta(days=1)).isoformat()
+    day = next((d for d in plan_days if d.get("date") == target_date), None)
+    if not day:
+        return f"No planned workout found for {target_date}."
+    workout_plan = day.get("workout_plan") or day.get("workout") or "Workout"
+    rest_day = day.get("rest_day")
+    if rest_day is None:
+        rest_day = "rest" in workout_plan.lower()
+    workout_label = "Rest day" if rest_day else workout_plan
+    return f"{target_date}: {workout_label}"
+
+
+@tool("get_reminders")
+def get_reminders(user_id: int) -> str:
+    """Return reminders for the user from cache."""
+    draft = _load_reminders_draft(user_id)
+    reminders = draft.get("reminders", []) if isinstance(draft, dict) else []
+    return json.dumps({"reminders": reminders})
+
+
+@tool("add_reminder")
+def add_reminder(
+    user_id: int,
+    reminder_type: Optional[str] = None,
+    scheduled_at: Optional[str] = None,
+    status: str = "active",
+    channel: str = "push",
+    related_plan_override_id: Optional[int] = None,
+) -> str:
+    """Add a reminder and update cache + DB."""
+    if not reminder_type or not scheduled_at:
+        return "Please provide reminder_type and scheduled_at."
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id),
+        )
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder added."
+
+
+@tool("update_reminder")
+def update_reminder(
+    user_id: int,
+    reminder_id: int,
+    reminder_type: Optional[str] = None,
+    scheduled_at: Optional[str] = None,
+    status: Optional[str] = None,
+    channel: Optional[str] = None,
+    related_plan_override_id: Optional[int] = None,
+) -> str:
+    """Update a reminder and refresh cache."""
+    fields = []
+    values: List[Any] = []
+    if reminder_type is not None:
+        fields.append("reminder_type = ?")
+        values.append(reminder_type)
+    if scheduled_at is not None:
+        fields.append("scheduled_at = ?")
+        values.append(scheduled_at)
+    if status is not None:
+        fields.append("status = ?")
+        values.append(status)
+    if channel is not None:
+        fields.append("channel = ?")
+        values.append(channel)
+    if related_plan_override_id is not None:
+        fields.append("related_plan_override_id = ?")
+        values.append(related_plan_override_id)
+    if not fields:
+        return "No fields provided to update."
+    values.extend([user_id, reminder_id])
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE reminders SET {', '.join(fields)} WHERE user_id = ? AND id = ?",
+            tuple(values),
+        )
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder updated."
+
+
+@tool("delete_reminder")
+def delete_reminder(user_id: int, reminder_id: int) -> str:
+    """Delete a reminder and refresh cache."""
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM reminders WHERE user_id = ? AND id = ?", (user_id, reminder_id))
+        conn.commit()
+    _refresh_reminders_cache(user_id)
+    return "Reminder deleted."
+
+
 @tool("generate_plan")
 def generate_plan(
     user_id: int,
@@ -420,6 +577,8 @@ def generate_plan(
         days = 14
     if days > 60:
         days = 60
+    if target_loss_lbs is not None and not goal_override:
+        goal_override = "lose"
 
     plan_data = _build_plan_data(user_id, days, target_loss_lbs, goal_override=goal_override)
     if "error" in plan_data:
@@ -476,7 +635,7 @@ def shift_active_plan_end_date(
         dates = [(start + timedelta(days=i)).isoformat() for i in range(days_off)]
 
     if calorie_delta is None:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute("SELECT goal_type FROM user_preferences WHERE user_id = ?", (user_id,))
             pref_row = cur.fetchone()
@@ -510,7 +669,7 @@ def shift_active_plan_end_date(
                 existing_by_date[pause_day]["rest_day"] = 1
         bundle["plan_days"] = sorted(existing_by_date.values(), key=lambda d: d["date"])
     _set_active_plan_cache(user_id, bundle)
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -646,6 +805,96 @@ def _parse_iso_date(value: Optional[str]) -> Optional[date]:
         return None
 
 
+def _reminder_timestamp(day: date, hour: int = 18) -> str:
+    return f"{day.isoformat()}T{hour:02d}:00:00"
+
+
+def _upsert_status_reminder(
+    user_id: int,
+    reminder_type: str,
+    scheduled_at: str,
+    status: str = "active",
+    channel: str = "push",
+) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM reminders WHERE user_id = ? AND reminder_type = ? AND scheduled_at = ?",
+            (user_id, reminder_type, scheduled_at),
+        )
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, reminder_type, scheduled_at, status, channel, None),
+        )
+        conn.commit()
+
+
+def _update_status_reminders(
+    user_id: int,
+    status_payload: Dict[str, Any],
+    bundle: Dict[str, Any],
+    as_of: date,
+) -> None:
+    today_str = as_of.isoformat()
+    last_7d_days = status_payload.get("last_7d_days", [])
+    if not isinstance(last_7d_days, list):
+        return
+    today_entry = next((d for d in last_7d_days if d.get("date") == today_str), None)
+    if not isinstance(today_entry, dict):
+        return
+
+    plan = bundle.get("plan") if isinstance(bundle, dict) else None
+    default_target = plan.get("daily_calorie_target") if isinstance(plan, dict) else None
+    intake_target = today_entry.get("intake_target") if today_entry.get("intake_target") is not None else default_target
+    actual_intake = today_entry.get("intake")
+    goal_type = status_payload.get("goal_type")
+
+    scheduled_at = _reminder_timestamp(as_of)
+    if intake_target is not None:
+        if actual_intake is None:
+            if goal_type == "gain":
+                message = f"meal: Log your food. Target {intake_target} kcal today; eat to hit your goal."
+            elif goal_type == "lose":
+                message = f"meal: Log your food. Target {intake_target} kcal today; stay on track."
+            else:
+                message = f"meal: Log your food. Target {intake_target} kcal today."
+            _upsert_status_reminder(user_id, message, scheduled_at)
+        else:
+            delta = int(actual_intake) - int(intake_target)
+            if goal_type == "gain" and delta < -150:
+                remaining = int(intake_target) - int(actual_intake)
+                message = f"meal: You have {remaining} kcal left today. Log your food and eat to hit target."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+            elif goal_type == "lose" and delta > 150:
+                message = f"meal: You're {delta} kcal over target today. Log what you eat and ease intake."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+            elif goal_type not in {"gain", "lose"} and abs(delta) > 150:
+                direction = "over" if delta > 0 else "under"
+                message = f"meal: You're {abs(delta)} kcal {direction} target today. Log your food."
+                _upsert_status_reminder(user_id, message, scheduled_at)
+
+    if not today_entry.get("planned_rest_day") and not today_entry.get("exercised"):
+        workout_label = today_entry.get("planned_workout_label") or "Workout"
+        context = _load_user_context_data(user_id)
+        user = context.get("user") if isinstance(context, dict) else None
+        weight_kg = user[4] if user and len(user) > 4 else 0
+        if "cardio" in workout_label.lower() or _is_cardio_exercise(workout_label):
+            minutes = _estimate_cardio_minutes(workout_label)
+        else:
+            minutes = 45
+        target_burn = _estimate_workout_calories(weight_kg, [], minutes)
+        message = (
+            f"workout: Today's plan: {workout_label}. "
+            f"Target burn ~{target_burn} kcal. Log your workout."
+        )
+        _upsert_status_reminder(user_id, message, scheduled_at)
+    _refresh_reminders_cache(user_id)
+
+
 def _movement_category(exercise: str) -> Optional[str]:
     lower = exercise.lower()
     if any(k in lower for k in ["squat", "leg press", "goblet"]):
@@ -737,7 +986,7 @@ def replace_active_plan_workouts(
         if not replacement_labels:
             replacement_labels = workout_cycle
     replacement_index = 0
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -960,7 +1209,7 @@ def propose_plan_patch_with_llm(
     plan_start = plan.get("start_date")
     plan_days_sorted = sorted([d for d in plan_days if d.get("date")], key=lambda d: d["date"])
     upcoming = [d for d in plan_days_sorted if d["date"] >= start_day]
-    next_days = upcoming[:14]
+    next_days = upcoming
 
     status_raw = compute_plan_status.func(user_id, as_of_date=as_of.isoformat())
     status_summary = _compact_status_summary(status_raw)
@@ -1080,8 +1329,6 @@ def get_current_date() -> str:
 @tool("search_web")
 def search_web(query: str) -> str:
     """Search the web and return formatted source snippets."""
-    if TavilySearch is None:
-        return "Web search is unavailable (missing Tavily dependency)."
     tavily_search = TavilySearch(max_results=3)
     data = tavily_search.invoke({"query": query})
     search_docs = data.get("results", data)
@@ -1145,14 +1392,15 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
             if len(recent_14) >= 2:
                 break
         trend_weights = recent_14
+    weight_insufficient = False
     if len(trend_weights) < 2 and recent_weighins_count < 2:
-        return json.dumps({"status": "insufficient_data"})
+        weight_insufficient = True
 
-    current_trend = sum(trend_weights) / len(trend_weights)
     expected_kg = checkpoint["expected_weight_kg"]
     min_kg = checkpoint["min_weight_kg"]
     max_kg = checkpoint["max_weight_kg"]
     band = max(0.5, max(abs(expected_kg - min_kg), abs(max_kg - expected_kg)))
+    current_trend = sum(trend_weights) / len(trend_weights) if trend_weights else expected_kg
     weight_error = current_trend - expected_kg
 
     context = _load_user_context_data(user_id)
@@ -1176,6 +1424,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
                 parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
             except ValueError:
                 return False
+        if parsed < start_date:
+            return False
         return 0 <= (as_of - parsed).days <= 6
 
     def _plan_day_for_date(day_str: str) -> Optional[Dict[str, Any]]:
@@ -1206,6 +1456,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     last_7d_days = []
     for offset in range(7):
         day = as_of - timedelta(days=offset)
+        if day < start_date:
+            continue
         day_str = day.isoformat()
         plan_day = _plan_day_for_date(day_str)
         planned_rest = _is_rest_day(plan_day)
@@ -1285,10 +1537,10 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     weekly_burn_delta = sum(d["burn_delta"] for d in burn_days if d.get("burn_delta") is not None)
     weekly_net_delta_est = weekly_intake_delta - weekly_burn_delta
 
-    if meal_log_days < 3 and recent_weighins_count < 2:
+    if meal_log_days < 1 and workouts_done < 1 and recent_weighins_count < 1:
         status = "insufficient_data"
     else:
-        weight_ok = min_kg <= current_trend <= max_kg
+        weight_ok = True if weight_insufficient else min_kg <= current_trend <= max_kg
         nutrition_ok_week = None if not intake_days else abs(avg_intake - avg_target) <= 150
         training_ok_week = True if workouts_planned <= 0 else workouts_missed <= 1
         intensity_checks = [
@@ -1339,6 +1591,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
         f"intensity below target on {sum(1 for d in last_7d_days if d.get('intensity_ok') is False)} day(s). "
         f"{suggestion}"
     )
+    if weight_insufficient:
+        explanation = f"{explanation} Add another weigh-in this week for higher accuracy."
 
     status_payload = {
         "status": status,
@@ -1366,6 +1620,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
         "estimated_required_delta_kcal_per_day": int(avg_target - avg_intake) if avg_intake is not None else None,
         "explanation": explanation,
     }
+    if status == "behind":
+        _update_status_reminders(user_id, status_payload, bundle, as_of)
     _redis_set_json(_draft_plan_status_key(user_id), status_payload, ttl_seconds=CACHE_TTL_LONG)
     return json.dumps(status_payload)
 
@@ -1404,7 +1660,7 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
     bundle["plan_days"] = sorted(plan_days_by_date.values(), key=lambda d: d.get("date") or "")
     _set_active_plan_cache(user_id, bundle)
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,))
         row = cur.fetchone()
@@ -1563,7 +1819,7 @@ def log_checkin(
     SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
     _sync_checkins_to_db(user_id, checkins)
     if checkin_date == date.today().isoformat():
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute("UPDATE users SET weight_kg = ? WHERE id = ?", (weight_kg, user_id))
             conn.commit()
@@ -1588,7 +1844,7 @@ def delete_checkin(user_id: int, checkin_date: str) -> str:
     draft["checkins"] = checkins
     _redis_set_json(_draft_checkins_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, checkin_date))
         conn.commit()
