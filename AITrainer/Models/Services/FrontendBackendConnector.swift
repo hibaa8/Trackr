@@ -15,6 +15,9 @@ class FrontendBackendConnector: ObservableObject {
     @Published var dailyIntake: DailyIntakeResponse?
     @Published var weeklyCalories: [Int] = [0, 0, 0, 0, 0, 0, 0] // Sun-Sat
     @Published var coachResponse: String = ""
+    @Published var profile: ProfileResponse?
+    @Published var progress: ProgressResponse?
+    @Published var coachSuggestion: CoachSuggestionResponse?
     @Published var isLoading = false
 
     private var cancellables = Set<AnyCancellable>()
@@ -115,6 +118,25 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    // MARK: - Coach Suggestion
+
+    func loadCoachSuggestion(userId: Int = 1, completion: @escaping (Result<CoachSuggestionResponse?, Error>) -> Void) {
+        APIService.shared.getCoachSuggestion(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.coachSuggestion = response.suggestion
+                    completion(.success(response.suggestion))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     // MARK: - Recipes
 
     func suggestRecipes(completion: @escaping (Result<[RecipeSuggestionItem], Error>) -> Void) {
@@ -180,6 +202,42 @@ class FrontendBackendConnector: ObservableObject {
                 },
                 receiveValue: { gyms in
                     completion(.success(gyms))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    // MARK: - Profile & Progress
+
+    func loadProfile(userId: Int = 1, completion: @escaping (Result<ProfileResponse, Error>) -> Void) {
+        APIService.shared.getProfile(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.profile = response
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func loadProgress(userId: Int = 1, completion: @escaping (Result<ProgressResponse, Error>) -> Void) {
+        APIService.shared.getProgress(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.progress = response
+                    completion(.success(response))
                 }
             )
             .store(in: &cancellables)

@@ -29,38 +29,42 @@ class DashboardViewModel: ObservableObject {
     @Published var showAICoach = false
     
     private var cancellables = Set<AnyCancellable>()
+    private let backendConnector = FrontendBackendConnector.shared
     
     func loadDashboardData() {
-        // Load mock data - in production, fetch from API/database
         loadRecentMeals()
         loadTodaySuggestion()
         updateDailyTotals()
     }
     
     private func loadRecentMeals() {
-        // Load real saved food logs
-        if let data = UserDefaults.standard.data(forKey: "savedFoodLogs"),
-           let logs = try? JSONDecoder().decode([FoodLog].self, from: data) {
-            // Show recent meals from today and yesterday
-            let twoDaysAgo = Date().addingTimeInterval(-2 * 24 * 60 * 60)
-            recentMeals = logs
-                .filter { $0.timestamp > twoDaysAgo }
-                .sorted { $0.timestamp > $1.timestamp }
-                .prefix(5)
-                .map { $0 }
-        } else {
-            // Fallback to mock data if no saved logs
-            recentMeals = [
-                FoodLog(
-                    userId: UUID(),
-                    name: "Grilled Salmon",
-                    calories: 550,
-                    protein: 35,
-                    carbs: 40,
-                    fat: 28,
-                    timestamp: Date().addingTimeInterval(-7200)
-                )
-            ]
+        FoodScanService.shared.getDailyMeals(date: selectedDate) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let response):
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+                    let mapped = response.meals.map { meal -> FoodLog in
+                        FoodLog(
+                            userId: UUID(),
+                            name: meal.name,
+                            calories: meal.calories,
+                            protein: meal.protein_g,
+                            carbs: meal.carbs_g,
+                            fat: meal.fat_g,
+                            ingredients: [],
+                            imageURL: nil,
+                            mealType: .other,
+                            timestamp: formatter.date(from: meal.logged_at) ?? Date(),
+                            isVerified: true
+                        )
+                    }
+                    self?.recentMeals = mapped.prefix(5).map { $0 }
+                    self?.mealsLogged = mapped.count
+                case .failure:
+                    break
+                }
+            }
         }
 
         // Listen for new food logs
@@ -88,27 +92,45 @@ class DashboardViewModel: ObservableObject {
     }
 
     private func updateDailyTotals() {
-        let today = Calendar.current.startOfDay(for: Date())
-        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: today)!
-
-        let todaysMeals = recentMeals.filter {
-            $0.timestamp >= today && $0.timestamp < tomorrow
+        FoodScanService.shared.getDailyIntake(date: selectedDate) { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let intake):
+                    self?.caloriesConsumed = intake.total_calories
+                    self?.proteinEaten = intake.total_protein_g
+                    self?.carbsEaten = intake.total_carbs_g
+                    self?.fatEaten = intake.total_fat_g
+                    self?.mealsLogged = intake.meals_count
+                case .failure:
+                    break
+                }
+            }
         }
-
-        caloriesConsumed = todaysMeals.reduce(0) { $0 + $1.calories }
-        proteinEaten = todaysMeals.reduce(0) { $0 + $1.protein }
-        carbsEaten = todaysMeals.reduce(0) { $0 + $1.carbs }
-        fatEaten = todaysMeals.reduce(0) { $0 + $1.fat }
-        mealsLogged = todaysMeals.count
     }
     
     private func loadTodaySuggestion() {
-        todaySuggestion = AISuggestion(
+        backendConnector.loadCoachSuggestion { [weak self] result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let suggestion):
+                    self?.todaySuggestion = self?.mapSuggestion(suggestion)
+                case .failure:
+                    break
+                }
+            }
+        }
+    }
+
+    private func mapSuggestion(_ suggestion: CoachSuggestionResponse?) -> AISuggestion? {
+        guard let suggestion = suggestion else { return nil }
+        let type = SuggestionType(rawValue: suggestion.suggestion_type) ?? .adjustMacros
+        return AISuggestion(
             userId: UUID(),
-            type: .increaseProtein,
-            title: "Increase your protein intake",
-            description: "You've been consistently under your protein target. Try adding a protein shake or Greek yogurt to your meals.",
-            reasoning: "Your muscle recovery could improve with more protein, especially on workout days."
+            type: type,
+            title: suggestion.suggestion_type.replacingOccurrences(of: "_", with: " ").capitalized,
+            description: suggestion.suggestion_text,
+            reasoning: suggestion.rationale,
+            priority: .medium
         )
     }
 }

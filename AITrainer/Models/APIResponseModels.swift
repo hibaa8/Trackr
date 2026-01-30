@@ -96,6 +96,145 @@ struct PlanDayResponse: Codable {
     let fat_g: Int
 }
 
+struct ProfileUserResponse: Codable {
+    let id: Int?
+    let name: String?
+    let birthdate: String?
+    let height_cm: Double?
+    let weight_kg: Double?
+    let gender: String?
+}
+
+struct ProfilePreferencesResponse: Codable {
+    let weekly_weight_change_kg: Double?
+    let activity_level: String?
+    let goal_type: String?
+    let target_weight_kg: Double?
+    let dietary_preferences: String?
+    let workout_preferences: String?
+    let timezone: String?
+    let created_at: String?
+}
+
+struct ProfileResponse: Codable {
+    let user: ProfileUserResponse?
+    let preferences: ProfilePreferencesResponse?
+}
+
+struct ProgressCheckinResponse: Codable {
+    let date: String
+    let weight_kg: Double?
+    let mood: String?
+    let notes: String?
+}
+
+struct PlanCheckpointResponse: Codable {
+    let week: Int
+    let expected_weight_kg: Double
+    let min_weight_kg: Double
+    let max_weight_kg: Double
+}
+
+struct PlanSummaryResponse: Codable {
+    let id: Int?
+    let start_date: String?
+    let end_date: String?
+    let daily_calorie_target: Int?
+    let protein_g: Int?
+    let carbs_g: Int?
+    let fat_g: Int?
+    let status: String?
+}
+
+struct ProgressMealResponse: Codable {
+    let id: Int?
+    let logged_at: String?
+    let description: String?
+    let calories: Int?
+    let protein_g: Double?
+    let carbs_g: Double?
+    let fat_g: Double?
+    let confidence: Double?
+    let confirmed: Bool?
+}
+
+struct ProgressWorkoutResponse: Codable {
+    let id: Int?
+    let date: String?
+    let workout_type: String?
+    let duration_min: Int?
+    let calories_burned: Int?
+    let completed: Bool?
+    let source: String?
+    let details: JSONValue?
+}
+
+struct ProgressResponse: Codable {
+    let checkins: [ProgressCheckinResponse]
+    let checkpoints: [PlanCheckpointResponse]
+    let plan: PlanSummaryResponse?
+    let meals: [ProgressMealResponse]
+    let workouts: [ProgressWorkoutResponse]
+}
+
+struct CoachSuggestionResponse: Codable {
+    let suggestion_type: String
+    let rationale: String
+    let suggestion_text: String
+    let status: String?
+    let created_at: String?
+}
+
+struct CoachSuggestionEnvelope: Codable {
+    let suggestion: CoachSuggestionResponse?
+}
+
+enum JSONValue: Codable {
+    case string(String)
+    case number(Double)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case bool(Bool)
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let value = try? container.decode(Bool.self) {
+            self = .bool(value)
+        } else if let value = try? container.decode(Double.self) {
+            self = .number(value)
+        } else if let value = try? container.decode(String.self) {
+            self = .string(value)
+        } else if let value = try? container.decode([String: JSONValue].self) {
+            self = .object(value)
+        } else if let value = try? container.decode([JSONValue].self) {
+            self = .array(value)
+        } else {
+            self = .null
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let value):
+            try container.encode(value)
+        case .number(let value):
+            try container.encode(value)
+        case .object(let value):
+            try container.encode(value)
+        case .array(let value):
+            try container.encode(value)
+        case .bool(let value):
+            try container.encode(value)
+        case .null:
+            try container.encodeNil()
+        }
+    }
+}
+
 // This file intentionally left minimal to avoid conflicts.
 // Most API responses use the same models as defined in:
 // - FoodLog.swift

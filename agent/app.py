@@ -345,6 +345,180 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
         conn.commit()
 
 
+def _load_user_profile(user_id: int) -> Dict[str, Any]:
+    def _map_user(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        return {
+            "id": row[0],
+            "name": row[1],
+            "birthdate": row[2],
+            "height_cm": row[3],
+            "weight_kg": row[4],
+            "gender": row[5],
+        }
+
+    def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
+        if not row:
+            return None
+        return {
+            "weekly_weight_change_kg": row[0],
+            "activity_level": row[1],
+            "goal_type": row[2],
+            "target_weight_kg": row[3],
+            "dietary_preferences": row[4],
+            "workout_preferences": row[5],
+            "timezone": row[6],
+            "created_at": row[7],
+        }
+
+    try:
+        from db.connection import get_db_conn
+        from db import queries
+
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(queries.SELECT_USER_PROFILE, (user_id,))
+            user_row = cur.fetchone()
+            cur.execute(queries.SELECT_USER_PREFS, (user_id,))
+            pref_row = cur.fetchone()
+        if user_row or pref_row:
+            return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
+    except Exception:
+        pass
+
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, name, birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?",
+                (user_id,),
+            )
+            user_row = cur.fetchone()
+            cur.execute(
+                """
+                SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
+                       dietary_preferences, workout_preferences, timezone, created_at
+                FROM user_preferences
+                WHERE user_id = ?
+                """,
+                (user_id,),
+            )
+            pref_row = cur.fetchone()
+        return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
+    except sqlite3.Error:
+        return {"user": None, "preferences": None}
+
+
+def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT checkin_date, weight_kg, mood, notes
+                FROM checkins
+                WHERE user_id = ?
+                ORDER BY checkin_date DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        return [
+            {"date": row[0], "weight_kg": row[1], "mood": row[2], "notes": row[3]}
+            for row in rows
+        ]
+    except sqlite3.Error:
+        return []
+
+
+def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, date, workout_type, duration_min, calories_burned, notes, completed, source
+                FROM workout_sessions
+                WHERE user_id = ?
+                ORDER BY date DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        sessions = []
+        for row in rows:
+            notes = row[5]
+            details = _safe_parse_json(notes) if isinstance(notes, str) else None
+            sessions.append(
+                {
+                    "id": row[0],
+                    "date": row[1],
+                    "workout_type": row[2],
+                    "duration_min": row[3],
+                    "calories_burned": row[4],
+                    "completed": bool(row[6]),
+                    "source": row[7],
+                    "details": details,
+                }
+            )
+        return sessions
+    except sqlite3.Error:
+        return []
+
+
+def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
+    try:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+                FROM meal_logs
+                WHERE user_id = ?
+                ORDER BY logged_at DESC
+                """,
+                (user_id,),
+            )
+            rows = cur.fetchall()
+        meals = []
+        for row in rows:
+            meals.append(
+                {
+                    "id": row[0],
+                    "logged_at": row[1],
+                    "photo_path": row[2],
+                    "photo_url": None,
+                    "description": row[3],
+                    "calories": row[4],
+                    "protein_g": row[5],
+                    "carbs_g": row[6],
+                    "fat_g": row[7],
+                    "confidence": row[8],
+                    "confirmed": bool(row[9]),
+                }
+            )
+        return meals
+    except sqlite3.Error:
+        return []
+
+
+def _derive_suggestion_from_status(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    status = payload.get("status") if isinstance(payload, dict) else None
+    if status in {"on_track", "insufficient_data"}:
+        return None
+    goal_type = payload.get("goal_type")
+    suggestion_text = payload.get("explanation") or "Review your recent progress and adjust."
+    rationale = f"Status: {status}. Goal: {goal_type}."
+    return {
+        "suggestion_type": "plan_adjustment",
+        "rationale": rationale,
+        "suggestion_text": suggestion_text,
+        "status": "generated",
+        "created_at": datetime.now().isoformat(timespec="seconds"),
+    }
+
+
 class CoachChatRequest(BaseModel):
     message: str
     user_id: int = 1
@@ -1198,6 +1372,49 @@ def get_today_plan(user_id: int = 1, day: Optional[str] = None):
         carbs_g=int(day_data.get("carbs_g") or 0),
         fat_g=int(day_data.get("fat_g") or 0),
     )
+
+
+@app.get("/api/profile")
+def get_profile(user_id: int = 1):
+    """Return user profile and preferences."""
+    return _load_user_profile(user_id)
+
+
+@app.get("/api/progress")
+def get_progress(user_id: int = 1):
+    """Return progress data (checkins, plan, meals, workouts)."""
+    try:
+        from tools.plan_tools import _get_active_plan_bundle_data
+
+        plan_bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        plan = plan_bundle.get("plan")
+        checkpoints = plan_bundle.get("checkpoints", [])
+    except Exception:
+        plan = None
+        checkpoints = []
+    return {
+        "checkins": _list_checkins(user_id),
+        "checkpoints": checkpoints,
+        "plan": plan,
+        "meals": _list_meal_logs(user_id),
+        "workouts": _list_workout_sessions(user_id),
+    }
+
+
+@app.get("/api/coach-suggestion")
+def get_coach_suggestion(user_id: int = 1):
+    """Return a coach suggestion derived from plan status."""
+    suggestion = None
+    try:
+        from tools.plan_tools import compute_plan_status
+
+        status_raw = compute_plan_status.func(user_id)
+        payload = _safe_parse_json(status_raw)
+        if payload:
+            suggestion = _derive_suggestion_from_status(payload)
+    except Exception:
+        suggestion = None
+    return {"suggestion": suggestion}
 
 
 if __name__ == "__main__":

@@ -94,10 +94,10 @@ struct MainTabView: View {
 
 // Progress Page matching screen 10 mockup
 struct ProgressPageView: View {
+    @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @State private var selectedPeriod = 0
-    @State private var weeklyCalories: [Int] = [700, 850, 920, 850, 1100, 1200, 980]
-    @State private var dailyIntake: DailyIntakeResponse?
-    @State private var cancellables = Set<AnyCancellable>()
+    @State private var weeklyCalories: [Int] = Array(repeating: 0, count: 7)
+    @State private var progress: ProgressResponse?
     private let periods = ["Week", "Month", "Year"]
 
     var body: some View {
@@ -132,6 +132,9 @@ struct ProgressPageView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear {
+            loadProgressData()
+        }
     }
 
     private var headerView: some View {
@@ -191,16 +194,16 @@ struct ProgressPageView: View {
             }
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("178.3 lbs")
+                Text(latestWeightText)
                     .font(.system(size: 28, weight: .bold))
                     .foregroundColor(.white)
 
                 HStack(spacing: 4) {
-                    Image(systemName: "arrow.down")
-                        .foregroundColor(.green)
+                    Image(systemName: weightDeltaIcon)
+                        .foregroundColor(weightDeltaColor)
                         .font(.system(size: 12))
-                    Text("-1.7 lbs")
-                        .foregroundColor(.green)
+                    Text(weightDeltaText)
+                        .foregroundColor(weightDeltaColor)
                         .font(.system(size: 14, weight: .medium))
                 }
             }
@@ -278,14 +281,16 @@ struct ProgressPageView: View {
 
                         // Bar chart
                         HStack(alignment: .bottom, spacing: 6) {
-                            ForEach(Array(zip([40, 60, 65, 45, 70, 55, 75, 50, 85, 70, 80, 90, 85].indices, [40, 60, 65, 45, 70, 55, 75, 50, 85, 70, 80, 90, 85])), id: \.0) { index, height in
+                            let maxValue = max(weeklyCalories.max() ?? 0, 1)
+                            ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
+                                let height = CGFloat(value) / CGFloat(maxValue) * 90
                                 VStack(spacing: 4) {
                                     RoundedRectangle(cornerRadius: 2)
-                                        .fill(index == 9 ? Color.blue : Color.blue.opacity(0.7))
-                                        .frame(width: 12, height: CGFloat(height))
+                                        .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
+                                        .frame(width: 12, height: max(6, height))
 
-                                    if index % 4 == 1 {
-                                        Text(["Sun", "Wed", "High"][index / 4])
+                                    if index % 3 == 0 {
+                                        Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
                                             .font(.system(size: 10))
                                             .foregroundColor(.white.opacity(0.6))
                                     }
@@ -305,7 +310,7 @@ struct ProgressPageView: View {
                     // Highlight current day value
                     HStack {
                         Spacer()
-                        Text("180.3")
+                        Text(latestWeightText)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
@@ -348,12 +353,12 @@ struct ProgressPageView: View {
                         .frame(width: 90, height: 90)
 
                     Circle()
-                        .trim(from: 0, to: 0.85)
+                        .trim(from: 0, to: workoutCompletionRatio)
                         .stroke(Color.blue, style: StrokeStyle(lineWidth: 8, lineCap: .round))
                         .frame(width: 90, height: 90)
                         .rotationEffect(.degrees(-90))
 
-                    Text("85%")
+                    Text("\(Int(workoutCompletionRatio * 100))%")
                         .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
                 }
@@ -440,6 +445,98 @@ struct ProgressPageView: View {
                 .fill(Color.black.opacity(0.3))
                 .backdrop(blur: 20)
         )
+    }
+
+    private func loadProgressData() {
+        backendConnector.loadProgress { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let response):
+                    progress = response
+                    weeklyCalories = buildWeeklyCalories(from: response.meals)
+                case .failure:
+                    break
+                }
+            }
+        }
+    }
+
+    private func buildWeeklyCalories(from meals: [ProgressMealResponse]) -> [Int] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+        var totals = Array(repeating: 0, count: days.count)
+        for meal in meals {
+            guard let loggedAt = meal.logged_at else { continue }
+            let dayKey = String(loggedAt.prefix(10))
+            for (idx, day) in days.enumerated() {
+                if formatter.string(from: day) == dayKey {
+                    totals[days.count - 1 - idx] += meal.calories ?? 0
+                    break
+                }
+            }
+        }
+        return totals
+    }
+
+    private var sortedCheckins: [ProgressCheckinResponse] {
+        (progress?.checkins ?? []).sorted { $0.date < $1.date }
+    }
+
+    private var latestWeightText: String {
+        guard let kg = sortedCheckins.last?.weight_kg else { return "—" }
+        return String(format: "%.1f lbs", kg * 2.20462)
+    }
+
+    private var weightDeltaText: String {
+        guard sortedCheckins.count >= 2,
+              let last = sortedCheckins.last?.weight_kg,
+              let prev = sortedCheckins.dropLast().last?.weight_kg
+        else { return "No recent change" }
+        let delta = (last - prev) * 2.20462
+        let sign = delta >= 0 ? "+" : ""
+        return String(format: "%@%.1f lbs", sign, delta)
+    }
+
+    private var weightDeltaIcon: String {
+        guard sortedCheckins.count >= 2,
+              let last = sortedCheckins.last?.weight_kg,
+              let prev = sortedCheckins.dropLast().last?.weight_kg
+        else { return "minus" }
+        return last <= prev ? "arrow.down" : "arrow.up"
+    }
+
+    private var weightDeltaColor: Color {
+        guard sortedCheckins.count >= 2,
+              let last = sortedCheckins.last?.weight_kg,
+              let prev = sortedCheckins.dropLast().last?.weight_kg
+        else { return .white.opacity(0.6) }
+        return last <= prev ? .green : .red
+    }
+
+    private var workoutCompletionRatio: Double {
+        let workouts = progress?.workouts ?? []
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let recent = workouts.filter { workout in
+            guard let dateStr = workout.date,
+                  let date = formatter.date(from: dateStr)
+            else { return false }
+            return calendar.dateComponents([.day], from: date, to: Date()).day ?? 0 <= 6
+        }
+        return min(1.0, Double(recent.count) / 5.0)
+    }
+
+    private func shortDayLabel(offsetFromToday: Int) -> String {
+        let calendar = Calendar.current
+        guard let date = calendar.date(byAdding: .day, value: -offsetFromToday, to: Date()) else {
+            return ""
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEE"
+        return formatter.string(from: date)
     }
 }
 

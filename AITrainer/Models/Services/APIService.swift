@@ -129,7 +129,7 @@ class APIService {
 
         // Add image data
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
-        body.append("Content-Disposition: form-data; name=\"image\"; filename=\"food.jpg\"\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"food.jpg\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
         body.append(imageData)
         body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
@@ -229,6 +229,10 @@ class APIService {
         return request(endpoint: "/coach/chat", method: "POST", body: jsonData)
     }
 
+    func getCoachSuggestion(userId: Int = 1) -> AnyPublisher<CoachSuggestionEnvelope, APIError> {
+        return request(endpoint: "/api/coach-suggestion?user_id=\(userId)")
+    }
+
     // MARK: - Videos
 
     func getCategories() -> AnyPublisher<[String], APIError> {
@@ -250,27 +254,65 @@ class APIService {
     // MARK: - Gyms
 
     func getNearbyGyms(latitude: Double, longitude: Double, radius: Int = 5000) -> AnyPublisher<[Gym], APIError> {
-        return request(endpoint: "/gyms/nearby?latitude=\(latitude)&longitude=\(longitude)&radius=\(radius)")
+        let endpoint = "/gyms/nearby?lat=\(latitude)&lng=\(longitude)&radius=\(radius)"
+        return (request(endpoint: endpoint) as AnyPublisher<GymSearchResponse, APIError>)
+            .tryMap { response in
+                guard response.status == "OK" else {
+                    throw APIError.serverError(400)
+                }
+                return (response.results ?? []).map { $0.toGym(baseURL: self.baseURL) }
+            }
+            .mapError { error in
+                if let apiError = error as? APIError {
+                    return apiError
+                }
+                return APIError.requestFailed(error)
+            }
+            .eraseToAnyPublisher()
     }
-
+    
     func searchGyms(query: String, latitude: Double, longitude: Double) -> AnyPublisher<[Gym], APIError> {
         let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
-        return request(endpoint: "/gyms/search?query=\(encodedQuery)&latitude=\(latitude)&longitude=\(longitude)")
+        let endpoint = "/gyms/search?query=\(encodedQuery)&lat=\(latitude)&lng=\(longitude)"
+        return (request(endpoint: endpoint) as AnyPublisher<GymSearchResponse, APIError>)
+            .tryMap { response in
+                guard response.status == "OK" else {
+                    throw APIError.serverError(400)
+                }
+                return (response.results ?? []).map { $0.toGym(baseURL: self.baseURL) }
+            }
+            .mapError { error in
+                if let apiError = error as? APIError {
+                    return apiError
+                }
+                return APIError.requestFailed(error)
+            }
+            .eraseToAnyPublisher()
     }
 
     // MARK: - Recipes
 
-    func suggestRecipes(dietaryRestrictions: [String]? = nil, cuisine: String? = nil, mealType: String? = nil) -> AnyPublisher<RecipeSuggestionResponse, APIError> {
+    func suggestRecipes(
+        ingredients: String = "",
+        cuisine: String? = nil,
+        flavor: String? = nil,
+        dietary: [String] = [],
+        userId: Int = 1
+    ) -> AnyPublisher<RecipeSuggestionResponse, APIError> {
         struct RecipeSuggestRequest: Codable {
-            let dietary_restrictions: [String]?
+            let user_id: Int
+            let ingredients: String
             let cuisine: String?
-            let meal_type: String?
+            let flavor: String?
+            let dietary: [String]
         }
 
         let body = RecipeSuggestRequest(
-            dietary_restrictions: dietaryRestrictions,
+            user_id: userId,
+            ingredients: ingredients,
             cuisine: cuisine,
-            meal_type: mealType
+            flavor: flavor,
+            dietary: dietary
         )
 
         guard let jsonData = try? JSONEncoder().encode(body) else {
@@ -306,6 +348,14 @@ class APIService {
     
     func getUserProfile() -> AnyPublisher<User, APIError> {
         return request(endpoint: "/users/profile")
+    }
+
+    func getProfile(userId: Int = 1) -> AnyPublisher<ProfileResponse, APIError> {
+        return request(endpoint: "/api/profile?user_id=\(userId)")
+    }
+
+    func getProgress(userId: Int = 1) -> AnyPublisher<ProgressResponse, APIError> {
+        return request(endpoint: "/api/progress?user_id=\(userId)")
     }
     
     // MARK: - Helper Methods

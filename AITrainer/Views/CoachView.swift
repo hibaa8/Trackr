@@ -2,6 +2,7 @@ import SwiftUI
 
 struct CoachView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var backendConnector: FrontendBackendConnector
     @State private var messageText = ""
     @State private var isTyping = false
 
@@ -78,6 +79,9 @@ struct CoachView: View {
                 }
             }
             .navigationBarHidden(true)
+        }
+        .onAppear {
+            backendConnector.loadCoachSuggestion { _ in }
         }
     }
     
@@ -186,6 +190,21 @@ struct CoachView: View {
                         .foregroundColor(.textSecondary)
                         .multilineTextAlignment(.center)
                         .lineLimit(3)
+                }
+
+                if let suggestion = backendConnector.coachSuggestion {
+                    ModernCard {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Coach Suggestion")
+                                .font(.headlineMedium)
+                                .foregroundColor(.textPrimary)
+                            Text(suggestion.suggestion_text)
+                                .font(.bodyMedium)
+                                .foregroundColor(.textSecondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(16)
+                    }
                 }
 
                 // Quick action buttons
