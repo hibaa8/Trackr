@@ -36,6 +36,7 @@ enum WorkoutPreference: String, CaseIterable {
 struct DetectedFood: Identifiable {
     let id = UUID()
     var name: String
+    var category: String?
     var portion: String
     var calories: Int
     var protein: Int

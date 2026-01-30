@@ -10,7 +10,7 @@ import Combine
 
 class YouTubeService: ObservableObject {
     // Python backend URL - change this to your deployed backend URL
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
 
     @Published var workoutVideos: [WorkoutVideo] = []
     @Published var isLoading = false

@@ -63,7 +63,7 @@ struct AICoachView: View {
                 }
                 .padding()
             }
-            .navigationTitle("AI Coach")
+            .navigationTitle("Vaylo Fitness")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .navigationBarTrailing) {

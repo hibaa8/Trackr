@@ -10,7 +10,7 @@ import Combine
 import CoreLocation
 
 class GymFinderService: ObservableObject {
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
 
     @Published var nearbyGyms: [Gym] = []
     @Published var isLoading = false
@@ -55,7 +55,7 @@ class GymFinderService: ObservableObject {
                 receiveValue: { [weak self] response in
                     let results = response.results ?? []
                     if response.status == "OK" {
-                        let baseURL = self?.baseURL ?? "http://localhost:8000"
+                        let baseURL = self?.baseURL ?? BackendConfig.baseURL
                         self?.nearbyGyms = results.map { $0.toGym(baseURL: baseURL) }
                     } else {
                         let message = response.errorMessage ?? "No gyms found in this area"
@@ -104,7 +104,7 @@ class GymFinderService: ObservableObject {
                 receiveValue: { [weak self] response in
                     let results = response.results ?? []
                     if response.status == "OK" {
-                        let baseURL = self?.baseURL ?? "http://localhost:8000"
+                        let baseURL = self?.baseURL ?? BackendConfig.baseURL
                         self?.nearbyGyms = results.map { $0.toGym(baseURL: baseURL) }
                     } else {
                         let message = response.errorMessage ?? "No gyms found matching your search"

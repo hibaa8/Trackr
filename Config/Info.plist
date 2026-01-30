@@ -14,6 +14,8 @@
 	<string>1.0</string>
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
+	<key>BackendBaseURL</key>
+	<string>http://localhost:8000</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>

@@ -15,6 +15,23 @@ struct MealLoggingView: View {
     @State private var isAnalyzing = false
     @State private var errorMessage: String?
     @State private var scanResponse: FoodScanResponse?
+    @State private var pulseScan = false
+    @State private var isFlashOn = false
+
+    private let foodCategoryIcons: [String: String] = [
+        "protein": "🍗",
+        "vegetable": "🥗",
+        "fruit": "🍎",
+        "grain": "🍚",
+        "dairy": "🥛",
+        "nuts": "🥜",
+        "dessert": "🍰",
+        "beverage": "🥤",
+        "fast_food": "🍕",
+        "soup": "🍜",
+        "mixed": "🥙",
+        "other": "❓"
+    ]
     
     var body: some View {
         NavigationView {
@@ -25,14 +42,7 @@ struct MealLoggingView: View {
                     reviewView
                 }
             }
-            .navigationBarItems(
-                leading: Button(action: { dismiss() }) {
-                    Image(systemName: "xmark")
-                        .foregroundColor(.primary)
-                },
-                trailing: Text("AI Trainer")
-                    .font(.system(size: 16, weight: .medium))
-            )
+            .navigationBarHidden(true)
         }
         .photosPicker(isPresented: $showPhotoPicker, selection: $selectedPhoto, matching: .images)
         .onChange(of: selectedPhoto) { newPhoto in
@@ -58,93 +68,217 @@ struct MealLoggingView: View {
     }
     
     var cameraView: some View {
-        VStack(spacing: 0) {
-            // Camera placeholder + controls
-            ZStack(alignment: .bottom) {
-                Rectangle()
-                    .fill(Color.black)
+        ZStack {
+            Rectangle()
+                .fill(Color.black)
+                .ignoresSafeArea()
 
-                VStack(spacing: 12) {
-                    Image(systemName: "camera.fill")
-                        .font(.system(size: 60))
-                        .foregroundColor(.white.opacity(0.5))
-                    Text("Camera Preview")
-                        .foregroundColor(.white.opacity(0.7))
-                }
-                .padding(.bottom, 120)
+            VStack(spacing: 0) {
+                headerBar
 
-                // Capture + Photo Library (inside the dark area)
-                HStack(spacing: 32) {
-                    Button(action: openCameraOrLibrary) {
-                        ZStack {
-                            Circle()
-                                .stroke(Color.white, lineWidth: 4)
-                                .frame(width: 70, height: 70)
-
-                            Circle()
-                                .fill(Color.white)
-                                .frame(width: 60, height: 60)
-                        }
+                ZStack {
+                    VStack(spacing: 12) {
+                        Image(systemName: "camera.fill")
+                            .font(.system(size: 60))
+                            .foregroundColor(.white.opacity(0.5))
+                        Text("Camera Preview")
+                            .foregroundColor(.white.opacity(0.7))
                     }
 
-                    Button(action: { showPhotoPicker = true }) {
-                        VStack(spacing: 6) {
+                    ScanGridOverlay()
+                        .padding(.horizontal, 24)
+                        .padding(.vertical, 80)
+
+                    VStack(spacing: 12) {
+                        ZStack {
+                            Circle()
+                                .stroke(Color.blue.opacity(0.7), lineWidth: 3)
+                                .frame(width: 80, height: 80)
+                                .scaleEffect(pulseScan ? 1.15 : 0.85)
+                                .opacity(pulseScan ? 0.15 : 0.6)
+                                .animation(
+                                    .easeInOut(duration: 1.5).repeatForever(autoreverses: true),
+                                    value: pulseScan
+                                )
+                        }
+                        Text("Position food in frame and tap to capture.")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                }
+                .frame(maxHeight: .infinity)
+
+                VStack(spacing: 16) {
+                    HStack {
+                        Button(action: { showPhotoPicker = true }) {
+                            Image(systemName: "photo")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(Color.white.opacity(0.1)))
+                        }
+
+                        Spacer()
+
+                        Button(action: openCameraOrLibrary) {
                             ZStack {
                                 Circle()
-                                    .stroke(Color.white.opacity(0.6), lineWidth: 2)
-                                    .frame(width: 56, height: 56)
+                                    .fill(Color.blue)
+                                    .frame(width: 80, height: 80)
+                                    .shadow(color: Color.blue.opacity(0.6), radius: 20)
+                                Circle()
+                                    .stroke(Color.white.opacity(0.9), lineWidth: 3)
+                                    .frame(width: 88, height: 88)
+                            }
+                        }
 
-                                Image(systemName: "photo.on.rectangle")
-                                    .font(.system(size: 20, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                            Text("Photos")
-                                .font(.caption)
-                                .foregroundColor(.white.opacity(0.9))
+                        Spacer()
+
+                        Button(action: { showCameraCapture = true }) {
+                            Image(systemName: "arrow.triangle.2.circlepath.camera")
+                                .font(.system(size: 20, weight: .semibold))
+                                .foregroundColor(.white)
+                                .frame(width: 44, height: 44)
+                                .background(Circle().fill(Color.white.opacity(0.1)))
                         }
                     }
-                    .accessibilityLabel("Choose from Photos")
+                    .padding(.horizontal, 40)
+
+                    bottomInputBar
                 }
-                .padding(.bottom, 24)
+                .padding(.bottom, 16)
             }
-            .overlay(
-                Group {
-                    if isAnalyzing {
-                        ZStack {
-                            Color.black.opacity(0.35)
-                                .ignoresSafeArea()
-                            VStack(spacing: 12) {
-                                ProgressView()
-                                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
-                                    .scaleEffect(1.2)
-                                Text("Analyzing food...")
-                                    .font(.system(size: 16, weight: .semibold))
-                                    .foregroundColor(.white)
-                            }
-                            .padding(20)
-                            .background(Color.black.opacity(0.7))
-                            .cornerRadius(16)
-                        }
+            .onAppear {
+                pulseScan = true
+            }
+
+            if isAnalyzing {
+                ZStack {
+                    Color.black.opacity(0.4)
+                        .ignoresSafeArea()
+                    VStack(spacing: 12) {
+                        ProgressView()
+                            .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            .scaleEffect(1.2)
+                        Text("Analyzing food...")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
                     }
+                    .padding(20)
+                    .background(Color.black.opacity(0.7))
+                    .cornerRadius(16)
                 }
-            )
-            
-            // Instructions
-            VStack(spacing: 8) {
-                Text("AI Food Detection")
-                    .font(.system(size: 16, weight: .semibold))
-                Text(isAnalyzing ? "Analyzing your meal..." : "Position your food in the frame and tap to capture")
-                    .font(.system(size: 14))
-                    .foregroundColor(.secondary)
-                    .multilineTextAlignment(.center)
             }
-            .padding(.bottom, 32)
         }
+    }
+
+    private var headerBar: some View {
+        HStack {
+            Button(action: { dismiss() }) {
+                Image(systemName: "chevron.left")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+            }
+
+            Spacer()
+
+            Text("Log Food")
+                .font(.system(size: 18, weight: .semibold))
+                .foregroundColor(.white)
+
+            Spacer()
+
+            Button(action: { isFlashOn.toggle() }) {
+                Image(systemName: isFlashOn ? "bolt.fill" : "bolt.slash.fill")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(10)
+                    .background(Circle().fill(Color.white.opacity(0.12)))
+            }
+        }
+        .padding(.horizontal, 20)
+        .padding(.top, 10)
+        .padding(.bottom, 8)
+    }
+
+    private var bottomInputBar: some View {
+        HStack(spacing: 0) {
+            Image(systemName: "keyboard")
+                .font(.system(size: 18))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 50, height: 50)
+
+            Spacer()
+
+            Image(systemName: "mic.fill")
+                .font(.system(size: 22))
+                .foregroundColor(.white)
+                .frame(width: 64, height: 64)
+                .background(Circle().fill(Color.blue))
+
+            Spacer()
+
+            Image(systemName: "camera.fill")
+                .font(.system(size: 18))
+                .foregroundColor(.white.opacity(0.7))
+                .frame(width: 50, height: 50)
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color.black.opacity(0.65))
+        )
+        .padding(.horizontal, 20)
+    }
+
+    private var reviewBottomInputBar: some View {
+        HStack(spacing: 0) {
+            Button(action: { dismiss() }) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 18))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 50, height: 50)
+            }
+
+            Spacer()
+
+            Button(action: { dismiss() }) {
+                Image(systemName: "mic.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(.white)
+                    .frame(width: 64, height: 64)
+                    .background(Circle().fill(Color.blue))
+            }
+
+            Spacer()
+
+            Button(action: { dismiss() }) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 18))
+                    .foregroundColor(.white.opacity(0.7))
+                    .frame(width: 50, height: 50)
+            }
+        }
+        .padding(.horizontal, 24)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color(red: 0.1, green: 0.1, blue: 0.1))
+        )
+        .padding(.horizontal, 20)
+        .padding(.bottom, 16)
     }
     
     var reviewView: some View {
-        ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+        ZStack {
+            Color(red: 0.04, green: 0.04, blue: 0.04)
+                .ignoresSafeArea()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
                 if let errorMessage = errorMessage {
                     Text(errorMessage)
                         .font(.system(size: 14, weight: .medium))
@@ -154,6 +288,7 @@ struct MealLoggingView: View {
                 // Detected foods header
                 Text("Detected Foods")
                     .font(.system(size: 22, weight: .bold))
+                    .foregroundColor(.white)
                     .padding(.horizontal)
                     .padding(.top)
                 
@@ -168,12 +303,15 @@ struct MealLoggingView: View {
                 Button(action: addFoodItem) {
                     HStack(spacing: 8) {
                         Image(systemName: "plus.circle.fill")
-                            .foregroundColor(.blue)
+                            .foregroundColor(.white)
                         Text("Add item")
                             .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.blue)
+                            .foregroundColor(.white)
                     }
-                    .padding(.vertical, 8)
+                    .padding(.vertical, 10)
+                    .padding(.horizontal, 20)
+                    .background(Color.blue)
+                    .cornerRadius(24)
                 }
                 .frame(maxWidth: .infinity)
                 .padding(.horizontal)
@@ -183,9 +321,10 @@ struct MealLoggingView: View {
                     HStack {
                         Text("Total Calories")
                             .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
                         Spacer()
                         Text("\(totalCalories)")
-                            .font(.system(size: 28, weight: .bold))
+                            .font(.system(size: 48, weight: .bold))
                             .foregroundColor(.blue)
                     }
                     
@@ -196,7 +335,7 @@ struct MealLoggingView: View {
                     }
                 }
                 .padding()
-                .background(Color.blue.opacity(0.05))
+                .background(Color.black.opacity(0.2))
                 .cornerRadius(12)
                 .padding(.horizontal)
                 
@@ -204,8 +343,12 @@ struct MealLoggingView: View {
                 VStack(alignment: .leading, spacing: 8) {
                     Text("Meal Name (Optional)")
                         .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
                     TextField("e.g., Lunch, Dinner", text: $mealName)
-                        .textFieldStyle(RoundedBorderTextFieldStyle())
+                        .foregroundColor(.white)
+                        .padding(16)
+                        .background(Color(red: 0.16, green: 0.16, blue: 0.16))
+                        .cornerRadius(12)
                 }
                 .padding(.horizontal)
                 
@@ -220,6 +363,13 @@ struct MealLoggingView: View {
                         .cornerRadius(12)
                 }
                 .padding()
+                .padding(.bottom, 80)
+            }
+        }
+
+            VStack {
+                Spacer()
+                reviewBottomInputBar
             }
         }
     }
@@ -261,6 +411,7 @@ struct MealLoggingView: View {
                     detectedFoods = response.items.map {
                         DetectedFood(
                             name: $0.name,
+                            category: $0.category ?? categorizeFood($0.name),
                             portion: $0.amount,
                             calories: $0.calories,
                             protein: Int($0.protein_g),
@@ -301,6 +452,7 @@ struct MealLoggingView: View {
         detectedFoods.append(
             DetectedFood(
                 name: "New item",
+                category: "other",
                 portion: "1 serving",
                 calories: 0,
                 protein: 0,
@@ -324,6 +476,7 @@ struct MealLoggingView: View {
                 protein_g: Double($0.protein),
                 carbs_g: Double($0.carbs),
                 fat_g: Double($0.fats),
+                category: $0.category ?? categorizeFood($0.name),
                 confidence: 0.7
             )
         }
@@ -383,64 +536,73 @@ struct EditableFoodItemCard: View {
     let onRemove: () -> Void
 
     var body: some View {
-        VStack(spacing: 12) {
-            HStack(spacing: 12) {
-                // Food icon
-                Circle()
-                    .fill(Color.orange.opacity(0.2))
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Text("🍽️")
-                            .font(.system(size: 24))
-                    )
+        HStack(spacing: 12) {
+            Rectangle()
+                .fill(Color.blue)
+                .frame(width: 6)
+                .cornerRadius(3)
 
-                VStack(alignment: .leading, spacing: 6) {
-                    TextField("Food name", text: $food.name)
-                        .font(.system(size: 16, weight: .semibold))
-                    TextField("Amount", text: $food.portion)
-                        .font(.system(size: 14))
-                        .foregroundColor(.secondary)
+            VStack(alignment: .leading, spacing: 10) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 4) {
+                        TextField("Food name", text: $food.name)
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                        TextField("1 serving", text: $food.portion)
+                            .font(.system(size: 13))
+                            .foregroundColor(Color.white.opacity(0.6))
+                    }
+
+                    Spacer()
+
+                    Button(action: onRemove) {
+                        Image(systemName: "trash")
+                            .foregroundColor(.red)
+                    }
+                    .accessibilityLabel("Remove item")
                 }
 
-                Spacer()
-
-                Button(action: onRemove) {
-                    Image(systemName: "trash")
-                        .foregroundColor(.red)
+                LazyVGrid(columns: macroColumns, alignment: .leading, spacing: 12) {
+                    MacroValueField(label: "Calories", value: $food.calories, suffix: "kcal")
+                    MacroValueField(label: "Protein", value: $food.protein, suffix: "g")
+                    MacroValueField(label: "Carbs", value: $food.carbs, suffix: "g")
+                    MacroValueField(label: "Fats", value: $food.fats, suffix: "g")
                 }
-                .accessibilityLabel("Remove item")
-            }
-
-            HStack(spacing: 10) {
-                NutrientField(label: "Cal", value: $food.calories)
-                NutrientField(label: "P", value: $food.protein)
-                NutrientField(label: "C", value: $food.carbs)
-                NutrientField(label: "F", value: $food.fats)
             }
         }
-        .padding()
-        .background(Color.white)
-        .cornerRadius(12)
-        .shadow(color: .black.opacity(0.05), radius: 4)
+        .padding(.vertical, 14)
+        .padding(.horizontal, 16)
+        .background(Color(red: 0.13, green: 0.13, blue: 0.14))
+        .cornerRadius(16)
+    }
+
+    private var macroColumns: [GridItem] {
+        Array(repeating: GridItem(.flexible(), alignment: .leading), count: 4)
     }
 }
 
-struct NutrientField: View {
+struct MacroValueField: View {
     let label: String
     @Binding var value: Int
+    let suffix: String
 
     var body: some View {
-        VStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 4) {
             Text(label)
-                .font(.system(size: 12))
-                .foregroundColor(.secondary)
-            TextField("0", text: bindingString)
-                .keyboardType(.numberPad)
-                .multilineTextAlignment(.center)
-                .frame(width: 60)
-                .padding(.vertical, 6)
-                .background(Color.gray.opacity(0.08))
-                .cornerRadius(8)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.65))
+            HStack(spacing: 4) {
+                TextField("0", text: bindingString)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .keyboardType(.numberPad)
+                    .frame(width: 40, alignment: .leading)
+                if !suffix.isEmpty {
+                    Text(suffix)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color.white.opacity(0.85))
+                }
+            }
         }
     }
 
@@ -448,7 +610,8 @@ struct NutrientField: View {
         Binding(
             get: { String(value) },
             set: { newValue in
-                value = Int(newValue.filter { $0.isNumber }) ?? 0
+                let digits = newValue.filter { $0.isNumber }
+                value = Int(digits) ?? 0
             }
         )
     }
@@ -464,10 +627,95 @@ struct MacroLabel: View {
             Text(emoji)
             Text("\(value)g")
                 .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
             Text(label)
                 .font(.system(size: 12))
-                .foregroundColor(.secondary)
+                .foregroundColor(Color.white.opacity(0.7))
         }
         .frame(maxWidth: .infinity)
     }
+}
+
+struct ScanGridOverlay: View {
+    var body: some View {
+        GeometryReader { geo in
+            let width = geo.size.width
+            let height = geo.size.height
+
+            Path { path in
+                let thirdWidth = width / 3
+                let thirdHeight = height / 3
+
+                for i in 1..<3 {
+                    let x = thirdWidth * CGFloat(i)
+                    path.move(to: CGPoint(x: x, y: 0))
+                    path.addLine(to: CGPoint(x: x, y: height))
+                }
+
+                for i in 1..<3 {
+                    let y = thirdHeight * CGFloat(i)
+                    path.move(to: CGPoint(x: 0, y: y))
+                    path.addLine(to: CGPoint(x: width, y: y))
+                }
+            }
+            .stroke(Color.blue.opacity(0.3), lineWidth: 1)
+        }
+    }
+}
+
+private func iconForCategory(_ category: String?) -> String {
+    let key = category?.lowercased() ?? "other"
+    let map: [String: String] = [
+        "protein": "🍗",
+        "vegetable": "🥗",
+        "fruit": "🍎",
+        "grain": "🍚",
+        "dairy": "🥛",
+        "nuts": "🥜",
+        "dessert": "🍰",
+        "beverage": "🥤",
+        "fast_food": "🍕",
+        "soup": "🍜",
+        "mixed": "🥙",
+        "other": "❓"
+    ]
+    return map[key] ?? "❓"
+}
+
+private func categorizeFood(_ foodName: String) -> String {
+    let name = foodName.lowercased()
+    if name.contains("chicken") || name.contains("beef") || name.contains("fish") || name.contains("egg") || name.contains("pork") {
+        return "protein"
+    }
+    if name.contains("salad") || name.contains("lettuce") || name.contains("broccoli") || name.contains("spinach") {
+        return "vegetable"
+    }
+    if name.contains("apple") || name.contains("banana") || name.contains("orange") || name.contains("berry") {
+        return "fruit"
+    }
+    if name.contains("rice") || name.contains("bread") || name.contains("pasta") || name.contains("noodle") {
+        return "grain"
+    }
+    if name.contains("milk") || name.contains("yogurt") || name.contains("cheese") {
+        return "dairy"
+    }
+    if name.contains("nut") || name.contains("almond") || name.contains("peanut") {
+        return "nuts"
+    }
+    if name.contains("cake") || name.contains("cookie") || name.contains("dessert") {
+        return "dessert"
+    }
+    if name.contains("coffee") || name.contains("tea") || name.contains("juice") || name.contains("soda") {
+        return "beverage"
+    }
+    if name.contains("burger") || name.contains("pizza") || name.contains("fries") {
+        return "fast_food"
+    }
+    if name.contains("soup") || name.contains("broth") {
+        return "soup"
+    }
+    if name.contains("bowl") || name.contains("plate") || name.contains("mix") {
+        return "mixed"
+    }
+    return "other"
 }

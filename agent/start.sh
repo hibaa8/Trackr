@@ -17,7 +17,7 @@ echo "🔄 Activating virtual environment..."
 source venv/bin/activate
 
 echo "📥 Installing dependencies..."
-pip install -r requirements.txt
+pip install --trusted-host pypi.org --trusted-host files.pythonhosted.org --trusted-host pypi.python.org -r requirements.txt
 
 echo "🌟 Starting FastAPI server..."
 echo "🔗 Backend will be available at: http://localhost:8000"

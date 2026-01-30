@@ -1,43 +1,103 @@
 import SwiftUI
+import Combine
 
 struct MainTabView: View {
     let coach: Coach
-    @State private var selectedTab = 0
+    @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
+    @State private var showVoiceChat = false
 
     var body: some View {
-        TabView(selection: $selectedTab) {
-            // Trainer Tab
-            TrainerMainView(coach: coach)
-                .tabItem {
-                    Image(systemName: "figure.strengthtraining.traditional")
-                    Text("Trainer")
-                }
-                .tag(0)
+        ZStack {
+            TabView(selection: $selectedTab) {
+                // Progress Page
+                ProgressPageView()
+                    .tag(0)
 
-            // Progress Tab
-            ProgressPageView()
-                .tabItem {
-                    Image(systemName: "chart.bar.fill")
-                    Text("Progress")
-                }
-                .tag(1)
+                // Trainer Page (default)
+                TrainerMainViewContent(coach: coach)
+                    .tag(1)
 
-            // Settings Tab
-            SettingsPageView(coach: coach)
-                .tabItem {
-                    Image(systemName: "gearshape.fill")
-                    Text("Settings")
-                }
-                .tag(2)
+                // Settings Page
+                SettingsPageView(coach: coach)
+                    .tag(2)
+            }
+            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+            .preferredColorScheme(.dark)
+
+            // Global bottom toolbar
+            VStack {
+                Spacer()
+                globalBottomToolbar
+            }
         }
-        .accentColor(.blue)
-        .preferredColorScheme(.dark)
+        .sheet(isPresented: $showVoiceChat) {
+            VoiceActiveView(coach: coach)
+        }
+    }
+
+    private var globalBottomToolbar: some View {
+        HStack(spacing: 0) {
+            // Keyboard icon
+            Button(action: {}) {
+                Image(systemName: "keyboard")
+                    .font(.system(size: 22))
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(.ultraThinMaterial.opacity(0.6))
+                    )
+            }
+
+            Spacer()
+
+            // Voice microphone (main action)
+            Button(action: {
+                showVoiceChat = true
+            }) {
+                ZStack {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 64, height: 64)
+
+                    Image(systemName: "mic.fill")
+                        .font(.system(size: 24, weight: .medium))
+                        .foregroundColor(.white)
+                }
+            }
+
+            Spacer()
+
+            // Camera icon
+            Button(action: {}) {
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(.white)
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(.ultraThinMaterial.opacity(0.6))
+                    )
+            }
+        }
+        .frame(height: 100)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 25)
+        .background(
+            RoundedRectangle(cornerRadius: 24)
+                .fill(.ultraThinMaterial.opacity(0.9))
+                .background(Color.black.opacity(0.4))
+        )
+        .padding(.horizontal, 20)
     }
 }
 
 // Progress Page matching screen 10 mockup
 struct ProgressPageView: View {
     @State private var selectedPeriod = 0
+    @State private var weeklyCalories: [Int] = [700, 850, 920, 850, 1100, 1200, 980]
+    @State private var dailyIntake: DailyIntakeResponse?
+    @State private var cancellables = Set<AnyCancellable>()
     private let periods = ["Week", "Month", "Year"]
 
     var body: some View {
@@ -113,7 +173,7 @@ struct ProgressPageView: View {
                 Spacer()
             }
         }
-        .padding(.top, 60)
+        .padding(.top, 50)
     }
 
     private var weightJourneyCard: some View {
@@ -127,41 +187,65 @@ struct ProgressPageView: View {
 
                 Image(systemName: "chevron.right")
                     .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 14))
             }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("178.3 lbs")
-                    .font(.system(size: 24, weight: .bold))
+                    .font(.system(size: 28, weight: .bold))
                     .foregroundColor(.white)
 
-                HStack {
+                HStack(spacing: 4) {
                     Image(systemName: "arrow.down")
                         .foregroundColor(.green)
+                        .font(.system(size: 12))
                     Text("-1.7 lbs")
                         .foregroundColor(.green)
                         .font(.system(size: 14, weight: .medium))
                 }
             }
 
-            // Simulated weight chart
+            // Blue wave chart matching mockup
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.blue.opacity(0.2))
-                    .frame(height: 80)
+                    .fill(Color.black.opacity(0.3))
+                    .frame(height: 100)
 
-                // Mock chart line
+                // Blue wave area
                 Path { path in
-                    path.move(to: CGPoint(x: 0, y: 40))
-                    path.addQuadCurve(to: CGPoint(x: 300, y: 60), control: CGPoint(x: 150, y: 20))
+                    path.move(to: CGPoint(x: 0, y: 60))
+                    path.addCurve(to: CGPoint(x: 80, y: 45), control1: CGPoint(x: 20, y: 50), control2: CGPoint(x: 60, y: 40))
+                    path.addCurve(to: CGPoint(x: 160, y: 50), control1: CGPoint(x: 100, y: 48), control2: CGPoint(x: 140, y: 52))
+                    path.addCurve(to: CGPoint(x: 240, y: 35), control1: CGPoint(x: 180, y: 45), control2: CGPoint(x: 220, y: 30))
+                    path.addCurve(to: CGPoint(x: 320, y: 40), control1: CGPoint(x: 260, y: 38), control2: CGPoint(x: 300, y: 42))
+                    path.addLine(to: CGPoint(x: 320, y: 100))
+                    path.addLine(to: CGPoint(x: 0, y: 100))
+                    path.closeSubpath()
+                }
+                .fill(
+                    LinearGradient(
+                        colors: [Color.blue.opacity(0.6), Color.blue.opacity(0.1)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                )
+
+                // Blue line on top
+                Path { path in
+                    path.move(to: CGPoint(x: 0, y: 60))
+                    path.addCurve(to: CGPoint(x: 80, y: 45), control1: CGPoint(x: 20, y: 50), control2: CGPoint(x: 60, y: 40))
+                    path.addCurve(to: CGPoint(x: 160, y: 50), control1: CGPoint(x: 100, y: 48), control2: CGPoint(x: 140, y: 52))
+                    path.addCurve(to: CGPoint(x: 240, y: 35), control1: CGPoint(x: 180, y: 45), control2: CGPoint(x: 220, y: 30))
+                    path.addCurve(to: CGPoint(x: 320, y: 40), control1: CGPoint(x: 260, y: 38), control2: CGPoint(x: 300, y: 42))
                 }
                 .stroke(Color.blue, lineWidth: 2)
-                .frame(height: 80)
+                .frame(height: 100)
             }
         }
         .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.1))
+                .fill(Color.black.opacity(0.6))
         )
     }
 
@@ -176,28 +260,69 @@ struct ProgressPageView: View {
 
                 Image(systemName: "chevron.right")
                     .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 14))
             }
 
-            // Mock bar chart
-            HStack(alignment: .bottom, spacing: 8) {
-                ForEach(0..<7, id: \.self) { index in
-                    VStack {
-                        RoundedRectangle(cornerRadius: 2)
-                            .fill(index == 3 ? Color.blue : Color.blue.opacity(0.5))
-                            .frame(width: 20, height: CGFloat.random(in: 40...80))
+            // Detailed bar chart matching mockup
+            ZStack {
+                VStack(spacing: 0) {
+                    // Y-axis labels and chart area
+                    HStack {
+                        VStack(alignment: .leading, spacing: 20) {
+                            Text("1500").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("1000").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("500").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("0").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                        }
+                        .frame(width: 30)
 
-                        Text(["S", "M", "T", "W", "T", "F", "S"][index])
-                            .font(.system(size: 12))
-                            .foregroundColor(.white.opacity(0.6))
+                        // Bar chart
+                        HStack(alignment: .bottom, spacing: 6) {
+                            ForEach(Array(zip([40, 60, 65, 45, 70, 55, 75, 50, 85, 70, 80, 90, 85].indices, [40, 60, 65, 45, 70, 55, 75, 50, 85, 70, 80, 90, 85])), id: \.0) { index, height in
+                                VStack(spacing: 4) {
+                                    RoundedRectangle(cornerRadius: 2)
+                                        .fill(index == 9 ? Color.blue : Color.blue.opacity(0.7))
+                                        .frame(width: 12, height: CGFloat(height))
+
+                                    if index % 4 == 1 {
+                                        Text(["Sun", "Wed", "High"][index / 4])
+                                            .font(.system(size: 10))
+                                            .foregroundColor(.white.opacity(0.6))
+                                    }
+                                }
+                            }
+                        }
+
+                        VStack(alignment: .trailing, spacing: 20) {
+                            Text("120").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("80").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("40").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                            Text("0").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
+                        }
+                        .frame(width: 30)
                     }
+
+                    // Highlight current day value
+                    HStack {
+                        Spacer()
+                        Text("180.3")
+                            .font(.system(size: 12, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(Color.blue)
+                            .cornerRadius(8)
+                        Spacer()
+                    }
+                    .offset(y: -60)
                 }
             }
-            .frame(height: 100)
+            .frame(height: 120)
         }
         .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.1))
+                .fill(Color.black.opacity(0.6))
         )
     }
 
@@ -212,43 +337,65 @@ struct ProgressPageView: View {
 
                 Image(systemName: "chevron.right")
                     .foregroundColor(.white.opacity(0.6))
+                    .font(.system(size: 14))
             }
 
-            HStack {
+            HStack(spacing: 24) {
                 // Circular progress
                 ZStack {
                     Circle()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 8)
-                        .frame(width: 80, height: 80)
+                        .stroke(Color.white.opacity(0.3), lineWidth: 8)
+                        .frame(width: 90, height: 90)
 
                     Circle()
                         .trim(from: 0, to: 0.85)
                         .stroke(Color.blue, style: StrokeStyle(lineWidth: 8, lineCap: .round))
-                        .frame(width: 80, height: 80)
+                        .frame(width: 90, height: 90)
                         .rotationEffect(.degrees(-90))
 
                     Text("85%")
-                        .font(.system(size: 16, weight: .bold))
+                        .font(.system(size: 18, weight: .bold))
                         .foregroundColor(.white)
                 }
 
-                Spacer()
+                VStack(spacing: 8) {
+                    // Calendar header
+                    HStack(spacing: 8) {
+                        ForEach(["M", "T", "W", "T", "F", "S", "S"], id: \.self) { day in
+                            Text(day)
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundColor(.white.opacity(0.6))
+                                .frame(width: 16)
+                        }
+                    }
 
-                // Calendar grid
-                LazyVGrid(columns: Array(repeating: GridItem(.fixed(20)), count: 7), spacing: 4) {
-                    ForEach(0..<28, id: \.self) { day in
-                        Circle()
-                            .fill(day % 3 == 0 ? Color.blue : (day % 5 == 0 ? Color.clear : Color.white.opacity(0.3)))
-                            .frame(width: 16, height: 16)
+                    // Calendar grid - 4 weeks
+                    VStack(spacing: 4) {
+                        ForEach(0..<4, id: \.self) { week in
+                            HStack(spacing: 4) {
+                                ForEach(0..<7, id: \.self) { day in
+                                    let dayIndex = week * 7 + day
+                                    let isWorkoutDay = [2, 4, 6, 8, 10, 13, 15, 17, 20, 22, 24, 26].contains(dayIndex)
+                                    let isToday = dayIndex == 18
+
+                                    Circle()
+                                        .fill(isWorkoutDay ? Color.blue : Color.white.opacity(0.2))
+                                        .frame(width: 16, height: 16)
+                                        .overlay(
+                                            Circle()
+                                                .stroke(isToday ? Color.white : Color.clear, lineWidth: 2)
+                                        )
+                                }
+                            }
+                        }
                     }
                 }
-                .frame(width: 140)
             }
         }
         .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.1))
+                .fill(Color.black.opacity(0.6))
         )
     }
 
@@ -350,7 +497,7 @@ struct SettingsPageView: View {
                     .foregroundColor(.white.opacity(0.6))
             }
         }
-        .padding(.top, 60)
+        .padding(.top, 50)
     }
 
     private var userProfileCard: some View {

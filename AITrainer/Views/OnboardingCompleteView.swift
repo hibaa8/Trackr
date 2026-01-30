@@ -149,62 +149,103 @@ struct ConfettiPiece: View {
 // Main trainer interface matching screen 08 mockup
 struct TrainerMainView: View {
     let coach: Coach
+    @EnvironmentObject var appState: AppState
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
-    @State private var caloriesConsumed = 1850
-    @State private var caloriesGoal = 2500
     @State private var showingWorkoutDetail = false
+    @State private var showLogFoodOptions = false
+    @State private var showMealLogging = false
+    @State private var showManualLogging = false
+    @State private var showPlanDetail = false
+    @State private var showCalorieDetail = false
+    @State private var todayPlan: PlanDayResponse?
+    @State private var isLoadingPlan = false
+    @State private var cancellables = Set<AnyCancellable>()
 
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
 
     var body: some View {
-        ZStack {
-            // Real gym photo background (placeholder - would use actual photo)
-            Image(systemName: "figure.strengthtraining.traditional")
-                .font(.system(size: 200))
-                .foregroundColor(.white.opacity(0.1))
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .background(
+        GeometryReader { geometry in
+            ZStack {
+                // Realistic gym background with person
+                AsyncImage(url: URL(string: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1000&q=80")) { image in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } placeholder: {
+                    // Fallback gym-style background
                     LinearGradient(
-                        colors: [Color.gray.opacity(0.8), Color.black.opacity(0.9)],
-                        startPoint: .top,
-                        endPoint: .bottom
+                        colors: [
+                            Color(red: 0.2, green: 0.25, blue: 0.3),
+                            Color(red: 0.15, green: 0.2, blue: 0.25),
+                            Color(red: 0.1, green: 0.15, blue: 0.2)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
                     )
-                )
+                }
                 .ignoresSafeArea()
 
-            VStack(spacing: 0) {
-                // Header with navigation
-                headerView
+                // Dark overlay for text readability
+                Color.black.opacity(0.3)
+                    .ignoresSafeArea()
 
-                Spacer()
+                VStack(spacing: 0) {
+                    // Header
+                    headerView
 
-                // Main content area
-                VStack(spacing: 20) {
-                    // Greeting text overlay
-                    greetingSection
+                    Spacer()
 
-                    Spacer().frame(height: 40)
+                    // Main content positioned to match mockup
+                    VStack(spacing: 32) {
+                        // Greeting text
+                        greetingSection
 
-                    // Two cards side by side
-                    HStack(spacing: 16) {
-                        todaysPlanCard
-                        calorieBalanceCard
+                        // Cards positioned lower on screen
+                        HStack(spacing: 16) {
+                            todaysPlanCard
+                            calorieBalanceCard
+                        }
+                        .padding(.horizontal, 20)
                     }
-                    .padding(.horizontal, 20)
+                    .padding(.bottom, 120) // Space for bottom toolbar
+
+                    Spacer()
                 }
-
-                Spacer()
-
-                // Bottom toolbar
-                bottomToolbar
             }
         }
         .onReceive(timer) { _ in
             currentTime = Date()
         }
+        .onAppear {
+            appState.refreshDailyData(for: Date())
+            loadTodayPlan()
+        }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(coach: coach)
+        }
+        .sheet(isPresented: $showMealLogging) {
+            MealLoggingView()
+        }
+        .sheet(isPresented: $showManualLogging) {
+            ManualMealEntryView()
+        }
+        .fullScreenCover(isPresented: $showPlanDetail) {
+            TodayPlanDetailView()
+        }
+        .fullScreenCover(isPresented: $showCalorieDetail) {
+            CalorieBalanceDetailView()
+        }
+        .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
+            Button("Log by Camera") {
+                showMealLogging = true
+            }
+            Button("Log by Type") {
+                showManualLogging = true
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -226,7 +267,7 @@ struct TrainerMainView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 60)
+        .padding(.top, 40) // Moved higher as requested
     }
 
     private var greetingSection: some View {
@@ -245,28 +286,35 @@ struct TrainerMainView: View {
     }
 
     private var todaysPlanCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let workoutTitle = todayPlan?.workout_plan ?? "Leg Day - 45 min"
+        let workoutDetails: String
+        if todayPlan?.rest_day == true {
+            workoutDetails = "Rest, recover, and stretch today."
+        } else if let plan = todayPlan?.workout_plan, !plan.isEmpty {
+            workoutDetails = plan
+        } else {
+            workoutDetails = "Warm-up, Squats, Lunges, Cool-down"
+        }
+        let progressText = isLoadingPlan ? "Loading..." : "Tap for details"
+
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Today's Plan")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.white)
 
             VStack(alignment: .leading, spacing: 8) {
-                Text("Leg Day - 45 min")
+                Text(workoutTitle)
                     .font(.system(size: 18, weight: .bold))
                     .foregroundColor(.white)
 
-                Text("Warm-up, Squats,\nLunges, Cool-down")
+                Text(workoutDetails)
                     .font(.system(size: 14, weight: .medium))
-                    .foregroundColor(.white.opacity(0.8))
-                    .fixedSize(horizontal: false, vertical: true)
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(2)
 
                 Spacer()
 
-                VStack(spacing: 4) {
-                    Text("75% Complete")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
-
+                VStack(alignment: .leading, spacing: 6) {
                     ZStack(alignment: .leading) {
                         RoundedRectangle(cornerRadius: 2)
                             .fill(Color.white.opacity(0.3))
@@ -274,77 +322,96 @@ struct TrainerMainView: View {
 
                         RoundedRectangle(cornerRadius: 2)
                             .fill(Color.blue)
-                            .frame(width: 60, height: 4) // 75% of ~80px width
+                            .frame(width: 80, height: 4) // 75% progress
                     }
+
+                    Text(progressText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.8))
                 }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .frame(height: 140)
-        .padding(16)
+        .frame(height: 160)
+        .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.4))
-                .backdrop(blur: 20)
+                .fill(.ultraThinMaterial.opacity(0.8))
+                .background(Color.black.opacity(0.3))
         )
+        .onTapGesture {
+            showPlanDetail = true
+        }
     }
 
     private var calorieBalanceCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        let caloriesConsumed = appState.caloriesIn
+        let caloriesGoal = appState.userData?.calorieTarget ?? 2000
+        let progress = min(1.0, max(0.0, Double(caloriesConsumed) / Double(max(caloriesGoal, 1))))
+
+        return VStack(alignment: .leading, spacing: 12) {
             Text("Calorie Balance")
                 .font(.system(size: 16, weight: .semibold))
                 .foregroundColor(.white)
 
-            VStack(spacing: 20) {
-                // Circular progress with fork/knife icon
+            VStack(spacing: 16) {
+                // Circular progress matching mockup
                 ZStack {
                     Circle()
-                        .stroke(Color.white.opacity(0.2), lineWidth: 6)
-                        .frame(width: 80, height: 80)
+                        .stroke(Color.white.opacity(0.3), lineWidth: 8)
+                        .frame(width: 90, height: 90)
 
                     Circle()
-                        .trim(from: 0, to: CGFloat(caloriesConsumed) / CGFloat(caloriesGoal))
+                        .trim(from: 0, to: progress)
                         .stroke(
                             LinearGradient(
-                                colors: [Color.orange, Color.blue],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
+                                colors: [Color.blue, Color.orange],
+                                startPoint: .leading,
+                                endPoint: .trailing
                             ),
-                            style: StrokeStyle(lineWidth: 6, lineCap: .round)
+                            style: StrokeStyle(lineWidth: 8, lineCap: .round)
                         )
-                        .frame(width: 80, height: 80)
+                        .frame(width: 90, height: 90)
                         .rotationEffect(.degrees(-90))
 
-                    VStack(spacing: 2) {
+                    VStack(spacing: 4) {
                         Image(systemName: "fork.knife")
-                            .font(.system(size: 16))
+                            .font(.system(size: 18, weight: .medium))
                             .foregroundColor(.white)
 
                         Text("\(caloriesConsumed)")
-                            .font(.system(size: 12, weight: .bold))
+                            .font(.system(size: 24, weight: .bold))
                             .foregroundColor(.white)
+
+                        Text("\(caloriesGoal) kcal")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
                     }
                 }
-
-                VStack(spacing: 4) {
-                    Text("\(caloriesConsumed)")
-                        .font(.system(size: 24, weight: .bold))
+                
+                Button(action: { showLogFoodOptions = true }) {
+                    Text("Log food")
+                        .font(.system(size: 12, weight: .semibold))
                         .foregroundColor(.white)
-
-                    Text("\(caloriesGoal) kcal")
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.7))
+                        .cornerRadius(10)
                 }
+                .padding(.top, 6)
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 140)
-        .padding(16)
+        .frame(height: 160)
+        .padding(20)
         .background(
             RoundedRectangle(cornerRadius: 16)
-                .fill(Color.black.opacity(0.4))
-                .backdrop(blur: 20)
+                .fill(.ultraThinMaterial.opacity(0.8))
+                .background(Color.black.opacity(0.3))
         )
+        .onTapGesture {
+            showCalorieDetail = true
+        }
     }
 
     private var bottomToolbar: some View {
@@ -352,15 +419,18 @@ struct TrainerMainView: View {
             // Keyboard icon
             Button(action: {}) {
                 Image(systemName: "keyboard")
-                    .font(.system(size: 24))
+                    .font(.system(size: 22))
                     .foregroundColor(.white)
-                    .frame(width: 60, height: 60)
-                    .background(Color.black.opacity(0.4))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(.ultraThinMaterial.opacity(0.6))
+                    )
             }
 
             Spacer()
 
-            // Voice microphone (main action)
+            // Voice microphone (main action) - matches mockup
             Button(action: {
                 showVoiceChat = true
             }) {
@@ -370,7 +440,7 @@ struct TrainerMainView: View {
                         .frame(width: 64, height: 64)
 
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 28))
+                        .font(.system(size: 24, weight: .medium))
                         .foregroundColor(.white)
                 }
             }
@@ -379,20 +449,25 @@ struct TrainerMainView: View {
 
             // Camera icon
             Button(action: {}) {
-                Image(systemName: "camera")
-                    .font(.system(size: 24))
+                Image(systemName: "camera.fill")
+                    .font(.system(size: 22))
                     .foregroundColor(.white)
-                    .frame(width: 60, height: 60)
-                    .background(Color.black.opacity(0.4))
+                    .frame(width: 44, height: 44)
+                    .background(
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(.ultraThinMaterial.opacity(0.6))
+                    )
             }
         }
-        .frame(height: 80)
-        .padding(.horizontal, 20)
+        .frame(height: 120)
+        .padding(.horizontal, 24)
+        .padding(.bottom, 50) // Moved lower as requested
         .background(
-            Rectangle()
-                .fill(Color.black.opacity(0.3))
-                .backdrop(blur: 20)
+            RoundedRectangle(cornerRadius: 24)
+                .fill(.ultraThinMaterial.opacity(0.9))
+                .background(Color.black.opacity(0.4))
         )
+        .padding(.horizontal, 20)
     }
 
 
@@ -407,7 +482,30 @@ struct TrainerMainView: View {
             return "Good evening!"
         }
     }
+
+    // AppState handles daily intake refresh
+
+    private func loadTodayPlan() {
+        isLoadingPlan = true
+        APIService.shared.getTodayPlan()
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    self.isLoadingPlan = false
+                    if case .failure(let error) = completion {
+                        print("Failed to load today's plan: \(error)")
+                    }
+                },
+                receiveValue: { plan in
+                    self.todayPlan = plan
+                }
+            )
+            .store(in: &cancellables)
+    }
 }
+
+// Alias for the trainer content without bottom toolbar
+typealias TrainerMainViewContent = TrainerMainView
 
 // Voice Active View matching screen 09 mockup
 struct VoiceActiveView: View {
@@ -415,6 +513,10 @@ struct VoiceActiveView: View {
     @State private var messages: [VoiceMessage] = []
     @State private var isListening = true
     @State private var waveAnimation = false
+    @State private var cancellables = Set<AnyCancellable>()
+    @State private var messageText = ""
+    @State private var isLoading = false
+    @State private var threadId: String?
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
@@ -460,7 +562,7 @@ struct VoiceActiveView: View {
                 // Chat messages
                 ScrollView {
                     VStack(spacing: 16) {
-                        ForEach(sampleMessages) { message in
+                        ForEach(messages) { message in
                             VoiceMessageBubble(message: message, coach: coach)
                         }
                     }
@@ -471,20 +573,56 @@ struct VoiceActiveView: View {
                 Spacer()
 
                 // Voice waveform and listening indicator
-                VStack(spacing: 20) {
+                VStack(spacing: 16) {
                     // Animated waveform
                     VoiceWaveform(isAnimating: $waveAnimation)
 
-                    Text("Listening...")
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.white)
+                    if isLoading {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                                .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                            Text("Coach is thinking...")
+                                .font(.system(size: 16, weight: .medium))
+                                .foregroundColor(.white)
+                        }
+                    } else {
+                        Text("Listening...")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white)
+                    }
                 }
+
+                // Text input for agent chat
+                HStack(spacing: 12) {
+                    TextField("Type to ask your coach...", text: $messageText)
+                        .font(.system(size: 15))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 20)
+                                .fill(Color.white.opacity(0.15))
+                        )
+
+                    Button(action: sendMessage) {
+                        Image(systemName: "paperplane.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(
+                                Circle()
+                                    .fill(messageText.isEmpty ? Color.gray.opacity(0.4) : Color.blue)
+                            )
+                    }
+                    .disabled(messageText.isEmpty || isLoading)
+                }
+                .padding(.horizontal, 20)
                 .padding(.bottom, 40)
             }
         }
         .onAppear {
             startListeningAnimation()
-            loadSampleConversation()
+            loadWelcomeMessage()
         }
     }
 
@@ -494,16 +632,53 @@ struct VoiceActiveView: View {
         }
     }
 
-    private func loadSampleConversation() {
-        messages = sampleMessages
+    private func loadWelcomeMessage() {
+        if messages.isEmpty {
+            messages = [
+                VoiceMessage(
+                    id: UUID(),
+                    text: "Hi! I'm here to help. Ask me anything about workouts, nutrition, or your plan.",
+                    isFromCoach: true,
+                    timestamp: Date()
+                )
+            ]
+        }
     }
 
-    private var sampleMessages: [VoiceMessage] {
-        [
-            VoiceMessage(id: UUID(), text: "How was your workout today?", isFromCoach: true, timestamp: Date()),
-            VoiceMessage(id: UUID(), text: "Great! Finished all sets.", isFromCoach: false, timestamp: Date()),
-            VoiceMessage(id: UUID(), text: "Excellent! Let's log your meal now.", isFromCoach: true, timestamp: Date())
-        ]
+    private func sendMessage() {
+        let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        let userMessage = VoiceMessage(id: UUID(), text: trimmed, isFromCoach: false, timestamp: Date())
+        messages.append(userMessage)
+        messageText = ""
+        isLoading = true
+
+        AICoachService.shared.sendMessage(trimmed, threadId: threadId) { result in
+            DispatchQueue.main.async {
+                self.isLoading = false
+                switch result {
+                case .success(let response):
+                    self.threadId = response.thread_id
+                    let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                    let coachMessage = VoiceMessage(
+                        id: UUID(),
+                        text: replyText,
+                        isFromCoach: true,
+                        timestamp: Date()
+                    )
+                    self.messages.append(coachMessage)
+                case .failure:
+                    let errorMessage = VoiceMessage(
+                        id: UUID(),
+                        text: "I couldn’t reach the coach service. Please make sure the backend is running.",
+                        isFromCoach: true,
+                        timestamp: Date()
+                    )
+                    self.messages.append(errorMessage)
+                }
+            }
+        }
     }
 }
 
@@ -583,16 +758,6 @@ struct VoiceWaveform: View {
     }
 }
 
-// Backdrop blur effect extension
-extension View {
-    func backdrop(blur radius: CGFloat) -> some View {
-        self.background(
-            Rectangle()
-                .fill(.ultraThinMaterial)
-                .blur(radius: radius)
-        )
-    }
-}
 
 #Preview {
     OnboardingCompleteView(coach: Coach.allCoaches[0])

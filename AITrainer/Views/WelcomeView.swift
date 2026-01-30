@@ -45,7 +45,7 @@ struct WelcomeView: View {
 
 private extension WelcomeView {
     var headerSection: some View {
-        VStack(spacing: 16) {
+            VStack(spacing: 16) {
             ZStack {
                 Circle()
                     .fill(LinearGradient.fitnessGradient)
@@ -57,11 +57,11 @@ private extension WelcomeView {
                     .foregroundColor(.white)
             }
 
-            Text("AI Trainer")
+                Text("AI Trainer")
                 .font(.displayLarge)
                 .foregroundColor(.textPrimary)
 
-            Text("Your personal AI fitness coach")
+                Text("Your personal AI fitness coach")
                 .font(.bodyLarge)
                 .foregroundColor(.textSecondary)
         }
@@ -73,7 +73,7 @@ private extension WelcomeView {
                 Picker("Auth Mode", selection: $mode) {
                     ForEach(AuthMode.allCases, id: \.self) { option in
                         Text(option.rawValue).tag(option)
-                    }
+            }
                 }
                 .pickerStyle(SegmentedPickerStyle())
 
@@ -92,8 +92,8 @@ private extension WelcomeView {
                     icon: "envelope.fill",
                     placeholder: "Enter your email"
                 )
-                .keyboardType(.emailAddress)
-                .autocapitalization(.none)
+                    .keyboardType(.emailAddress)
+                    .autocapitalization(.none)
 
                 SecureFieldView(
                     title: "Password",
@@ -119,8 +119,8 @@ private extension WelcomeView {
 
                 if mode == .signIn {
                     ModernSecondaryButton(title: "Skip to Demo") {
-                        authManager.signIn(email: "demo", password: "demo")
-                    }
+                    authManager.signIn(email: "demo", password: "demo")
+                }
                 }
             }
             .padding(24)
@@ -133,7 +133,7 @@ private extension WelcomeView {
                 .font(.captionMedium)
                 .foregroundColor(.textTertiary)
                 .multilineTextAlignment(.center)
-        }
+            }
         .padding(.horizontal, 24)
     }
 
@@ -177,7 +177,7 @@ struct SecureFieldView: View {
                 Text(title)
                     .font(.bodyMedium)
                     .foregroundColor(.textPrimary)
-            }
+        }
 
             SecureField("Enter your password", text: $text)
                 .font(.bodyLarge)

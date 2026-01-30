@@ -17,6 +17,7 @@ struct FoodScanItemResponse: Codable {
     let protein_g: Double
     let carbs_g: Double
     let fat_g: Double
+    let category: String?
     let confidence: Double
 }
 
@@ -83,6 +84,16 @@ struct RecipeSearchResultItem: Codable, Identifiable {
 struct RecipeSearchResponse: Codable {
     let results: [RecipeSearchResultItem]
     let detected_ingredients: [String]?
+}
+
+struct PlanDayResponse: Codable {
+    let date: String
+    let workout_plan: String
+    let rest_day: Bool
+    let calorie_target: Int
+    let protein_g: Int
+    let carbs_g: Int
+    let fat_g: Int
 }
 
 // This file intentionally left minimal to avoid conflicts.

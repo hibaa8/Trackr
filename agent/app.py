@@ -10,6 +10,7 @@ import os
 import re
 import sqlite3
 import ssl
+import sys
 import time
 import uuid
 from datetime import date, datetime
@@ -34,6 +35,8 @@ from config.constants import DB_PATH
 
 # Configuration
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
 _ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
@@ -131,11 +134,11 @@ def _resolve_gemini_model_name() -> str:
         models = []
     for model in models:
         name = getattr(model, "name", "")
-        if any(key in name for key in ("gemini-1.5-flash", "gemini-1.5-pro")):
+        if any(key in name for key in ("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro")):
             return name
     if models:
-        return getattr(models[0], "name", "gemini-1.5-flash")
-    return "gemini-1.5-flash"
+        return getattr(models[0], "name", "gemini-2.5-flash-lite")
+    return "gemini-2.5-flash-lite"
 
 
 def _get_gemini_model():
@@ -145,8 +148,13 @@ def _get_gemini_model():
             raise RuntimeError("Missing GEMINI_API_KEY env var")
         genai.configure(api_key=GEMINI_API_KEY)
         model_name = _resolve_gemini_model_name()
+        print(f"🔄 Initializing Gemini model: {model_name}")  # Debug log
         _GEMINI_MODEL = genai.GenerativeModel(model_name)
     return _GEMINI_MODEL
+
+def _reset_gemini_model():
+    global _GEMINI_MODEL
+    _GEMINI_MODEL = None
 
 
 def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
@@ -179,20 +187,89 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
 
 
 def _extract_ingredients_from_image(image_bytes: bytes) -> List[str]:
-    model = _get_gemini_model()
     prompt = (
         "Identify the ingredients in the photo and return JSON only with this schema: "
         "{\"ingredients\":[\"string\", ...]}. No markdown."
     )
-    image_obj = Image.open(io.BytesIO(image_bytes))
-    response = model.generate_content(
-        [prompt, image_obj],
-        generation_config={"temperature": 0.1},
-    )
-    content = getattr(response, "text", "") or ""
+    content = _gemini_generate_content(prompt, image_bytes=image_bytes, temperature=0.1)
     payload = _safe_parse_json(content)
     ingredients = payload.get("ingredients", []) if isinstance(payload, dict) else []
     return [item.strip() for item in ingredients if isinstance(item, str) and item.strip()]
+
+
+def _categorize_food_name(food_name: str) -> str:
+    name = (food_name or "").lower()
+    if any(k in name for k in ["chicken", "beef", "fish", "egg", "pork"]):
+        return "protein"
+    if any(k in name for k in ["salad", "lettuce", "broccoli", "spinach"]):
+        return "vegetable"
+    if any(k in name for k in ["apple", "banana", "orange", "berry"]):
+        return "fruit"
+    if any(k in name for k in ["rice", "bread", "pasta", "noodle"]):
+        return "grain"
+    if any(k in name for k in ["milk", "yogurt", "cheese"]):
+        return "dairy"
+    if any(k in name for k in ["nut", "almond", "peanut"]):
+        return "nuts"
+    if any(k in name for k in ["cake", "cookie", "dessert"]):
+        return "dessert"
+    if any(k in name for k in ["coffee", "tea", "juice", "soda"]):
+        return "beverage"
+    if any(k in name for k in ["burger", "pizza", "fries"]):
+        return "fast_food"
+    if any(k in name for k in ["soup", "broth"]):
+        return "soup"
+    if any(k in name for k in ["bowl", "plate", "mix"]):
+        return "mixed"
+    return "other"
+
+
+def _gemini_generate_content(
+    prompt: str,
+    image_bytes: Optional[bytes] = None,
+    temperature: float = 0.2,
+) -> str:
+    """Call Gemini via REST to avoid gRPC DNS issues."""
+    if not GEMINI_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
+    model_name = _resolve_gemini_model_name()
+    if not model_name.startswith("models/"):
+        model_name = f"models/{model_name}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
+    parts: List[Dict[str, Any]] = [{"text": prompt}]
+    if image_bytes:
+        encoded = base64.b64encode(image_bytes).decode("utf-8")
+        parts.append(
+            {
+                "inline_data": {
+                    "mime_type": "image/jpeg",
+                    "data": encoded,
+                }
+            }
+        )
+    payload = {
+        "contents": [{"role": "user", "parts": parts}],
+        "generationConfig": {"temperature": temperature},
+    }
+    data = json.dumps(payload).encode("utf-8")
+    request = urllib.request.Request(
+        url,
+        data=data,
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        ssl_context = ssl.create_default_context(cafile=certifi.where())
+        with urllib.request.urlopen(request, timeout=30, context=ssl_context) as response:
+            result = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Gemini request failed: {exc}") from exc
+
+    candidates = result.get("candidates", []) if isinstance(result, dict) else []
+    if not candidates:
+        return ""
+    parts = candidates[0].get("content", {}).get("parts", [])
+    texts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
+    return "\n".join(texts).strip()
 
 
 def _tavily_search(query: str, max_results: int = 6) -> List[Dict[str, Any]]:
@@ -298,6 +375,7 @@ class FoodScanItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    category: Optional[str] = None
     confidence: float
 
 
@@ -343,6 +421,16 @@ class MealLogItem(BaseModel):
 class DailyMealLogsResponse(BaseModel):
     date: str
     meals: List[MealLogItem]
+
+
+class PlanDayResponse(BaseModel):
+    date: str
+    workout_plan: str
+    rest_day: bool
+    calorie_target: int
+    protein_g: int
+    carbs_g: int
+    fat_g: int
 
 
 class RecipeSuggestRequest(BaseModel):
@@ -812,7 +900,6 @@ async def scan_food(file: UploadFile = File(...)):
     if file is None:
         raise HTTPException(status_code=400, detail="Missing image file")
     image = await file.read()
-    model = _get_gemini_model()
     encoded = base64.b64encode(image).decode("utf-8")
     prompt = (
         "You are a nutrition assistant. Analyze the meal photo and return JSON only. "
@@ -839,16 +926,15 @@ async def scan_food(file: UploadFile = File(...)):
         "}"
     )
     prompt = "Return strictly valid JSON. No markdown. " + prompt
-    image_obj = Image.open(io.BytesIO(image))
-    response = model.generate_content(
-        [prompt, image_obj],
-        generation_config={"temperature": 0.2},
-    )
-    content = getattr(response, "text", "") or ""
+    content = _gemini_generate_content(prompt, image_bytes=image, temperature=0.2)
     payload = _safe_parse_json(content)
     if not payload:
         raise HTTPException(status_code=502, detail="Failed to parse AI response")
     items = payload.get("items", []) or []
+    if isinstance(items, list):
+        for item in items:
+            if isinstance(item, dict) and not item.get("category"):
+                item["category"] = _categorize_food_name(item.get("name", ""))
     if not payload.get("total_calories"):
         payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items)
     return FoodScanResponse(**payload)
@@ -927,12 +1013,7 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         f"Available ingredients: {', '.join(combined) if combined else 'None provided'}."
     )
 
-    model = _get_gemini_model()
-    response = model.generate_content(
-        [prompt],
-        generation_config={"temperature": 0.3},
-    )
-    content = getattr(response, "text", "") or ""
+    content = _gemini_generate_content(prompt, temperature=0.3)
     payload_json = _safe_parse_json(content)
     recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
     recipes = []
@@ -1093,6 +1174,30 @@ def get_food_logs(user_id: int = 1, day: Optional[str] = None):
         for row in rows
     ]
     return DailyMealLogsResponse(date=target_day, meals=meals)
+
+
+@app.get("/plans/today", response_model=PlanDayResponse)
+def get_today_plan(user_id: int = 1, day: Optional[str] = None):
+    """Return the active plan day for a specific date (defaults to today)."""
+    from tools.plan_tools import _get_active_plan_bundle_data
+
+    target_day = day or date.today().isoformat()
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+    plan_days = bundle.get("plan_days", []) if isinstance(bundle, dict) else []
+    day_data = next((d for d in plan_days if d.get("date") == target_day), None)
+    if not day_data:
+        raise HTTPException(status_code=404, detail="No plan found for requested day")
+
+    workout_plan = day_data.get("workout_plan") or "Workout"
+    return PlanDayResponse(
+        date=day_data.get("date", target_day),
+        workout_plan=workout_plan,
+        rest_day=bool(day_data.get("rest_day")),
+        calorie_target=int(day_data.get("calorie_target") or 0),
+        protein_g=int(day_data.get("protein_g") or 0),
+        carbs_g=int(day_data.get("carbs_g") or 0),
+        fat_g=int(day_data.get("fat_g") or 0),
+    )
 
 
 if __name__ == "__main__":

@@ -460,21 +460,21 @@ struct ModernAchievementCard: View {
         ModernCard {
             VStack(alignment: .leading, spacing: 16) {
                 HStack {
-                    ZStack {
-                        Circle()
+                ZStack {
+                    Circle()
                             .fill(gradient.opacity(0.25))
                             .frame(width: 56, height: 56)
                             .blur(radius: 8)
 
-                        Circle()
+                    Circle()
                             .fill(gradient.opacity(0.2))
                             .frame(width: 48, height: 48)
-                            .overlay(
-                                Circle()
+                        .overlay(
+                            Circle()
                                     .stroke(Color.white.opacity(0.6), lineWidth: 1)
-                            )
+                        )
 
-                        Text(icon)
+                    Text(icon)
                             .font(.system(size: 20))
                     }
 

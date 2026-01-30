@@ -138,16 +138,16 @@ struct WireframeProfileView: View {
                         .frame(width: 120, height: 120)
                         .clipShape(Circle())
                 } else {
-                    Text("👤")
-                        .font(.system(size: 60))
-                        .foregroundColor(.white)
-                        .scaleEffect(1.0 + sin(profileImageOffset) * 0.05)
-                        .onAppear {
-                            withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
-                                profileImageOffset = .pi * 2
+                Text("👤")
+                    .font(.system(size: 60))
+                    .foregroundColor(.white)
+                    .scaleEffect(1.0 + sin(profileImageOffset) * 0.05)
+                    .onAppear {
+                        withAnimation(.easeInOut(duration: 3.0).repeatForever(autoreverses: true)) {
+                            profileImageOffset = .pi * 2
                             }
                         }
-                }
+                    }
 
                 // Online status indicator
                 Circle()
@@ -196,36 +196,36 @@ struct WireframeProfileView: View {
 
             ModernCard {
                 VStack(spacing: 0) {
-                    ModernProfileRow(
-                        icon: "person.fill",
-                        title: "Age",
+                        ModernProfileRow(
+                            icon: "person.fill",
+                            title: "Age",
                         value: valueOrSetup(userData.age, suffix: "years"),
-                        color: .blue
-                    ) {
+                            color: .blue
+                        ) {
                         showPhysicalStatsEdit = true
                     }
 
                     ModernDivider()
 
-                    ModernProfileRow(
-                        icon: "ruler.fill",
-                        title: "Height",
+                        ModernProfileRow(
+                            icon: "ruler.fill",
+                            title: "Height",
                         value: valueOrSetup(userData.height, suffix: "in"),
-                        color: .green
-                    ) {
+                            color: .green
+                        ) {
                         showPhysicalStatsEdit = true
                     }
 
                     ModernDivider()
 
-                    ModernProfileRow(
-                        icon: "scalemass.fill",
-                        title: "Current Weight",
+                        ModernProfileRow(
+                            icon: "scalemass.fill",
+                            title: "Current Weight",
                         value: valueOrSetup(userData.weight, suffix: "lbs"),
-                        color: .purple
-                    ) {
+                            color: .purple
+                        ) {
                         showPhysicalStatsEdit = true
-                    }
+                        }
                 }
                 .padding(.vertical, 12)
             }
@@ -257,18 +257,18 @@ struct WireframeProfileView: View {
                         title: "Goal Weight",
                         value: valueOrSetup(userData.goalWeight, suffix: "lbs"),
                         color: .orange
-                    ) {
+                        ) {
                         showGoalsEdit = true
                     }
 
                     ModernDivider()
 
-                    ModernProfileRow(
+                        ModernProfileRow(
                         icon: "flame.fill",
                         title: "Daily Calorie Target",
                         value: "\(userData.calorieTarget) cal",
                         color: .red
-                    ) {
+                        ) {
                         showGoalsEdit = true
                     }
                 }

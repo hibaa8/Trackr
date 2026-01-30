@@ -3,7 +3,7 @@ import Foundation
 final class RecipeSearchService {
     static let shared = RecipeSearchService()
 
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
 
     private init() {

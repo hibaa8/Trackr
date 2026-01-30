@@ -3,7 +3,7 @@ import Foundation
 final class FoodScanService {
     static let shared = FoodScanService()
 
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
 
     private init() {
@@ -72,6 +72,7 @@ final class FoodScanService {
             "items": payload.items.map {
                 [
                     "name": $0.name,
+                    "category": $0.category as Any,
                     "amount": $0.amount,
                     "calories": $0.calories,
                     "protein_g": $0.protein_g,

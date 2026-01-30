@@ -15,7 +15,7 @@ struct CoachFeedbackResponse: Decodable {
 final class AICoachService {
     static let shared = AICoachService()
 
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
 
     private init() {

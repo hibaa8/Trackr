@@ -544,7 +544,7 @@ class RecipeFinderViewModel: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     
-    private let baseURL = "http://localhost:8000"
+    private var baseURL: String { BackendConfig.baseURL }
     
     func requestGeminiImage(for recipe: RecipeItem) {
         RecipeImageService.shared.fetchImageURL(prompt: "\(recipe.name) food photography") { [weak self] result in

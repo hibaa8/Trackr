@@ -20,7 +20,7 @@ enum APIError: Error {
 class APIService {
     static let shared = APIService()
     
-    private let baseURL = "https://api.trackr.app" // Replace with your actual backend URL
+    private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
     private var cancellables = Set<AnyCancellable>()
     
@@ -92,59 +92,73 @@ class APIService {
     // MARK: - Authentication
     
     func signIn(email: String, password: String) -> AnyPublisher<User, APIError> {
-        let body = ["email": email, "password": password]
+        struct SignInRequest: Codable {
+            let email: String
+            let password: String
+        }
+
+        let body = SignInRequest(email: email, password: password)
         guard let jsonData = try? JSONEncoder().encode(body) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
+
         return request(endpoint: "/auth/signin", method: "POST", body: jsonData)
     }
-    
+
     func signUp(email: String, password: String, name: String) -> AnyPublisher<User, APIError> {
-        let body = ["email": email, "password": password, "name": name]
+        struct SignUpRequest: Codable {
+            let email: String
+            let password: String
+            let name: String
+        }
+
+        let body = SignUpRequest(email: email, password: password, name: name)
         guard let jsonData = try? JSONEncoder().encode(body) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
+
         return request(endpoint: "/auth/signup", method: "POST", body: jsonData)
     }
     
     // MARK: - Food Logging
     
-    func analyzeFoodImage(imageData: Data) -> AnyPublisher<FoodRecognitionResponse, APIError> {
-        // In production, upload image to Google Vision API + Gemini API
-        // For now, return mock data
-        let mockIngredient = FoodIngredient(
-            name: "Sample Ingredient",
-            calories: 100,
-            amount: "1 cup",
-            confidence: 0.85
-        )
-        
-        let mockResponse = FoodRecognitionResponse(
-            foodName: "Sample Food",
-            totalCalories: 300,
-            macros: Macros(protein: 10, carbs: 30, fat: 15),
-            ingredients: [mockIngredient],
-            confidence: 0.85
-        )
-        
-        return Just(mockResponse)
-            .setFailureType(to: APIError.self)
-            .eraseToAnyPublisher()
+    func analyzeFoodImage(imageData: Data) -> AnyPublisher<FoodScanResponse, APIError> {
+        // Create multipart form data
+        let boundary = UUID().uuidString
+        var body = Data()
+
+        // Add image data
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"image\"; filename=\"food.jpg\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+        body.append(imageData)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+
+        let headers = ["Content-Type": "multipart/form-data; boundary=\(boundary)"]
+
+        return request(endpoint: "/food/scan", method: "POST", body: body, headers: headers)
     }
     
     func saveFoodLog(_ foodLog: FoodLog) -> AnyPublisher<FoodLog, APIError> {
         guard let jsonData = try? JSONEncoder().encode(foodLog) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
-        return request(endpoint: "/food-logs", method: "POST", body: jsonData)
+
+        return request(endpoint: "/food/logs", method: "POST", body: jsonData)
     }
-    
-    func getFoodLogs(date: Date) -> AnyPublisher<[FoodLog], APIError> {
-        let dateString = ISO8601DateFormatter().string(from: date)
-        return request(endpoint: "/food-logs?date=\(dateString)")
+
+    func getFoodLogs(date: Date, userId: Int = 1) -> AnyPublisher<DailyMealLogsResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/food/logs?day=\(dateString)&user_id=\(userId)")
+    }
+
+    func getDailyIntake(date: Date, userId: Int = 1) -> AnyPublisher<DailyIntakeResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/food/intake?day=\(dateString)&user_id=\(userId)")
     }
     
     // MARK: - Workouts
@@ -172,6 +186,15 @@ class APIService {
         let dateString = ISO8601DateFormatter().string(from: startDate)
         return request(endpoint: "/progress/weekly?start=\(dateString)")
     }
+
+    // MARK: - Plans
+
+    func getTodayPlan(date: Date = Date(), userId: Int = 1) -> AnyPublisher<PlanDayResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/plans/today?day=\(dateString)&user_id=\(userId)")
+    }
     
     // MARK: - AI Coaching
     
@@ -180,21 +203,95 @@ class APIService {
     }
     
     func respondToSuggestion(suggestionId: UUID, response: SuggestionStatus) -> AnyPublisher<AISuggestion, APIError> {
-        let body = ["status": response.rawValue]
+        struct SuggestionResponse: Codable {
+            let status: String
+        }
+
+        let body = SuggestionResponse(status: response.rawValue)
         guard let jsonData = try? JSONEncoder().encode(body) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
+
         return request(endpoint: "/ai/suggestions/\(suggestionId.uuidString)", method: "PATCH", body: jsonData)
     }
     
-    func sendCoachingMessage(_ message: String) -> AnyPublisher<CoachingMessage, APIError> {
-        let body = ["message": message]
+    func sendCoachingMessage(_ message: String, userId: Int = 1) -> AnyPublisher<CoachChatResponse, APIError> {
+        struct ChatRequest: Codable {
+            let message: String
+            let user_id: Int
+        }
+
+        let body = ChatRequest(message: message, user_id: userId)
         guard let jsonData = try? JSONEncoder().encode(body) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
-        return request(endpoint: "/ai/chat", method: "POST", body: jsonData)
+
+        return request(endpoint: "/coach/chat", method: "POST", body: jsonData)
+    }
+
+    // MARK: - Videos
+
+    func getCategories() -> AnyPublisher<[String], APIError> {
+        return request(endpoint: "/categories")
+    }
+
+    func getVideos(category: String? = nil, limit: Int = 10) -> AnyPublisher<[WorkoutVideo], APIError> {
+        var endpoint = "/videos?limit=\(limit)"
+        if let category = category {
+            endpoint += "&category=\(category)"
+        }
+        return request(endpoint: endpoint)
+    }
+
+    func getVideo(videoId: String) -> AnyPublisher<WorkoutVideo, APIError> {
+        return request(endpoint: "/video/\(videoId)")
+    }
+
+    // MARK: - Gyms
+
+    func getNearbyGyms(latitude: Double, longitude: Double, radius: Int = 5000) -> AnyPublisher<[Gym], APIError> {
+        return request(endpoint: "/gyms/nearby?latitude=\(latitude)&longitude=\(longitude)&radius=\(radius)")
+    }
+
+    func searchGyms(query: String, latitude: Double, longitude: Double) -> AnyPublisher<[Gym], APIError> {
+        let encodedQuery = query.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? ""
+        return request(endpoint: "/gyms/search?query=\(encodedQuery)&latitude=\(latitude)&longitude=\(longitude)")
+    }
+
+    // MARK: - Recipes
+
+    func suggestRecipes(dietaryRestrictions: [String]? = nil, cuisine: String? = nil, mealType: String? = nil) -> AnyPublisher<RecipeSuggestionResponse, APIError> {
+        struct RecipeSuggestRequest: Codable {
+            let dietary_restrictions: [String]?
+            let cuisine: String?
+            let meal_type: String?
+        }
+
+        let body = RecipeSuggestRequest(
+            dietary_restrictions: dietaryRestrictions,
+            cuisine: cuisine,
+            meal_type: mealType
+        )
+
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+
+        return request(endpoint: "/recipes/suggest", method: "POST", body: jsonData)
+    }
+
+    func searchRecipes(query: String, maxResults: Int = 10) -> AnyPublisher<RecipeSearchResponse, APIError> {
+        struct RecipeSearchRequest: Codable {
+            let query: String
+            let max_results: Int
+        }
+
+        let body = RecipeSearchRequest(query: query, max_results: maxResults)
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+
+        return request(endpoint: "/recipes/search", method: "POST", body: jsonData)
     }
     
     // MARK: - User Profile
