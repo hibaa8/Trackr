@@ -67,6 +67,18 @@ def _normalize_meal_time(consumed_at: Optional[str]) -> str:
     return value
 
 
+def _estimate_macros_from_calories(total_calories: int) -> dict[str, int]:
+    # MVP default split: 30% protein / 40% carbs / 30% fat.
+    protein_cals = total_calories * 0.3
+    carbs_cals = total_calories * 0.4
+    fat_cals = total_calories * 0.3
+    return {
+        "protein_g": int(round(protein_cals / 4)),
+        "carbs_g": int(round(carbs_cals / 4)),
+        "fat_g": int(round(fat_cals / 9)),
+    }
+
+
 def _load_meal_logs_draft(user_id: int) -> dict:
     draft_key = _draft_meal_logs_key(user_id)
     cached = _redis_get_json(draft_key)
@@ -140,6 +152,9 @@ def log_meal(
     items: Optional[List[str]] = None,
     consumed_at: Optional[str] = None,
     total_calories: Optional[int] = None,
+    protein_g: Optional[int] = None,
+    carbs_g: Optional[int] = None,
+    fat_g: Optional[int] = None,
     notes: Optional[str] = None,
 ) -> str:
     """Log a meal entry into the cache and database."""
@@ -150,6 +165,13 @@ def log_meal(
         return "What items were included in the meal?"
     if total_calories is None:
         total_calories = _estimate_meal_calories(meal_items)
+    macros = {
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fat_g": fat_g,
+    }
+    if not all(isinstance(value, int) and value >= 0 for value in macros.values()):
+        macros = _estimate_macros_from_calories(total_calories)
     logged_at = _normalize_meal_time(consumed_at)
     description = ", ".join(meal_items)
     if notes:
@@ -161,9 +183,9 @@ def log_meal(
         "logged_at": logged_at,
         "description": description,
         "calories": total_calories,
-        "protein_g": 0,
-        "carbs_g": 0,
-        "fat_g": 0,
+        "protein_g": macros["protein_g"],
+        "carbs_g": macros["carbs_g"],
+        "fat_g": macros["fat_g"],
         "confidence": 0.5,
         "confirmed": 1,
     }

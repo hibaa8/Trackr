@@ -1209,7 +1209,7 @@ def propose_plan_patch_with_llm(
     plan_start = plan.get("start_date")
     plan_days_sorted = sorted([d for d in plan_days if d.get("date")], key=lambda d: d["date"])
     upcoming = [d for d in plan_days_sorted if d["date"] >= start_day]
-    next_days = upcoming[:14]
+    next_days = upcoming
 
     status_raw = compute_plan_status.func(user_id, as_of_date=as_of.isoformat())
     status_summary = _compact_status_summary(status_raw)
@@ -1343,11 +1343,52 @@ def search_web(query: str) -> str:
 @tool("compute_plan_status")
 def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     """Compute plan status from cached check-ins, meals, workouts, and checkpoints."""
-    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(_draft_plan_key(user_id)) or {}
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
     plan = bundle.get("plan") if isinstance(bundle, dict) else None
     checkpoints = bundle.get("checkpoints", []) if isinstance(bundle, dict) else []
     if not plan or not checkpoints:
-        return json.dumps({"status": "insufficient_data"})
+        meals = _redis_get_json(_draft_meal_logs_key(user_id)) or _load_meal_logs_draft(user_id)
+        meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
+        workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or _load_workout_sessions_draft(user_id)
+        workout_rows = workouts.get("sessions", []) if isinstance(workouts, dict) else []
+        checkins = _redis_get_json(_draft_checkins_key(user_id)) or _load_checkins_draft(user_id)
+        checkin_rows = checkins.get("checkins", []) if isinstance(checkins, dict) else []
+
+        today = date.today()
+        days = [(today - timedelta(days=offset)).isoformat() for offset in range(7)]
+        meal_days = {
+            day
+            for day in days
+            if any((m.get("logged_at") or "").startswith(day) for m in meal_rows)
+        }
+        workout_days = {
+            day
+            for day in days
+            if any((w.get("date") or "") == day for w in workout_rows)
+        }
+        recent_weighins = [
+            c
+            for c in checkin_rows
+            if c.get("checkin_date")
+            and (today - datetime.strptime(c["checkin_date"], "%Y-%m-%d").date()).days <= 14
+        ]
+        explanation = (
+            f"Logged meals on {len(meal_days)} day(s) and workouts on {len(workout_days)} day(s) "
+            f"in the last 7 days. Add a plan (or regenerate it) plus 2 weigh-ins to unlock "
+            "full progress insights."
+        )
+        return json.dumps(
+            {
+                "status": "limited",
+                "as_of": today.isoformat(),
+                "last_7d": {
+                    "meal_log_days": len(meal_days),
+                    "workouts_done": len(workout_days),
+                    "weighins_14d": len(recent_weighins),
+                },
+                "explanation": explanation,
+            }
+        )
 
     as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date() if as_of_date else date.today()
     start_date = datetime.strptime(plan["start_date"], "%Y-%m-%d").date()
@@ -1392,14 +1433,15 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
             if len(recent_14) >= 2:
                 break
         trend_weights = recent_14
+    weight_insufficient = False
     if len(trend_weights) < 2 and recent_weighins_count < 2:
-        return json.dumps({"status": "insufficient_data"})
+        weight_insufficient = True
 
-    current_trend = sum(trend_weights) / len(trend_weights)
     expected_kg = checkpoint["expected_weight_kg"]
     min_kg = checkpoint["min_weight_kg"]
     max_kg = checkpoint["max_weight_kg"]
     band = max(0.5, max(abs(expected_kg - min_kg), abs(max_kg - expected_kg)))
+    current_trend = sum(trend_weights) / len(trend_weights) if trend_weights else expected_kg
     weight_error = current_trend - expected_kg
 
     context = _load_user_context_data(user_id)
@@ -1408,9 +1450,9 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     user = context.get("user") if isinstance(context, dict) else None
     weight_for_burn = user[4] if user and len(user) > 4 else 0
 
-    meals = _redis_get_json(_draft_meal_logs_key(user_id)) or {"meals": []}
+    meals = _redis_get_json(_draft_meal_logs_key(user_id)) or _load_meal_logs_draft(user_id)
     meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
-    workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or {"sessions": []}
+    workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or _load_workout_sessions_draft(user_id)
     workout_rows = workouts.get("sessions", []) if isinstance(workouts, dict) else []
     activity = _redis_get_json(_draft_health_activity_key(user_id)) or _load_health_activity_draft(user_id)
     activity_rows = activity.get("activity", []) if isinstance(activity, dict) else []
@@ -1536,10 +1578,10 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     weekly_burn_delta = sum(d["burn_delta"] for d in burn_days if d.get("burn_delta") is not None)
     weekly_net_delta_est = weekly_intake_delta - weekly_burn_delta
 
-    if meal_log_days < 3 and recent_weighins_count < 2:
+    if meal_log_days < 1 and workouts_done < 1 and recent_weighins_count < 1:
         status = "insufficient_data"
     else:
-        weight_ok = min_kg <= current_trend <= max_kg
+        weight_ok = True if weight_insufficient else min_kg <= current_trend <= max_kg
         nutrition_ok_week = None if not intake_days else abs(avg_intake - avg_target) <= 150
         training_ok_week = True if workouts_planned <= 0 else workouts_missed <= 1
         intensity_checks = [
@@ -1590,6 +1632,8 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
         f"intensity below target on {sum(1 for d in last_7d_days if d.get('intensity_ok') is False)} day(s). "
         f"{suggestion}"
     )
+    if weight_insufficient:
+        explanation = f"{explanation} Add another weigh-in this week for higher accuracy."
 
     status_payload = {
         "status": status,

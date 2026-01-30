@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-DB_PATH = "/Users/admin/Documents/AI-trainer-agent/data/ai_trainer.db"
+# BASE_DIR points to the project root (Trackr/)
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+# Use relative paths for deployment compatibility
+DB_PATH = str(BASE_DIR / "data" / "ai_trainer.db")
+RAG_SOURCES_DIR = BASE_DIR / "sources"
+
 DEFAULT_USER_ID = 1
 CACHE_TTL_LONG = 6 * 60 * 60
 CACHE_TTL_PLAN = 30 * 60
-
-RAG_SOURCES_DIR = Path("/Users/admin/Documents/AI-trainer-agent/sources")
 
 
 def _draft_plan_key(user_id: int) -> str:
@@ -28,7 +32,6 @@ def _draft_workout_sessions_ops_key(user_id: int) -> str:
 
 def _draft_meal_logs_key(user_id: int) -> str:
     return f"draft:{user_id}:meal_logs"
-
 
 def _draft_checkins_key(user_id: int) -> str:
     return f"draft:{user_id}:checkins"
