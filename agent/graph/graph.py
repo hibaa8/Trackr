@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Annotated
 
@@ -12,12 +11,13 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
 from typing_extensions import TypedDict
 
-from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DB_PATH, DEFAULT_USER_ID, _draft_plan_key
+from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DEFAULT_USER_ID, _draft_plan_key
 from agent.prompts.system_prompt import SYSTEM_PROMPT
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
 from agent.state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
 from agent.redis.cache import _redis_get_json, _redis_set_json
+from agent.db.connection import get_db_conn
 from agent.tools.plan_tools import (
     _compact_context_summary,
     _get_active_plan_bundle_data,
@@ -25,18 +25,24 @@ from agent.tools.plan_tools import (
     _load_checkins_draft,
     _load_health_activity_draft,
     _load_active_plan_draft,
+    _load_reminders_draft,
     _load_user_context_data,
     apply_plan_patch,
     compute_plan_status,
     generate_plan,
     get_current_date,
     get_current_plan_summary,
+    get_plan_day,
+    get_reminders,
     get_weight_checkpoint_for_current_week,
     log_checkin,
     delete_checkin,
     propose_plan_corrections,
     propose_plan_patch_with_llm,
     replace_active_plan_workouts,
+    add_reminder,
+    update_reminder,
+    delete_reminder,
     search_web,
     shift_active_plan_end_date,
 )
@@ -62,12 +68,17 @@ class AgentState(TypedDict):
 
 
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1")
+        cur.fetchone()
     context = _load_user_context_data(user_id)
     active_plan = _load_active_plan_draft(user_id)
     workout_sessions = _load_workout_sessions_draft(user_id)
     meal_logs = _load_meal_logs_draft(user_id)
     checkins = _load_checkins_draft(user_id)
     health_activity = _load_health_activity_draft(user_id)
+    reminders = _load_reminders_draft(user_id)
     SESSION_CACHE[user_id] = {
         "context": context,
         "active_plan": active_plan,
@@ -75,6 +86,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "meal_logs": meal_logs,
         "checkins": checkins,
         "health_activity": health_activity,
+        "reminders": reminders,
     }
     return {
         "context": context,
@@ -83,6 +95,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "meal_logs": meal_logs,
         "checkins": checkins,
         "health_activity": health_activity,
+        "reminders": reminders,
     }
 
 
@@ -129,6 +142,7 @@ def assistant(state: AgentState):
 
 tools = [
     get_current_plan_summary,
+    get_plan_day,
     search_web,
     generate_plan,
     shift_active_plan_end_date,
@@ -138,6 +152,10 @@ tools = [
     apply_plan_patch,
     propose_plan_corrections,
     propose_plan_patch_with_llm,
+    get_reminders,
+    add_reminder,
+    update_reminder,
+    delete_reminder,
     log_checkin,
     delete_checkin,
     log_meal,
@@ -204,7 +222,7 @@ def apply_plan(state: AgentState) -> AgentState:
         "active_plan": cache_bundle,
     }
 
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
         if plan_data.get("goal_type"):
@@ -221,6 +239,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 user_id, start_date, end_date, daily_calorie_target,
                 protein_g, carbs_g, fat_g, status, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 user_id,
@@ -234,7 +253,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        plan_id = cur.lastrowid
+        plan_id = cur.fetchone()[0]
         cycle_length = min(7, len(plan_data["plan_days"]))
         cur.execute(
             """
@@ -242,6 +261,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 plan_id, cycle_length_days, timezone, default_calories,
                 default_protein_g, default_carbs_g, default_fat_g, created_at
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
             """,
             (
                 plan_id,
@@ -254,7 +274,7 @@ def apply_plan(state: AgentState) -> AgentState:
                 datetime.now().isoformat(timespec="seconds"),
             ),
         )
-        template_id = cur.lastrowid
+        template_id = cur.fetchone()[0]
         for day_index in range(cycle_length):
             day = plan_data["plan_days"][day_index]
             workout_json = json.dumps({"label": day["workout"]})

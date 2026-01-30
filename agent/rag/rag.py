@@ -3,8 +3,14 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
-from langchain_openai import OpenAIEmbeddings
-from langchain_community.vectorstores import FAISS
+try:
+    from langchain_openai import OpenAIEmbeddings
+except ImportError:  # pragma: no cover - optional in serverless
+    OpenAIEmbeddings = None
+try:
+    from langchain_community.vectorstores import FAISS
+except ImportError:  # pragma: no cover - optional in serverless
+    FAISS = None
 
 from agent.config.constants import RAG_SOURCES_DIR
 
@@ -17,8 +23,12 @@ def _build_rag_index() -> None:
     global RAG_INDEX, RAG_READY
     if RAG_READY:
         return
+    if OpenAIEmbeddings is None or FAISS is None:
+        return
     RAG_READY = True
-    index_path = Path(__file__).resolve().parents[2] / "data" / "faiss_index"
+    # Assume data/faiss_index is in the project root's data directory
+    from agent.config.constants import BASE_DIR
+    index_path = BASE_DIR / "data" / "faiss_index"
     if not index_path.exists():
         return
     try:
