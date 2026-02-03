@@ -1,4 +1,6 @@
 import SwiftUI
+import AVKit
+import UIKit
 
 struct CoachDetailView: View {
     let coach: Coach
@@ -39,7 +41,7 @@ struct CoachDetailView: View {
 
                     Spacer()
 
-                    // Coach Image Placeholder
+                    // Coach Image
                     ZStack {
                         Circle()
                             .fill(
@@ -54,11 +56,27 @@ struct CoachDetailView: View {
                             )
                             .frame(width: 200, height: 200)
 
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 80))
-                            .foregroundColor(.white.opacity(0.8))
+                        if let image = coachImage() {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 180, height: 180)
+                                .clipShape(Circle())
+                        } else {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 80))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
                     }
-                    .padding(.bottom, 40)
+                    .padding(.bottom, 24)
+
+                    if let videoURL = coach.videoURL {
+                        VideoPlayer(player: AVPlayer(url: videoURL))
+                            .frame(height: 200)
+                            .clipShape(RoundedRectangle(cornerRadius: 16))
+                            .padding(.horizontal, 24)
+                            .padding(.bottom, 24)
+                    }
 
                     // Content Card
                     VStack(alignment: .leading, spacing: 0) {
@@ -153,6 +171,14 @@ struct CoachDetailView: View {
                 }
             }
         }
+    }
+
+    private func coachImage() -> Image? {
+        guard let url = coach.imageURL,
+              let uiImage = UIImage(contentsOfFile: url.path) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
     }
 }
 

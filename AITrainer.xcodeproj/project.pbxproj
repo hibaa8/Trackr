@@ -8,10 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */; };
+		C0B1C0B1C0B1C0B1C0B1C0B1 /* CoachImages in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A1 /* CoachImages */; };
+		C0B1C0B1C0B1C0B1C0B1C0B2 /* CoachVideos in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A2 /* CoachVideos */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		3D93F1942F1855FC00A8D3CB /* AITrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AITrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		C0A1C0A1C0A1C0A1C0A1C0A1 /* CoachImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachImages; sourceTree = SOURCE_ROOT; };
+		C0A1C0A1C0A1C0A1C0A1C0A2 /* CoachVideos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachVideos; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -118,6 +122,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				C0B1C0B1C0B1C0B1C0B1C0B1 /* CoachImages in Resources */,
+				C0B1C0B1C0B1C0B1C0B1C0B2 /* CoachVideos in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

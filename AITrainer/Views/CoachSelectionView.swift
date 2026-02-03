@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct CoachSelectionView: View {
     @State private var selectedCoach: Coach? = nil
@@ -58,24 +59,29 @@ struct CoachCard: View {
             VStack(spacing: 0) {
                 // Coach Image
                 ZStack {
-                    // Placeholder image with coach's primary color
-                    RoundedRectangle(cornerRadius: 12)
-                        .fill(
-                            LinearGradient(
-                                colors: [
-                                    Color(coach.primaryColor).opacity(0.8),
-                                    Color(coach.primaryColor).opacity(0.4)
-                                ],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
+                    if let image = coachImage() {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(height: 160)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(coach.primaryColor).opacity(0.8),
+                                        Color(coach.primaryColor).opacity(0.4)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
                             )
-                        )
-                        .frame(height: 160)
-
-                    // Photo placeholder
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 50))
-                        .foregroundColor(.white.opacity(0.8))
+                            .frame(height: 160)
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 50))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
                 }
 
                 // Coach Info
@@ -125,6 +131,14 @@ struct CoachCard: View {
             )
         }
         .buttonStyle(ScaleButtonStyle())
+    }
+
+    private func coachImage() -> Image? {
+        guard let url = coach.imageURL,
+              let uiImage = UIImage(contentsOfFile: url.path) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
     }
 }
 
