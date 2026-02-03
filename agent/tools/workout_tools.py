@@ -191,25 +191,8 @@ def log_workout_session(
             continue
         name = str(name).strip()
         normalized.append({**exercise, "name": name})
-        if _is_cardio_exercise(name):
-            if exercise.get("duration_min") is None:
-                missing.append(f"{name} duration (minutes)")
-        else:
-            if exercise.get("sets") is None:
-                missing.append(f"{name} sets")
-            if exercise.get("reps") is None:
-                missing.append(f"{name} reps")
-            if exercise.get("rpe") is None and exercise.get("RPE") is None:
-                missing.append(f"{name} RPE")
-            if (
-                exercise.get("weight") is None
-                and exercise.get("weight_kg") is None
-                and exercise.get("weight_lbs") is None
-            ):
-                missing.append(f"{name} weight")
-    if missing:
-        missing_list = ", ".join(missing)
-        return f"I can log that. Please provide: {missing_list}."
+    if missing and not normalized:
+        return "I can log that. Please provide at least one exercise name."
     exercise_list = normalized
     if not workout_type:
         if exercise_list:
@@ -224,6 +207,11 @@ def log_workout_session(
             if ex.get("duration_min") is not None
         ]
         duration_min = max(1, sum(durations)) if durations else 30
+    if duration_min is None:
+        duration_min = 30
+    for exercise in exercise_list:
+        if _is_cardio_exercise(exercise.get("name", "")) and exercise.get("duration_min") is None:
+            exercise["duration_min"] = duration_min
     if calories_burned is None:
         context = _load_user_context_data(user_id)
         user = context.get("user") if isinstance(context, dict) else None

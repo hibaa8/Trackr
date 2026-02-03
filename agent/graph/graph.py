@@ -12,7 +12,7 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from typing_extensions import TypedDict
 
 from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DEFAULT_USER_ID, _draft_plan_key
-from agent.prompts.system_prompt import SYSTEM_PROMPT
+from agent.prompts.system_prompt import DEFAULT_AGENT_ID, get_system_prompt
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
 from agent.state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
@@ -56,7 +56,8 @@ from agent.tools.meal_tools import _load_meal_logs_draft
 from agent.tools.workout_tools import _load_workout_sessions_draft
 
 
-sys_msg = SystemMessage(content=SYSTEM_PROMPT)
+def _system_message(agent_id: str | None) -> SystemMessage:
+    return SystemMessage(content=get_system_prompt(agent_id))
 
 
 class AgentState(TypedDict):
@@ -103,6 +104,7 @@ def assistant(state: AgentState):
     context = state.get("context")
     active_plan = state.get("active_plan")
     session = SESSION_CACHE.get(DEFAULT_USER_ID, {})
+    agent_id = session.get("agent_id", DEFAULT_AGENT_ID)
     if session.get("context"):
         context = session["context"]
     if session.get("active_plan"):
@@ -136,7 +138,7 @@ def assistant(state: AgentState):
     return {
         "context": context,
         "active_plan": active_plan,
-        "messages": [llm_with_tools.invoke([sys_msg, context_msg] + state["messages"])],
+        "messages": [llm_with_tools.invoke([_system_message(agent_id), context_msg] + state["messages"])],
     }
 
 

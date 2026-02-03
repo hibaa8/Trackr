@@ -11,3 +11,6 @@ agent/prompts/__pycache__/
 agent/rag/__pycache__/
 agent/tools/__pycache__/
 data/*
+
+.DS_Store
+*/__pycache__/*

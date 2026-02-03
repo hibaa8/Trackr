@@ -29,6 +29,7 @@ from agent.config.constants import (
     DEFAULT_USER_ID,
     _draft_checkins_key,
     _draft_meal_logs_key,
+    _draft_workout_sessions_key,
 )
 from agent.db import queries
 from agent.db.connection import get_db_conn
@@ -502,6 +503,27 @@ def _list_workout_sessions(user_id: int) -> list[dict[str, Any]]:
                 "details": details,
             }
         )
+    if sessions:
+        return sessions
+    cached = _redis_get_json(_draft_workout_sessions_key(user_id))
+    if isinstance(cached, dict) and cached.get("sessions"):
+        cached_sessions = []
+        for session in cached.get("sessions", []):
+            raw_notes = session.get("notes")
+            details = _parse_json(raw_notes) if isinstance(raw_notes, str) else None
+            cached_sessions.append(
+                {
+                    "id": session.get("id"),
+                    "date": session.get("date"),
+                    "workout_type": session.get("workout_type"),
+                    "duration_min": session.get("duration_min"),
+                    "calories_burned": session.get("calories_burned"),
+                    "completed": bool(session.get("completed", 1)),
+                    "source": session.get("source"),
+                    "details": details,
+                }
+            )
+        return cached_sessions
     return sessions
 
 
@@ -1239,11 +1261,14 @@ def create_handler(agent_service: AgentService):
                 message = payload.get("message")
                 approve_plan = payload.get("approve_plan")
                 thread_id = payload.get("thread_id") or "web"
+                agent_id = payload.get("agent_id")
 
                 if not message and approve_plan is None:
                     _send_json(self, 400, {"error": "Provide message or approve_plan."})
                     return
 
+                if agent_id:
+                    SESSION_CACHE.setdefault(DEFAULT_USER_ID, {})["agent_id"] = agent_id
                 try:
                     response = agent_service.invoke(message, thread_id, approve_plan)
                 except Exception as exc:  # pragma: no cover - surface runtime errors

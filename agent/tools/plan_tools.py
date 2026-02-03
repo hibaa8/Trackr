@@ -1343,11 +1343,52 @@ def search_web(query: str) -> str:
 @tool("compute_plan_status")
 def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     """Compute plan status from cached check-ins, meals, workouts, and checkpoints."""
-    bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(_draft_plan_key(user_id)) or {}
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
     plan = bundle.get("plan") if isinstance(bundle, dict) else None
     checkpoints = bundle.get("checkpoints", []) if isinstance(bundle, dict) else []
     if not plan or not checkpoints:
-        return json.dumps({"status": "insufficient_data"})
+        meals = _redis_get_json(_draft_meal_logs_key(user_id)) or _load_meal_logs_draft(user_id)
+        meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
+        workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or _load_workout_sessions_draft(user_id)
+        workout_rows = workouts.get("sessions", []) if isinstance(workouts, dict) else []
+        checkins = _redis_get_json(_draft_checkins_key(user_id)) or _load_checkins_draft(user_id)
+        checkin_rows = checkins.get("checkins", []) if isinstance(checkins, dict) else []
+
+        today = date.today()
+        days = [(today - timedelta(days=offset)).isoformat() for offset in range(7)]
+        meal_days = {
+            day
+            for day in days
+            if any((m.get("logged_at") or "").startswith(day) for m in meal_rows)
+        }
+        workout_days = {
+            day
+            for day in days
+            if any((w.get("date") or "") == day for w in workout_rows)
+        }
+        recent_weighins = [
+            c
+            for c in checkin_rows
+            if c.get("checkin_date")
+            and (today - datetime.strptime(c["checkin_date"], "%Y-%m-%d").date()).days <= 14
+        ]
+        explanation = (
+            f"Logged meals on {len(meal_days)} day(s) and workouts on {len(workout_days)} day(s) "
+            f"in the last 7 days. Add a plan (or regenerate it) plus 2 weigh-ins to unlock "
+            "full progress insights."
+        )
+        return json.dumps(
+            {
+                "status": "limited",
+                "as_of": today.isoformat(),
+                "last_7d": {
+                    "meal_log_days": len(meal_days),
+                    "workouts_done": len(workout_days),
+                    "weighins_14d": len(recent_weighins),
+                },
+                "explanation": explanation,
+            }
+        )
 
     as_of = datetime.strptime(as_of_date, "%Y-%m-%d").date() if as_of_date else date.today()
     start_date = datetime.strptime(plan["start_date"], "%Y-%m-%d").date()
@@ -1409,9 +1450,9 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
     user = context.get("user") if isinstance(context, dict) else None
     weight_for_burn = user[4] if user and len(user) > 4 else 0
 
-    meals = _redis_get_json(_draft_meal_logs_key(user_id)) or {"meals": []}
+    meals = _redis_get_json(_draft_meal_logs_key(user_id)) or _load_meal_logs_draft(user_id)
     meal_rows = meals.get("meals", []) if isinstance(meals, dict) else []
-    workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or {"sessions": []}
+    workouts = _redis_get_json(_draft_workout_sessions_key(user_id)) or _load_workout_sessions_draft(user_id)
     workout_rows = workouts.get("sessions", []) if isinstance(workouts, dict) else []
     activity = _redis_get_json(_draft_health_activity_key(user_id)) or _load_health_activity_draft(user_id)
     activity_rows = activity.get("activity", []) if isinstance(activity, dict) else []
