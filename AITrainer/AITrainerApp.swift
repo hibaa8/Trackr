@@ -22,17 +22,17 @@ struct AITrainerApp: App {
 
     var body: some Scene {
         WindowGroup {
-            SplashScreenView()
-                    .environmentObject(appState)
-                    .environmentObject(backendConnector)
-                    .environmentObject(healthKitManager)
-                    .environmentObject(authManager)
-                    .environmentObject(notificationManager)
-                    .onAppear {
-                        // Request permissions on app launch
-                        healthKitManager.requestAuthorization()
-                        notificationManager.requestAuthorization()
-            }
+            ContentView()
+                .environmentObject(appState)
+                .environmentObject(backendConnector)
+                .environmentObject(healthKitManager)
+                .environmentObject(authManager)
+                .environmentObject(notificationManager)
+                .onAppear {
+                    // Request permissions on app launch
+                    healthKitManager.requestAuthorization()
+                    notificationManager.requestAuthorization()
+                }
         }
     }
 
