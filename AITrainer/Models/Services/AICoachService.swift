@@ -28,6 +28,7 @@ final class AICoachService {
     func sendMessage(
         _ message: String,
         threadId: String?,
+        agentId: String? = nil,
         userId: Int = 1,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
     ) {
@@ -36,11 +37,14 @@ final class AICoachService {
             return
         }
 
-        let payload: [String: Any] = [
+        var payload: [String: Any] = [
             "message": message,
             "user_id": userId,
             "thread_id": threadId as Any
         ]
+        if let agentId {
+            payload["agent_id"] = agentId
+        }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

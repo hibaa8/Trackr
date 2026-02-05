@@ -1,8 +1,10 @@
 import SwiftUI
 import Combine
+import UIKit
 
 struct OnboardingCompleteView: View {
     let coach: Coach
+    @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @State private var showMainApp = false
     @State private var confettiOpacity = 0.0
     @State private var checkmarkScale = 0.0
@@ -12,6 +14,7 @@ struct OnboardingCompleteView: View {
     var body: some View {
         if showMainApp {
             MainTabView(coach: coach)
+                .environmentObject(backendConnector)
         } else {
             ZStack {
                 // Dark background with celebration effect
@@ -253,9 +256,33 @@ struct TrainerMainView: View {
 
     private var headerView: some View {
         HStack {
-            Text("Trainer")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundColor(.white)
+            HStack(spacing: 10) {
+                ZStack {
+                    Circle()
+                        .fill(Color(coach.primaryColor).opacity(0.8))
+                        .frame(width: 34, height: 34)
+                    if let image = coachAvatar() {
+                        image
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 30, height: 30)
+                            .clipShape(Circle())
+                    } else {
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 14))
+                            .foregroundColor(.white)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Trainer")
+                        .font(.system(size: 16, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text(coach.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
+                }
+            }
 
             Spacer()
 
@@ -270,6 +297,14 @@ struct TrainerMainView: View {
         }
         .padding(.horizontal, 20)
         .padding(.top, 40) // Moved higher as requested
+    }
+
+    private func coachAvatar() -> Image? {
+        guard let url = coach.imageURL,
+              let uiImage = UIImage(contentsOfFile: url.path) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
     }
 
     private var greetingSection: some View {
@@ -653,7 +688,7 @@ struct VoiceActiveView: View {
             messages = [
                 VoiceMessage(
                     id: UUID(),
-                    text: "Hi! I'm here to help. Ask me anything about workouts, nutrition, or your plan.",
+                    text: "Hi! I'm \(coach.name). Ask me anything about workouts, nutrition, or your plan.",
                     isFromCoach: true,
                     timestamp: Date()
                 )
@@ -670,7 +705,7 @@ struct VoiceActiveView: View {
         messageText = ""
         isLoading = true
 
-        AICoachService.shared.sendMessage(trimmed, threadId: threadId) { result in
+        AICoachService.shared.sendMessage(trimmed, threadId: threadId, agentId: coach.id) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -843,4 +878,5 @@ struct VoiceWaveform: View {
 
 #Preview {
     OnboardingCompleteView(coach: Coach.allCoaches[0])
+        .environmentObject(FrontendBackendConnector.shared)
 }

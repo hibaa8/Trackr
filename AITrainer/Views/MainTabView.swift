@@ -143,8 +143,7 @@ struct ProgressPageView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
-            // Temporarily disabled to prevent blocking
-            // loadProgressData()
+            loadProgressData()
         }
     }
 
@@ -793,4 +792,5 @@ extension View {
 
 #Preview {
     MainTabView(coach: Coach.allCoaches[0])
+        .environmentObject(FrontendBackendConnector.shared)
 }

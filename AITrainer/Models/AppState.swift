@@ -11,6 +11,7 @@ class AppState: ObservableObject {
     @Published var meals: [MealEntry] = []
     @Published var chatMessages: [WireframeChatMessage] = []
     @Published var selectedDate: Date = Date()
+    @Published var selectedCoach: Coach?
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
 
@@ -38,6 +39,19 @@ class AppState: ObservableObject {
         self.userData = data
         self.hasCompletedOnboarding = true
         updateMacroTargets()
+    }
+
+    func setSelectedCoach(_ coach: Coach) {
+        selectedCoach = coach
+        coachThreadId = nil
+        awaitingPlanApproval = false
+        chatMessages = [
+            WireframeChatMessage(
+                text: "Hi! I'm \(coach.name). How can I help you today?",
+                isFromUser: false,
+                timestamp: Date()
+            )
+        ]
     }
 
     func logMeal(_ meal: MealEntry) {
@@ -104,7 +118,11 @@ class AppState: ObservableObject {
             return
         }
 
-        AICoachService.shared.sendMessage(trimmed, threadId: coachThreadId) { [weak self] result in
+        AICoachService.shared.sendMessage(
+            trimmed,
+            threadId: coachThreadId,
+            agentId: selectedCoach?.id
+        ) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let response):

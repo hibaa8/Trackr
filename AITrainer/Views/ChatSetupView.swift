@@ -6,6 +6,7 @@ struct ChatSetupView: View {
     @State private var showConversation = false
     @State private var contentOpacity = 0.0
     @State private var messageOffset = 50.0
+    @EnvironmentObject private var appState: AppState
 
     var body: some View {
         if showConversation {
@@ -119,6 +120,9 @@ struct ChatSetupView: View {
                 }
             }
             .onAppear {
+                if appState.selectedCoach?.id != coach.id {
+                    appState.setSelectedCoach(coach)
+                }
                 startAnimations()
             }
         }

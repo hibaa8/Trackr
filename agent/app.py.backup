@@ -10,7 +10,6 @@ import os
 import re
 import sqlite3
 import ssl
-import sys
 import time
 import uuid
 from datetime import date, datetime
@@ -31,14 +30,10 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 
-from state import SESSION_CACHE
-
 from config.constants import DB_PATH
 
 # Configuration
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
 _ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
 _ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
@@ -46,6 +41,7 @@ load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AISTUDIO_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
@@ -136,11 +132,11 @@ def _resolve_gemini_model_name() -> str:
         models = []
     for model in models:
         name = getattr(model, "name", "")
-        if any(key in name for key in ("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro")):
+        if any(key in name for key in ("gemini-1.5-flash", "gemini-1.5-pro")):
             return name
     if models:
-        return getattr(models[0], "name", "gemini-2.5-flash-lite")
-    return "gemini-2.5-flash-lite"
+        return getattr(models[0], "name", "gemini-1.5-flash")
+    return "gemini-1.5-flash"
 
 
 def _get_gemini_model():
@@ -150,13 +146,8 @@ def _get_gemini_model():
             raise RuntimeError("Missing GEMINI_API_KEY env var")
         genai.configure(api_key=GEMINI_API_KEY)
         model_name = _resolve_gemini_model_name()
-        print(f"🔄 Initializing Gemini model: {model_name}")  # Debug log
         _GEMINI_MODEL = genai.GenerativeModel(model_name)
     return _GEMINI_MODEL
-
-def _reset_gemini_model():
-    global _GEMINI_MODEL
-    _GEMINI_MODEL = None
 
 
 def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
@@ -189,100 +180,53 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
 
 
 def _extract_ingredients_from_image(image_bytes: bytes) -> List[str]:
+    model = _get_gemini_model()
     prompt = (
         "Identify the ingredients in the photo and return JSON only with this schema: "
         "{\"ingredients\":[\"string\", ...]}. No markdown."
     )
-    content = _gemini_generate_content(prompt, image_bytes=image_bytes, temperature=0.1)
+    image_obj = Image.open(io.BytesIO(image_bytes))
+    response = model.generate_content(
+        [prompt, image_obj],
+        generation_config={"temperature": 0.1},
+    )
+    content = getattr(response, "text", "") or ""
     payload = _safe_parse_json(content)
     ingredients = payload.get("ingredients", []) if isinstance(payload, dict) else []
     return [item.strip() for item in ingredients if isinstance(item, str) and item.strip()]
 
 
-def _categorize_food_name(food_name: str) -> str:
-    name = (food_name or "").lower()
-    if any(k in name for k in ["chicken", "beef", "fish", "egg", "pork"]):
-        return "protein"
-    if any(k in name for k in ["salad", "lettuce", "broccoli", "spinach"]):
-        return "vegetable"
-    if any(k in name for k in ["apple", "banana", "orange", "berry"]):
-        return "fruit"
-    if any(k in name for k in ["rice", "bread", "pasta", "noodle"]):
-        return "grain"
-    if any(k in name for k in ["milk", "yogurt", "cheese"]):
-        return "dairy"
-    if any(k in name for k in ["nut", "almond", "peanut"]):
-        return "nuts"
-    if any(k in name for k in ["cake", "cookie", "dessert"]):
-        return "dessert"
-    if any(k in name for k in ["coffee", "tea", "juice", "soda"]):
-        return "beverage"
-    if any(k in name for k in ["burger", "pizza", "fries"]):
-        return "fast_food"
-    if any(k in name for k in ["soup", "broth"]):
-        return "soup"
-    if any(k in name for k in ["bowl", "plate", "mix"]):
-        return "mixed"
-    return "other"
-
-
-def _gemini_generate_content(
-    prompt: str,
-    image_bytes: Optional[bytes] = None,
-    temperature: float = 0.2,
-) -> str:
-    """Call Gemini via REST to avoid gRPC DNS issues."""
-    if not GEMINI_API_KEY:
-        raise HTTPException(status_code=500, detail="Missing GEMINI_API_KEY")
-    model_name = _resolve_gemini_model_name()
-    if not model_name.startswith("models/"):
-        model_name = f"models/{model_name}"
-    url = f"https://generativelanguage.googleapis.com/v1beta/{model_name}:generateContent?key={GEMINI_API_KEY}"
-    parts: List[Dict[str, Any]] = [{"text": prompt}]
-    if image_bytes:
-        encoded = base64.b64encode(image_bytes).decode("utf-8")
-        parts.append(
-            {
-                "inline_data": {
-                    "mime_type": "image/jpeg",
-                    "data": encoded,
-                }
-            }
-        )
-    payload = {
-        "contents": [{"role": "user", "parts": parts}],
-        "generationConfig": {"temperature": temperature},
-    }
-    data = json.dumps(payload).encode("utf-8")
-    request = urllib.request.Request(
-        url,
-        data=data,
-        headers={"Content-Type": "application/json"},
-    )
-    try:
-        ssl_context = ssl.create_default_context(cafile=certifi.where())
-        with urllib.request.urlopen(request, timeout=30, context=ssl_context) as response:
-            result = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Gemini request failed: {exc}") from exc
-
-    candidates = result.get("candidates", []) if isinstance(result, dict) else []
-    if not candidates:
-        return ""
-    parts = candidates[0].get("content", {}).get("parts", [])
-    texts = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
-    return "\n".join(texts).strip()
-
-
-def _tavily_search(query: str, max_results: int = 6) -> List[Dict[str, Any]]:
-    """Consolidated Tavily search with images."""
+def _tavily_search(query: str, max_results: int) -> List[Dict[str, Any]]:
     if not TAVILY_API_KEY:
         raise HTTPException(status_code=500, detail="Missing TAVILY_API_KEY")
-    payload = {
+    body = {
         "api_key": TAVILY_API_KEY,
         "query": query,
         "search_depth": "basic",
         "max_results": max(1, min(max_results, 10)),
+        "include_images": True,
+    }
+    data = json.dumps(body).encode("utf-8")
+    request = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=15, context=ssl_context) as response:
+        payload = json.loads(response.read().decode("utf-8"))
+    return payload.get("results", []) or []
+
+
+def _tavily_search(query: str, max_results: int = 6) -> Dict[str, Any]:
+    if not TAVILY_API_KEY:
+        return {}
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max_results,
         "include_images": True,
     }
     data = json.dumps(payload).encode("utf-8")
@@ -293,7 +237,29 @@ def _tavily_search(query: str, max_results: int = 6) -> List[Dict[str, Any]]:
     )
     ssl_context = ssl.create_default_context(cafile=certifi.where())
     with urllib.request.urlopen(request, timeout=15, context=ssl_context) as response:
-        result = json.loads(response.read().decode("utf-8"))
+        raw = response.read()
+    return json.loads(raw.decode("utf-8"))
+
+
+def _tavily_search(query: str, max_results: int = 5) -> List[Dict[str, Any]]:
+    if not TAVILY_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing TAVILY_API_KEY")
+    payload = {
+        "api_key": TAVILY_API_KEY,
+        "query": query,
+        "search_depth": "basic",
+        "max_results": max_results,
+        "include_answer": False,
+    }
+    request = urllib.request.Request(
+        "https://api.tavily.com/search",
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": "ai-trainer-backend"},
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=12, context=ssl_context) as response:
+        data = response.read()
+    result = json.loads(data.decode("utf-8"))
     return result.get("results", []) or []
 
 
@@ -347,185 +313,10 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
         conn.commit()
 
 
-def _load_user_profile(user_id: int) -> Dict[str, Any]:
-    def _map_user(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
-        if not row:
-            return None
-        return {
-            "id": row[0],
-            "name": row[1],
-            "birthdate": row[2],
-            "height_cm": row[3],
-            "weight_kg": row[4],
-            "gender": row[5],
-        }
-
-    def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
-        if not row:
-            return None
-        return {
-            "weekly_weight_change_kg": row[0],
-            "activity_level": row[1],
-            "goal_type": row[2],
-            "target_weight_kg": row[3],
-            "dietary_preferences": row[4],
-            "workout_preferences": row[5],
-            "timezone": row[6],
-            "created_at": row[7],
-        }
-
-    try:
-        from db.connection import get_db_conn
-        from db import queries
-
-        with get_db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(queries.SELECT_USER_PROFILE, (user_id,))
-            user_row = cur.fetchone()
-            cur.execute(queries.SELECT_USER_PREFS, (user_id,))
-            pref_row = cur.fetchone()
-        if user_row or pref_row:
-            return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
-    except Exception:
-        pass
-
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT id, name, birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?",
-                (user_id,),
-            )
-            user_row = cur.fetchone()
-            cur.execute(
-                """
-                SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
-                       dietary_preferences, workout_preferences, timezone, created_at
-                FROM user_preferences
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            )
-            pref_row = cur.fetchone()
-        return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
-    except sqlite3.Error:
-        return {"user": None, "preferences": None}
-
-
-def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT checkin_date, weight_kg, mood, notes
-                FROM checkins
-                WHERE user_id = ?
-                ORDER BY checkin_date DESC
-                """,
-                (user_id,),
-            )
-            rows = cur.fetchall()
-        return [
-            {"date": row[0], "weight_kg": row[1], "mood": row[2], "notes": row[3]}
-            for row in rows
-        ]
-    except sqlite3.Error:
-        return []
-
-
-def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, date, workout_type, duration_min, calories_burned, notes, completed, source
-                FROM workout_sessions
-                WHERE user_id = ?
-                ORDER BY date DESC
-                """,
-                (user_id,),
-            )
-            rows = cur.fetchall()
-        sessions = []
-        for row in rows:
-            notes = row[5]
-            details = _safe_parse_json(notes) if isinstance(notes, str) else None
-            sessions.append(
-                {
-                    "id": row[0],
-                    "date": row[1],
-                    "workout_type": row[2],
-                    "duration_min": row[3],
-                    "calories_burned": row[4],
-                    "completed": bool(row[6]),
-                    "source": row[7],
-                    "details": details,
-                }
-            )
-        return sessions
-    except sqlite3.Error:
-        return []
-
-
-def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
-                FROM meal_logs
-                WHERE user_id = ?
-                ORDER BY logged_at DESC
-                """,
-                (user_id,),
-            )
-            rows = cur.fetchall()
-        meals = []
-        for row in rows:
-            meals.append(
-                {
-                    "id": row[0],
-                    "logged_at": row[1],
-                    "photo_path": row[2],
-                    "photo_url": None,
-                    "description": row[3],
-                    "calories": row[4],
-                    "protein_g": row[5],
-                    "carbs_g": row[6],
-                    "fat_g": row[7],
-                    "confidence": row[8],
-                    "confirmed": bool(row[9]),
-                }
-            )
-        return meals
-    except sqlite3.Error:
-        return []
-
-
-def _derive_suggestion_from_status(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    status = payload.get("status") if isinstance(payload, dict) else None
-    if status in {"on_track", "insufficient_data"}:
-        return None
-    goal_type = payload.get("goal_type")
-    suggestion_text = payload.get("explanation") or "Review your recent progress and adjust."
-    rationale = f"Status: {status}. Goal: {goal_type}."
-    return {
-        "suggestion_type": "plan_adjustment",
-        "rationale": rationale,
-        "suggestion_text": suggestion_text,
-        "status": "generated",
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-    }
-
-
 class CoachChatRequest(BaseModel):
     message: str
     user_id: int = 1
     thread_id: Optional[str] = None
-    agent_id: Optional[str] = None
 
 
 class CoachChatResponse(BaseModel):
@@ -552,7 +343,6 @@ class FoodScanItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
-    category: Optional[str] = None
     confidence: float
 
 
@@ -600,16 +390,6 @@ class DailyMealLogsResponse(BaseModel):
     meals: List[MealLogItem]
 
 
-class PlanDayResponse(BaseModel):
-    date: str
-    workout_plan: str
-    rest_day: bool
-    calorie_target: int
-    protein_g: int
-    carbs_g: int
-    fat_g: int
-
-
 class RecipeSuggestRequest(BaseModel):
     user_id: int = 1
     ingredients: str = ""
@@ -647,7 +427,6 @@ class RecipeSearchRequest(BaseModel):
 
 
 class RecipeSearchResult(BaseModel):
-    id: str
     title: str
     url: str
     summary: str
@@ -657,19 +436,49 @@ class RecipeSearchResult(BaseModel):
 
 class RecipeSearchResponse(BaseModel):
     results: List[RecipeSearchResult]
+
+
+class RecipeSearchRequest(BaseModel):
+    ingredients: str = ""
+    cuisine: Optional[str] = None
+    flavor: Optional[str] = None
+    dietary: List[str] = []
+
+
+class RecipeSearchItem(BaseModel):
+    id: str
+    title: str
+    summary: str
+    url: str
+    source: str
+    image_url: Optional[str] = None
+
+
+class RecipeSearchResponse(BaseModel):
+    recipes: List[RecipeSearchItem]
+
+
+class RecipeSearchRequest(BaseModel):
+    user_id: int = 1
+    ingredients: str = ""
+    cuisine: Optional[str] = None
+    flavor: Optional[str] = None
+    dietary: List[str] = []
+    image_base64: Optional[str] = None
+
+
+class RecipeSearchItem(BaseModel):
+    id: str
+    title: str
+    url: str
+    summary: str
+    image_url: Optional[str] = None
+    source: Optional[str] = None
+
+
+class RecipeSearchResponse(BaseModel):
+    results: List[RecipeSearchItem]
     detected_ingredients: List[str] = []
-
-
-
-
-class RecipeImageRequest(BaseModel):
-    prompt: str
-    width: int = 1024
-    height: int = 768
-
-
-class RecipeImageResponse(BaseModel):
-    image_url: str
 
 # Simple in-memory cache
 _CACHE: Dict[str, Dict] = {}
@@ -1021,9 +830,6 @@ def coach_chat(payload: CoachChatRequest):
     thread_id = payload.thread_id or f"user:{payload.user_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    if payload.agent_id:
-        SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = payload.agent_id
-
     if thread_id not in _AGENT_PRELOADED:
         preload_fn(payload.user_id)
         _AGENT_PRELOADED.add(thread_id)
@@ -1032,7 +838,6 @@ def coach_chat(payload: CoachChatRequest):
         state = graph.invoke(
             {
                 "messages": [HumanMessage(content=payload.message)],
-                "user_id": payload.user_id,
             },
             config,
         )
@@ -1081,6 +886,7 @@ async def scan_food(file: UploadFile = File(...)):
     if file is None:
         raise HTTPException(status_code=400, detail="Missing image file")
     image = await file.read()
+    model = _get_gemini_model()
     encoded = base64.b64encode(image).decode("utf-8")
     prompt = (
         "You are a nutrition assistant. Analyze the meal photo and return JSON only. "
@@ -1107,15 +913,16 @@ async def scan_food(file: UploadFile = File(...)):
         "}"
     )
     prompt = "Return strictly valid JSON. No markdown. " + prompt
-    content = _gemini_generate_content(prompt, image_bytes=image, temperature=0.2)
+    image_obj = Image.open(io.BytesIO(image))
+    response = model.generate_content(
+        [prompt, image_obj],
+        generation_config={"temperature": 0.2},
+    )
+    content = getattr(response, "text", "") or ""
     payload = _safe_parse_json(content)
     if not payload:
         raise HTTPException(status_code=502, detail="Failed to parse AI response")
     items = payload.get("items", []) or []
-    if isinstance(items, list):
-        for item in items:
-            if isinstance(item, dict) and not item.get("category"):
-                item["category"] = _categorize_food_name(item.get("name", ""))
     if not payload.get("total_calories"):
         payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items)
     return FoodScanResponse(**payload)
@@ -1194,7 +1001,12 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         f"Available ingredients: {', '.join(combined) if combined else 'None provided'}."
     )
 
-    content = _gemini_generate_content(prompt, temperature=0.3)
+    model = _get_gemini_model()
+    response = model.generate_content(
+        [prompt],
+        generation_config={"temperature": 0.3},
+    )
+    content = getattr(response, "text", "") or ""
     payload_json = _safe_parse_json(content)
     recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
     recipes = []
@@ -1258,7 +1070,6 @@ def search_recipes(payload: RecipeSearchRequest):
                 source = None
         parsed.append(
             RecipeSearchResult(
-                id=str(uuid.uuid4()),
                 title=title,
                 url=url,
                 summary=summary.strip(),
@@ -1267,24 +1078,109 @@ def search_recipes(payload: RecipeSearchRequest):
             )
         )
 
-    return RecipeSearchResponse(results=parsed, detected_ingredients=[])
+    return RecipeSearchResponse(results=parsed)
 
 
-@app.post("/recipes/image", response_model=RecipeImageResponse)
-def generate_recipe_image(payload: RecipeImageRequest):
-    """
-    Generate a recipe image using Unsplash as a fallback.
-    Gemini's Imagen API requires separate setup, so we use a reliable image source.
-    """
+@app.post("/recipes/search", response_model=RecipeSearchResponse)
+def search_recipes(payload: RecipeSearchRequest):
+    if not TAVILY_API_KEY:
+        raise HTTPException(status_code=500, detail="Missing TAVILY_API_KEY")
+
+    query_parts = ["healthy recipe"]
+    if payload.ingredients:
+        query_parts.append(f"with {payload.ingredients}")
+    if payload.cuisine:
+        query_parts.append(payload.cuisine)
+    if payload.flavor:
+        query_parts.append(payload.flavor)
+    if payload.dietary:
+        query_parts.append(" ".join(payload.dietary))
+    query = " ".join(query_parts)
+
     try:
-        # Use Unsplash as a reliable source for food photography
-        query = payload.prompt.replace(" food photography", "").strip()
-        encoded = urllib.parse.quote(query)
-        image_url = f"https://source.unsplash.com/800x600/?{encoded},food"
-        return RecipeImageResponse(image_url=image_url)
+        response = _tavily_search(query, max_results=6)
     except Exception as exc:
-        # Fallback to a generic food image
-        return RecipeImageResponse(image_url="https://source.unsplash.com/800x600/?healthy,food")
+        raise HTTPException(status_code=502, detail=f"Tavily search failed: {exc}") from exc
+
+    items = []
+    for result in response.get("results", []) or []:
+        url = result.get("url") or ""
+        title = result.get("title") or "Recipe"
+        content = (result.get("content") or "").strip()
+        summary = content[:180] + ("..." if len(content) > 180 else "")
+        image_url = result.get("image")
+        images = result.get("images") or []
+        if not image_url and images:
+            image_url = images[0]
+        source = urllib.parse.urlparse(url).netloc.replace("www.", "") if url else ""
+        items.append(
+            RecipeSearchItem(
+                id=str(uuid.uuid4()),
+                title=title,
+                summary=summary or "Recipe details available at the source.",
+                url=url,
+                source=source or "Recipe source",
+                image_url=image_url,
+            )
+        )
+
+    return RecipeSearchResponse(recipes=items)
+
+
+@app.post("/recipes/search", response_model=RecipeSearchResponse)
+def search_recipes(payload: RecipeSearchRequest):
+    ingredients_text = (payload.ingredients or "").strip()
+    if not ingredients_text and not payload.image_base64:
+        raise HTTPException(status_code=400, detail="Provide ingredients text or an image.")
+
+    detected_ingredients: List[str] = []
+    if payload.image_base64:
+        try:
+            image_bytes = base64.b64decode(payload.image_base64)
+            detected_ingredients = _extract_ingredients_from_image(image_bytes)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}") from exc
+
+    typed_ingredients = [
+        item.strip()
+        for item in re.split(r"[,\n;]", ingredients_text)
+        if item.strip()
+    ]
+    combined = list(dict.fromkeys(typed_ingredients + detected_ingredients))
+
+    query_parts = ["healthy recipe"]
+    if payload.cuisine:
+        query_parts.append(payload.cuisine)
+    if payload.flavor:
+        query_parts.append(payload.flavor)
+    if payload.dietary:
+        query_parts.append(" ".join(payload.dietary))
+    if combined:
+        query_parts.append("with " + ", ".join(combined))
+    query = " ".join(query_parts)
+
+    results_raw = _tavily_search(query, max_results=5)
+    items: List[RecipeSearchItem] = []
+    for result in results_raw:
+        url = result.get("url") or ""
+        if not url:
+            continue
+        title = result.get("title") or "Recipe"
+        summary = result.get("content") or result.get("raw_content") or ""
+        source = urllib.parse.urlparse(url).netloc
+        image_url = _extract_og_image(url)
+        items.append(
+            RecipeSearchItem(
+                id=str(uuid.uuid4()),
+                title=title,
+                url=url,
+                summary=summary.strip()[:500],
+                image_url=image_url,
+                source=source,
+            )
+        )
+
+    return RecipeSearchResponse(results=items, detected_ingredients=detected_ingredients)
 
 
 @app.post("/food/logs")
@@ -1355,73 +1251,6 @@ def get_food_logs(user_id: int = 1, day: Optional[str] = None):
         for row in rows
     ]
     return DailyMealLogsResponse(date=target_day, meals=meals)
-
-
-@app.get("/plans/today", response_model=PlanDayResponse)
-def get_today_plan(user_id: int = 1, day: Optional[str] = None):
-    """Return the active plan day for a specific date (defaults to today)."""
-    from tools.plan_tools import _get_active_plan_bundle_data
-
-    target_day = day or date.today().isoformat()
-    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
-    plan_days = bundle.get("plan_days", []) if isinstance(bundle, dict) else []
-    day_data = next((d for d in plan_days if d.get("date") == target_day), None)
-    if not day_data:
-        raise HTTPException(status_code=404, detail="No plan found for requested day")
-
-    workout_plan = day_data.get("workout_plan") or "Workout"
-    return PlanDayResponse(
-        date=day_data.get("date", target_day),
-        workout_plan=workout_plan,
-        rest_day=bool(day_data.get("rest_day")),
-        calorie_target=int(day_data.get("calorie_target") or 0),
-        protein_g=int(day_data.get("protein_g") or 0),
-        carbs_g=int(day_data.get("carbs_g") or 0),
-        fat_g=int(day_data.get("fat_g") or 0),
-    )
-
-
-@app.get("/api/profile")
-def get_profile(user_id: int = 1):
-    """Return user profile and preferences."""
-    return _load_user_profile(user_id)
-
-
-@app.get("/api/progress")
-def get_progress(user_id: int = 1):
-    """Return progress data (checkins, plan, meals, workouts)."""
-    try:
-        from tools.plan_tools import _get_active_plan_bundle_data
-
-        plan_bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
-        plan = plan_bundle.get("plan")
-        checkpoints = plan_bundle.get("checkpoints", [])
-    except Exception:
-        plan = None
-        checkpoints = []
-    return {
-        "checkins": _list_checkins(user_id),
-        "checkpoints": checkpoints,
-        "plan": plan,
-        "meals": _list_meal_logs(user_id),
-        "workouts": _list_workout_sessions(user_id),
-    }
-
-
-@app.get("/api/coach-suggestion")
-def get_coach_suggestion(user_id: int = 1):
-    """Return a coach suggestion derived from plan status."""
-    suggestion = None
-    try:
-        from tools.plan_tools import compute_plan_status
-
-        status_raw = compute_plan_status.func(user_id)
-        payload = _safe_parse_json(status_raw)
-        if payload:
-            suggestion = _derive_suggestion_from_status(payload)
-    except Exception:
-        suggestion = None
-    return {"suggestion": suggestion}
 
 
 if __name__ == "__main__":

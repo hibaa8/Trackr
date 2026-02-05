@@ -8,14 +8,14 @@
 
 /* Begin PBXBuildFile section */
 		9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */; };
-		C0B1C0B1C0B1C0B1C0B1C0B1 /* CoachImages in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A1 /* CoachImages */; };
-		C0B1C0B1C0B1C0B1C0B1C0B2 /* CoachVideos in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A2 /* CoachVideos */; };
+		C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */; };
+		C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		3D93F1942F1855FC00A8D3CB /* AITrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AITrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
-		C0A1C0A1C0A1C0A1C0A1C0A1 /* CoachImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachImages; sourceTree = SOURCE_ROOT; };
-		C0A1C0A1C0A1C0A1C0A1C0A2 /* CoachVideos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachVideos; sourceTree = SOURCE_ROOT; };
+		C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachImages; sourceTree = SOURCE_ROOT; };
+		C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachVideos; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -43,6 +43,7 @@
 			children = (
 				3D93F1962F1855FC00A8D3CB /* AITrainer */,
 				3D93F1952F1855FC00A8D3CB /* Products */,
+				3DFFC9B62F32B3C5003ED109 /* Recovered References */,
 			);
 			sourceTree = "<group>";
 		};
@@ -52,6 +53,15 @@
 				3D93F1942F1855FC00A8D3CB /* AITrainer.app */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		3DFFC9B62F32B3C5003ED109 /* Recovered References */ = {
+			isa = PBXGroup;
+			children = (
+				C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */,
+				C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */,
+			);
+			name = "Recovered References";
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -122,8 +132,8 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				C0B1C0B1C0B1C0B1C0B1C0B1 /* CoachImages in Resources */,
-				C0B1C0B1C0B1C0B1C0B1C0B2 /* CoachVideos in Resources */,
+				C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */,
+				C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -262,6 +272,7 @@
 				CODE_SIGN_ENTITLEMENTS = AITrainer/AITrainer.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B32US5N579;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;
@@ -310,6 +321,7 @@
 				CODE_SIGN_ENTITLEMENTS = AITrainer/AITrainer.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = B32US5N579;
 				ENABLE_APP_SANDBOX = YES;
 				ENABLE_PREVIEWS = YES;
 				ENABLE_USER_SELECTED_FILES = readonly;

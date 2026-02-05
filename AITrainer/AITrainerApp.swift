@@ -13,6 +13,7 @@ struct AITrainerApp: App {
     @StateObject private var healthKitManager = HealthKitManager()
     @StateObject private var authManager = AuthenticationManager()
     @StateObject private var notificationManager = NotificationManager()
+    @StateObject private var backendConnector = FrontendBackendConnector.shared
 
     init() {
         // Configure app appearance
@@ -23,6 +24,7 @@ struct AITrainerApp: App {
         WindowGroup {
             SplashScreenView()
                     .environmentObject(appState)
+                    .environmentObject(backendConnector)
                     .environmentObject(healthKitManager)
                     .environmentObject(authManager)
                     .environmentObject(notificationManager)

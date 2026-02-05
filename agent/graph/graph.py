@@ -14,7 +14,7 @@ from typing_extensions import TypedDict
 from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DEFAULT_USER_ID, _draft_plan_key
 from agent.prompts.system_prompt import DEFAULT_AGENT_ID, get_system_prompt
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
-from agent.state import SESSION_CACHE
+from state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.db.connection import get_db_conn
@@ -66,9 +66,11 @@ class AgentState(TypedDict):
     context: Optional[Dict[str, Any]]
     active_plan: Optional[Dict[str, Any]]
     proposed_plan: Optional[Dict[str, Any]]
+    user_id: Optional[int]
 
 
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
+    existing = SESSION_CACHE.get(user_id, {})
     with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute("SELECT 1")
@@ -88,6 +90,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "checkins": checkins,
         "health_activity": health_activity,
         "reminders": reminders,
+        "agent_id": existing.get("agent_id"),
     }
     return {
         "context": context,
@@ -103,7 +106,8 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
 def assistant(state: AgentState):
     context = state.get("context")
     active_plan = state.get("active_plan")
-    session = SESSION_CACHE.get(DEFAULT_USER_ID, {})
+    user_id = state.get("user_id") or DEFAULT_USER_ID
+    session = SESSION_CACHE.get(user_id, {})
     agent_id = session.get("agent_id", DEFAULT_AGENT_ID)
     if session.get("context"):
         context = session["context"]
@@ -112,17 +116,17 @@ def assistant(state: AgentState):
     if session.get("workout_sessions"):
         state["workout_sessions"] = session["workout_sessions"]
     if context is None or active_plan is None:
-        preload = _preload_session_cache(DEFAULT_USER_ID)
+        preload = _preload_session_cache(user_id)
         context = preload["context"]
         active_plan = preload["active_plan"]
-    if DEFAULT_USER_ID not in SESSION_CACHE:
-        SESSION_CACHE[DEFAULT_USER_ID] = {}
-    if "workout_sessions" not in SESSION_CACHE[DEFAULT_USER_ID]:
-        SESSION_CACHE[DEFAULT_USER_ID]["workout_sessions"] = _load_workout_sessions_draft(DEFAULT_USER_ID)
-    if "meal_logs" not in SESSION_CACHE[DEFAULT_USER_ID]:
-        SESSION_CACHE[DEFAULT_USER_ID]["meal_logs"] = _load_meal_logs_draft(DEFAULT_USER_ID)
-    SESSION_CACHE[DEFAULT_USER_ID]["context"] = context
-    SESSION_CACHE[DEFAULT_USER_ID]["active_plan"] = active_plan
+    if user_id not in SESSION_CACHE:
+        SESSION_CACHE[user_id] = {}
+    if "workout_sessions" not in SESSION_CACHE[user_id]:
+        SESSION_CACHE[user_id]["workout_sessions"] = _load_workout_sessions_draft(user_id)
+    if "meal_logs" not in SESSION_CACHE[user_id]:
+        SESSION_CACHE[user_id]["meal_logs"] = _load_meal_logs_draft(user_id)
+    SESSION_CACHE[user_id]["context"] = context
+    SESSION_CACHE[user_id]["active_plan"] = active_plan
     last_user_message = ""
     for message in reversed(state.get("messages", [])):
         if isinstance(message, HumanMessage):

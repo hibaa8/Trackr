@@ -6,6 +6,7 @@ struct CoachDetailView: View {
     let coach: Coach
     @State private var showChatSetup = false
     @Environment(\.presentationMode) var presentationMode
+    @EnvironmentObject private var appState: AppState
 
     var body: some View {
         if showChatSetup {
@@ -136,6 +137,7 @@ struct CoachDetailView: View {
 
                         // Choose Button
                         Button(action: {
+                            appState.setSelectedCoach(coach)
                             withAnimation(.easeInOut(duration: 0.3)) {
                                 showChatSetup = true
                             }
