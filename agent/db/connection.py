@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import os
+import sqlite3
 from urllib.parse import quote_plus
 from contextlib import contextmanager
 from typing import Any, Iterable, Optional
 
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
+from agent.config.constants import DB_PATH
 
 
 def _adapt_query(query: str) -> str:
@@ -14,17 +16,20 @@ def _adapt_query(query: str) -> str:
 
 
 class CursorAdapter:
-    def __init__(self, cursor):
+    def __init__(self, cursor, adapt_query: bool = True):
         self._cursor = cursor
+        self._adapt_query = adapt_query
 
     def execute(self, query: str, params: Optional[Iterable[Any]] = None):
-        query = _adapt_query(query)
+        if self._adapt_query:
+            query = _adapt_query(query)
         if params is None:
             return self._cursor.execute(query)
         return self._cursor.execute(query, params)
 
     def executemany(self, query: str, params: Iterable[Iterable[Any]]):
-        query = _adapt_query(query)
+        if self._adapt_query:
+            query = _adapt_query(query)
         return self._cursor.executemany(query, params)
 
     def fetchone(self):
@@ -38,12 +43,18 @@ class CursorAdapter:
 
 
 class ConnectionAdapter:
-    def __init__(self, conn, pool: Optional[ThreadedConnectionPool] = None):
+    def __init__(
+        self,
+        conn,
+        pool: Optional[ThreadedConnectionPool] = None,
+        adapt_query: bool = True,
+    ):
         self._conn = conn
         self._pool = pool
+        self._adapt_query = adapt_query
 
     def cursor(self):
-        return CursorAdapter(self._conn.cursor())
+        return CursorAdapter(self._conn.cursor(), adapt_query=self._adapt_query)
 
     def commit(self) -> None:
         self._conn.commit()
@@ -83,12 +94,20 @@ def get_db_conn():
             safe_password = quote_plus(password)
             dsn = f"postgresql://{safe_user}:{safe_password}@{host}:{port}/{dbname}"
     if not dsn:
-        raise RuntimeError(
-            "Database connection string not set. Use SUPABASE_DATABASE_URL or SUPABASE_DB_HOST/USER/PASSWORD."
-        )
+        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+        adapter = ConnectionAdapter(conn, pool=None, adapt_query=False)
+        try:
+            yield adapter
+            adapter.commit()
+        except Exception:
+            adapter.rollback()
+            raise
+        finally:
+            adapter.close()
+        return
     pool = _get_pool(dsn)
     conn = pool.getconn()
-    adapter = ConnectionAdapter(conn, pool=pool)
+    adapter = ConnectionAdapter(conn, pool=pool, adapt_query=True)
     try:
         yield adapter
         adapter.commit()

@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ConversationView: View {
     let coach: Coach
@@ -15,14 +16,79 @@ struct ConversationView: View {
             quickReplies: []
         ),
         OnboardingQuestion(
+            id: "height",
+            text: "What's your height?",
+            quickReplies: []
+        ),
+        OnboardingQuestion(
+            id: "age",
+            text: "How old are you?",
+            quickReplies: []
+        ),
+        OnboardingQuestion(
+            id: "activity",
+            text: "How active are you on a typical week?",
+            quickReplies: ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"]
+        ),
+        OnboardingQuestion(
+            id: "training_days",
+            text: "How many days per week can you train?",
+            quickReplies: ["2-3 days", "3-4 days", "4-5 days", "6+ days"]
+        ),
+        OnboardingQuestion(
+            id: "workout_time",
+            text: "How long do you want each workout to be?",
+            quickReplies: ["20-30 min", "30-45 min", "45-60 min", "60+ min"]
+        ),
+        OnboardingQuestion(
             id: "goal",
             text: "Great! And what's your fitness goal?",
             quickReplies: ["Lose Weight", "Build Muscle", "Get Fit"]
         ),
         OnboardingQuestion(
+            id: "target_weight",
+            text: "Do you have a target weight in mind?",
+            quickReplies: ["No", "Yes, I do"]
+        ),
+        OnboardingQuestion(
+            id: "timeframe",
+            text: "What timeline feels realistic for your goal?",
+            quickReplies: ["4 weeks", "8 weeks", "12 weeks", "No rush"]
+        ),
+        OnboardingQuestion(
             id: "experience",
             text: "How would you describe your fitness experience?",
             quickReplies: ["Beginner", "Intermediate", "Advanced"]
+        ),
+        OnboardingQuestion(
+            id: "equipment",
+            text: "What equipment do you have access to?",
+            quickReplies: ["None", "Basic", "Full gym"]
+        ),
+        OnboardingQuestion(
+            id: "injuries",
+            text: "Any injuries or limitations I should know about?",
+            quickReplies: ["None", "Lower body", "Upper body", "Back/Neck"]
+        ),
+        OnboardingQuestion(
+            id: "workout_type",
+            text: "What workouts do you enjoy most?",
+            quickReplies: ["Strength", "HIIT", "Cardio", "Yoga/Pilates"]
+        ),
+        OnboardingQuestion(
+            id: "dietary",
+            text: "Any dietary preferences I should know?",
+            quickReplies: ["No preference", "High Protein", "Vegetarian", "Low Carb"]
+        ),
+        OnboardingQuestion(
+            id: "sleep",
+            text: "How many hours of sleep do you usually get?",
+            quickReplies: ["<6 hours", "6-7 hours", "7-8 hours", "8+ hours"]
+        ),
+        OnboardingQuestion(
+            id: "motivation",
+            text: "What motivates you the most right now?",
+            quickReplies: ["Energy", "Confidence", "Health", "Performance"]
         )
     ]
 
@@ -52,18 +118,31 @@ struct ConversationView: View {
                     }
 
                     // Chat messages
-                    ScrollView {
-                        LazyVStack(spacing: 16) {
-                            ForEach(messages) { message in
-                                if message.isFromCoach {
-                                    CoachMessageView(message: message, coach: coach)
-                                } else {
-                                    UserMessageView(message: message)
+                    ScrollViewReader { proxy in
+                        ScrollView {
+                            LazyVStack(spacing: 16) {
+                                ForEach(messages) { message in
+                                    if message.isFromCoach {
+                                        CoachMessageView(message: message, coach: coach)
+                                    } else {
+                                        UserMessageView(message: message)
+                                    }
                                 }
+                                Color.clear
+                                    .frame(height: 1)
+                                    .id("bottom")
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.top, 20)
+                        }
+                        .onChange(of: messages.count) { _ in
+                            withAnimation(.easeOut(duration: 0.2)) {
+                                proxy.scrollTo("bottom", anchor: .bottom)
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 20)
+                        .onAppear {
+                            proxy.scrollTo("bottom", anchor: .bottom)
+                        }
                     }
 
                     Spacer()
@@ -201,9 +280,17 @@ struct CoachMessageView: View {
                     .fill(Color(coach.primaryColor).opacity(0.8))
                     .frame(width: 32, height: 32)
 
-                Image(systemName: "person.fill")
-                    .font(.system(size: 14))
-                    .foregroundColor(.white)
+                if let image = coachAvatar() {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 28, height: 28)
+                        .clipShape(Circle())
+                } else {
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 14))
+                        .foregroundColor(.white)
+                }
             }
 
             VStack(alignment: .leading, spacing: 4) {
@@ -224,6 +311,14 @@ struct CoachMessageView: View {
 
             Spacer()
         }
+    }
+
+    private func coachAvatar() -> Image? {
+        guard let url = coach.imageURL,
+              let uiImage = UIImage(contentsOfFile: url.path) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
     }
 }
 

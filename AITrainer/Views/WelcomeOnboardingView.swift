@@ -29,15 +29,10 @@ struct WelcomeOnboardingView: View {
                     VStack(spacing: 32) {
                         // Title Section
                         VStack(spacing: 16) {
-                            Text("Your AI")
-                                .font(.system(size: 40, weight: .bold))
-                                .foregroundColor(.white) +
-                            Text("\nFitness")
-                                .font(.system(size: 40, weight: .bold))
-                                .foregroundColor(.white) +
-                            Text("\nCoach")
-                                .font(.system(size: 40, weight: .bold))
+                            Text("Choose Your Own\nAI Fitness Coach")
+                                .font(.system(size: 36, weight: .bold))
                                 .foregroundColor(.white)
+                                .multilineTextAlignment(.center)
 
                             Text("Personalized training, real results")
                                 .font(.system(size: 18, weight: .medium))

@@ -52,7 +52,7 @@ struct SplashScreenView: View {
                         .opacity(logoOpacity)
 
                         // App Name
-                        Text("AI Coach")
+                        Text("Vaylow Fitness")
                             .font(.system(size: 32, weight: .bold))
                             .foregroundColor(.white)
                             .opacity(logoOpacity)
@@ -66,7 +66,7 @@ struct SplashScreenView: View {
                             .progressViewStyle(CircularProgressViewStyle(tint: .cyan))
                             .scaleEffect(1.2)
 
-                        Text("Loading your AI fitness coach...")
+                        Text("Loading your Vaylow Fitness coach...")
                             .font(.system(size: 14, weight: .medium))
                             .foregroundColor(.gray)
                     }

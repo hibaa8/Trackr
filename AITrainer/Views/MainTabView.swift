@@ -5,33 +5,44 @@ struct MainTabView: View {
     let coach: Coach
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
     @State private var showVoiceChat = false
+    @State private var focusChatOnOpen = false
 
     var body: some View {
-        ZStack {
-            TabView(selection: $selectedTab) {
-                // Progress Page
+        TabView(selection: $selectedTab) {
+            // Progress Page
+            ZStack {
                 ProgressPageView()
-                    .tag(0)
+                VStack {
+                    Spacer()
+                    globalBottomToolbar
+                }
+            }
+            .tag(0)
 
-                // Trainer Page (default)
+            // Trainer Page (default)
+            ZStack {
                 TrainerMainViewContent(coach: coach)
-                    .tag(1)
+                VStack {
+                    Spacer()
+                    globalBottomToolbar
+                }
+            }
+            .tag(1)
 
-                // Settings Page
+            // Settings Page
+            ZStack {
                 SettingsPageView(coach: coach)
-                    .tag(2)
+                VStack {
+                    Spacer()
+                    globalBottomToolbar
+                }
             }
-            .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
-            .preferredColorScheme(.dark)
-
-            // Global bottom toolbar
-            VStack {
-                Spacer()
-                globalBottomToolbar
-            }
+            .tag(2)
         }
+        .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
+        .preferredColorScheme(.dark)
         .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: coach)
+            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
         }
     }
 
@@ -48,11 +59,16 @@ struct MainTabView: View {
                             .fill(.ultraThinMaterial.opacity(0.6))
                     )
             }
+            .onTapGesture {
+                focusChatOnOpen = true
+                showVoiceChat = true
+            }
 
             Spacer()
 
             // Voice microphone (main action)
             Button(action: {
+                focusChatOnOpen = false
                 showVoiceChat = true
             }) {
                 ZStack {
@@ -123,17 +139,12 @@ struct ProgressPageView: View {
                     }
                     .padding(.horizontal, 20)
                 }
-
-                // Bottom toolbar
-                VStack {
-                    Spacer()
-                    bottomToolbar
-                }
             }
         }
         .navigationBarHidden(true)
         .onAppear {
-            loadProgressData()
+            // Temporarily disabled to prevent blocking
+            // loadProgressData()
         }
     }
 
@@ -569,12 +580,6 @@ struct SettingsPageView: View {
                     }
                     .padding(.horizontal, 20)
                 }
-
-                // Bottom toolbar
-                VStack {
-                    Spacer()
-                    bottomToolbar
-                }
             }
         }
         .navigationBarHidden(true)
@@ -610,11 +615,11 @@ struct SettingsPageView: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Harry Chen")
+                Text("Harry Guo")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.white)
 
-                Text("Height: 180 cm | Weight: 75 kg | Age: 28")
+                Text("Height: 183 cm | Weight: 70 kg | Age: 25")
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.7))
             }

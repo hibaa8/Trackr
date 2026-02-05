@@ -1,10 +1,12 @@
 import SwiftUI
 import UIKit
+import AVKit
 
 struct CoachSelectionView: View {
     @State private var selectedCoach: Coach? = nil
     @State private var showCoachDetail = false
     @State private var contentOpacity = 0.0
+    @State private var introCoach: Coach? = nil
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
 
@@ -29,9 +31,7 @@ struct CoachSelectionView: View {
                             ForEach(Coach.allCoaches) { coach in
                                 CoachCard(coach: coach) {
                                     selectedCoach = coach
-                                    withAnimation(.easeInOut(duration: 0.3)) {
-                                        showCoachDetail = true
-                                    }
+                                    introCoach = coach
                                 }
                             }
                         }
@@ -44,6 +44,15 @@ struct CoachSelectionView: View {
             .onAppear {
                 withAnimation(.easeOut(duration: 0.6)) {
                     contentOpacity = 1.0
+                }
+            }
+            .fullScreenCover(item: $introCoach) { coach in
+                CoachIntroVideoView(coach: coach) {
+                    selectedCoach = coach
+                    introCoach = nil
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        showCoachDetail = true
+                    }
                 }
             }
         }
@@ -147,6 +156,85 @@ struct ScaleButtonStyle: ButtonStyle {
         configuration.label
             .scaleEffect(configuration.isPressed ? 0.95 : 1.0)
             .animation(.easeOut(duration: 0.2), value: configuration.isPressed)
+    }
+}
+
+struct CoachIntroVideoView: View {
+    let coach: Coach
+    let onFinish: () -> Void
+    @Environment(\.dismiss) private var dismiss
+    @State private var player = AVPlayer()
+    @State private var endObserver: NSObjectProtocol?
+
+    var body: some View {
+        ZStack(alignment: .topTrailing) {
+            Color.black.ignoresSafeArea()
+            if let url = coach.videoURL {
+                FullScreenVideoPlayer(player: player)
+                    .ignoresSafeArea()
+                    .onAppear {
+                        let item = AVPlayerItem(url: url)
+                        player.replaceCurrentItem(with: item)
+                        player.play()
+                        endObserver = NotificationCenter.default.addObserver(
+                            forName: .AVPlayerItemDidPlayToEndTime,
+                            object: item,
+                            queue: .main
+                        ) { _ in
+                            finishPlayback()
+                        }
+                    }
+            } else {
+                Text("Video unavailable")
+                    .foregroundColor(.white)
+                    .font(.system(size: 16, weight: .semibold))
+            }
+
+            Button(action: finishPlayback) {
+                Text("Skip")
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 8)
+                    .background(Color.black.opacity(0.6))
+                    .clipShape(Capsule())
+            }
+            .padding(.top, 50)
+            .padding(.trailing, 20)
+        }
+        .onDisappear {
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+            }
+            endObserver = nil
+            player.pause()
+        }
+    }
+
+    private func finishPlayback() {
+        player.pause()
+        dismiss()
+        onFinish()
+    }
+}
+
+struct FullScreenVideoPlayer: UIViewControllerRepresentable {
+    let player: AVPlayer
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.showsPlaybackControls = false
+        controller.videoGravity = .resizeAspectFill
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
+        if uiViewController.player !== player {
+            uiViewController.player = player
+        }
+        uiViewController.videoGravity = .resizeAspectFill
+        uiViewController.showsPlaybackControls = false
     }
 }
 

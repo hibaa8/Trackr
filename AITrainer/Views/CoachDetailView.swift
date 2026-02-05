@@ -70,14 +70,6 @@ struct CoachDetailView: View {
                     }
                     .padding(.bottom, 24)
 
-                    if let videoURL = coach.videoURL {
-                        VideoPlayer(player: AVPlayer(url: videoURL))
-                            .frame(height: 200)
-                            .clipShape(RoundedRectangle(cornerRadius: 16))
-                            .padding(.horizontal, 24)
-                            .padding(.bottom, 24)
-                    }
-
                     // Content Card
                     VStack(alignment: .leading, spacing: 0) {
                         // Coach Name & Title

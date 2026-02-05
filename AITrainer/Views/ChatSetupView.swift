@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct ChatSetupView: View {
     let coach: Coach
@@ -48,9 +49,17 @@ struct ChatSetupView: View {
                                 )
                                 .frame(width: 120, height: 120)
 
-                            Image(systemName: "person.fill")
-                                .font(.system(size: 50))
-                                .foregroundColor(.white.opacity(0.8))
+                            if let image = coachImage() {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                                    .frame(width: 110, height: 110)
+                                    .clipShape(Circle())
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 50))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
                         }
                         .offset(y: messageOffset * 0.3)
                         .opacity(contentOpacity)
@@ -124,15 +133,13 @@ struct ChatSetupView: View {
 
     private func getWelcomeMessage(for coach: Coach) -> String {
         switch coach.id {
-        case "marcus_vance":
+        case "marcus_hayes":
             return "Hey! I'm Marcus, your new coach. Let's get you set up!"
-        case "sophia_chen":
-            return "Hello! I'm Sophia. Ready to optimize your performance?"
         case "alex_rivera":
             return "Hi there! I'm Alex. Let's build something amazing together!"
         case "maria_santos":
             return "¡Hola! I'm Maria! Ready to dance your way to fitness?"
-        case "jake_miller":
+        case "jake_foster":
             return "What's up! I'm Jake. Time to find your flow!"
         case "david_thompson":
             return "Hey! I'm David. Let's build champion-level habits!"
@@ -140,9 +147,25 @@ struct ChatSetupView: View {
             return "Hi! I'm Zara. Ready to discover your inner strength?"
         case "kenji_tanaka":
             return "Hello! I'm Kenji. Let's find balance and strength together!"
+        case "hana_kim":
+            return "Hi! I'm Hana. Ready to build a stronger core?"
+        case "chloe_evans":
+            return "Hello! I'm Chloe. Let's find calm and strength together."
+        case "simone_adebayo":
+            return "Hey! I'm Simone. Ready to get powerful?"
+        case "liam_carter":
+            return "Hey! I'm Liam. Let's crush your goals together!"
         default:
             return "Hey! I'm your new coach. Let's get you set up!"
         }
+    }
+
+    private func coachImage() -> Image? {
+        guard let url = coach.imageURL,
+              let uiImage = UIImage(contentsOfFile: url.path) else {
+            return nil
+        }
+        return Image(uiImage: uiImage)
     }
 }
 

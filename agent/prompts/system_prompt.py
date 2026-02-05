@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 import os
 
 load_dotenv()
-DEFAULT_AGENT_ID = os.getenv("DEFAULT_AGENT_ID")
+DEFAULT_AGENT_ID = os.getenv("DEFAULT_AGENT_ID") or "marcus"
 
 @dataclass(frozen=True)
 class AgentPersona:
@@ -242,7 +242,10 @@ AGENT_PROFILES: Dict[str, AgentPersona] = {
     ),
 }
 
-AGENT_ID_ALIASES: Dict[str, str] = {"maya": "maria"}
+AGENT_ID_ALIASES: Dict[str, str] = {
+    "maya": "maria",
+    "marcus_hayes": "marcus",
+}
 
 
 def _resolve_agent_id(agent_id: str | None) -> str:

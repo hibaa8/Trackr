@@ -140,7 +140,7 @@ struct CoachView: View {
             }
 
             VStack(alignment: .leading, spacing: 6) {
-                Text("AI Coach")
+                Text("Vaylow Fitness")
                     .font(.headlineLarge)
                     .foregroundColor(.textPrimary)
 
@@ -181,7 +181,7 @@ struct CoachView: View {
             VStack(spacing: 24) {
                 // Welcome message
                 VStack(spacing: 12) {
-                    Text("👋 Welcome to AI Coach!")
+                    Text("👋 Welcome to Vaylow Fitness!")
                         .font(.headlineLarge)
                         .foregroundColor(.textPrimary)
 
@@ -253,7 +253,7 @@ struct CoachView: View {
             HStack(spacing: 16) {
                 // Message input field
                 HStack(spacing: 12) {
-                    TextField("Ask your AI coach anything...", text: $messageText, axis: .vertical)
+                    TextField("Ask your Vaylow coach anything...", text: $messageText, axis: .vertical)
                         .font(.bodyMedium)
                         .foregroundColor(.textPrimary)
                         .lineLimit(1...4)
