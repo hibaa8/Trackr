@@ -553,6 +553,7 @@ struct ProgressPageView: View {
 // Settings Page matching screen 11 mockup
 struct SettingsPageView: View {
     let coach: Coach
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var notificationsEnabled = true
     @State private var healthSyncEnabled = false
 
@@ -698,7 +699,9 @@ struct SettingsPageView: View {
 
             SettingsRow(title: "Help & Feedback")
             SettingsRow(title: "Privacy Policy")
-            SettingsRow(title: "Log Out", isDestructive: true)
+            SettingsRow(title: "Log Out", isDestructive: true) {
+                authManager.signOut()
+            }
         }
     }
 
@@ -752,9 +755,10 @@ struct SettingsRow: View {
     var toggle: Binding<Bool>? = nil
     var highlight: Bool = false
     var isDestructive: Bool = false
+    var action: (() -> Void)? = nil
 
     var body: some View {
-        HStack {
+        let content = HStack {
             Text(title)
                 .font(.system(size: 16, weight: .medium))
                 .foregroundColor(isDestructive ? .red : .white)
@@ -776,6 +780,15 @@ struct SettingsRow: View {
             }
         }
         .padding(.vertical, 12)
+
+        if let action = action {
+            Button(action: action) {
+                content
+            }
+            .buttonStyle(.plain)
+        } else {
+            content
+        }
     }
 }
 

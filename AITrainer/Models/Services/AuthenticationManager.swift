@@ -56,6 +56,15 @@ class AuthenticationManager: ObservableObject {
     func checkAuthenticationStatus() {
         hasCompletedOnboarding = userDefaults.bool(forKey: "hasCompletedOnboarding")
         currentUser = userDefaults.string(forKey: "currentUserEmail")
+
+        let hasLocalAuth = userDefaults.string(forKey: "authToken") != nil
+        if !hasLocalAuth {
+            isAuthenticated = false
+            currentUser = nil
+            Task { await clearSupabaseSessionIfNeeded() }
+            return
+        }
+
         Task { await refreshSession() }
     }
 
@@ -203,6 +212,11 @@ class AuthenticationManager: ObservableObject {
             isAuthenticated = false
             currentUser = nil
         }
+    }
+
+    private func clearSupabaseSessionIfNeeded() async {
+        guard let supabase else { return }
+        try? await supabase.auth.signOut()
     }
 
     private func fetchUserRecord(email: String) async throws -> UserRecord? {
