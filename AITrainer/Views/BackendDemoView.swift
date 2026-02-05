@@ -194,9 +194,9 @@ struct BackendDemoView: View {
                     backendConnector.loadWorkoutVideos { result in
                         switch result {
                         case .success(let videos):
-                            print("✅ Loaded \\(videos.count) videos")
+                            print("✅ Loaded \(videos.count) videos")
                         case .failure(let error):
-                            print("❌ Failed to load videos: \\(error)")
+                            print("❌ Failed to load videos: \(error)")
                         }
                     }
                 }
@@ -206,9 +206,9 @@ struct BackendDemoView: View {
                     backendConnector.suggestRecipes { result in
                         switch result {
                         case .success(let recipes):
-                            print("✅ Got \\(recipes.count) recipe suggestions")
+                            print("✅ Got \(recipes.count) recipe suggestions")
                         case .failure(let error):
-                            print("❌ Failed to get recipes: \\(error)")
+                            print("❌ Failed to get recipes: \(error)")
                         }
                     }
                 }
@@ -219,9 +219,9 @@ struct BackendDemoView: View {
                     backendConnector.findNearbyGyms(latitude: 37.7749, longitude: -122.4194) { result in
                         switch result {
                         case .success(let gyms):
-                            print("✅ Found \\(gyms.count) nearby gyms")
+                            print("✅ Found \(gyms.count) nearby gyms")
                         case .failure(let error):
-                            print("❌ Failed to find gyms: \\(error)")
+                            print("❌ Failed to find gyms: \(error)")
                         }
                     }
                 }

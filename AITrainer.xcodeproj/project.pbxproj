@@ -7,6 +7,10 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		84D4F6292F34AAAD00BEE516 /* agents.md in Resources */ = {isa = PBXBuildFile; fileRef = 84D4F6282F34AAA900BEE516 /* agents.md */; };
+		84D4F62C2F34ABBD00BEE516 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */; };
+		84D4F62E2F34ABBD00BEE516 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */; };
+		84D4F6322F34ABED00BEE516 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F6312F34ABED00BEE516 /* Supabase */; };
 		9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */; };
 		C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */; };
 		C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */; };
@@ -14,6 +18,7 @@
 
 /* Begin PBXFileReference section */
 		3D93F1942F1855FC00A8D3CB /* AITrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AITrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		84D4F6282F34AAA900BEE516 /* agents.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = agents.md; sourceTree = "<group>"; };
 		C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachImages; sourceTree = SOURCE_ROOT; };
 		C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachVideos; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
@@ -31,7 +36,10 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				84D4F6322F34ABED00BEE516 /* Supabase in Frameworks */,
+				84D4F62E2F34ABBD00BEE516 /* GoogleSignInSwift in Frameworks */,
 				9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */,
+				84D4F62C2F34ABBD00BEE516 /* GoogleSignIn in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -41,9 +49,11 @@
 		3D93F18B2F1855FC00A8D3CB = {
 			isa = PBXGroup;
 			children = (
+				84D4F6282F34AAA900BEE516 /* agents.md */,
 				3D93F1962F1855FC00A8D3CB /* AITrainer */,
 				3D93F1952F1855FC00A8D3CB /* Products */,
 				3DFFC9B62F32B3C5003ED109 /* Recovered References */,
+				84D4F6302F34ABED00BEE516 /* Frameworks */,
 			);
 			sourceTree = "<group>";
 		};
@@ -62,6 +72,13 @@
 				C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */,
 			);
 			name = "Recovered References";
+			sourceTree = "<group>";
+		};
+		84D4F6302F34ABED00BEE516 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = Frameworks;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -85,6 +102,9 @@
 			name = AITrainer;
 			packageProductDependencies = (
 				9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */,
+				84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */,
+				84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */,
+				84D4F6312F34ABED00BEE516 /* Supabase */,
 			);
 			productName = AITrainer;
 			productReference = 3D93F1942F1855FC00A8D3CB /* AITrainer.app */;
@@ -116,6 +136,8 @@
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
 				9F0A6E3B8C5F4A1BA1B2C3D4 /* XCRemoteSwiftPackageReference "youtube-ios-player-helper" */,
+				84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
+				84D4F62F2F34ABCC00BEE516 /* XCRemoteSwiftPackageReference "supabase-swift" */,
 			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = 3D93F1952F1855FC00A8D3CB /* Products */;
@@ -132,6 +154,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				84D4F6292F34AAAD00BEE516 /* agents.md in Resources */,
 				C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */,
 				C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */,
 			);
@@ -386,6 +409,22 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 9.1.0;
+			};
+		};
+		84D4F62F2F34ABCC00BEE516 /* XCRemoteSwiftPackageReference "supabase-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/supabase/supabase-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.5.1;
+			};
+		};
 		9F0A6E3B8C5F4A1BA1B2C3D4 /* XCRemoteSwiftPackageReference "youtube-ios-player-helper" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/youtube/youtube-ios-player-helper.git";
@@ -397,6 +436,21 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignIn;
+		};
+		84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;
+			productName = GoogleSignInSwift;
+		};
+		84D4F6312F34ABED00BEE516 /* Supabase */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 84D4F62F2F34ABCC00BEE516 /* XCRemoteSwiftPackageReference "supabase-swift" */;
+			productName = Supabase;
+		};
 		9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 9F0A6E3B8C5F4A1BA1B2C3D4 /* XCRemoteSwiftPackageReference "youtube-ios-player-helper" */;

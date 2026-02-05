@@ -36,7 +36,7 @@ struct CalorieBalanceDetailView: View {
             selectedDate = appState.selectedDate
             appState.refreshDailyData(for: selectedDate)
         }
-        .onChange(of: selectedDate) { newValue in
+        .onChange(of: selectedDate) { _, newValue in
             appState.refreshDailyData(for: newValue)
         }
         .sheet(isPresented: $showLogFood) {

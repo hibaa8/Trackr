@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct WelcomeView: View {
     @EnvironmentObject var authManager: AuthenticationManager
@@ -24,7 +25,11 @@ struct WelcomeView: View {
 
     var body: some View {
         ZStack {
-            LinearGradient.backgroundGradient
+            LinearGradient(
+                colors: [Color.black, Color.blue.opacity(0.5), Color.black],
+                startPoint: .top,
+                endPoint: .bottom
+            )
                 .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
@@ -40,6 +45,12 @@ struct WelcomeView: View {
                 }
             }
         }
+        .onReceive(authManager.$authErrorMessage) { message in
+            if let message {
+                errorMessage = message
+            }
+        }
+        .preferredColorScheme(.dark)
     }
 }
 
@@ -48,7 +59,13 @@ private extension WelcomeView {
             VStack(spacing: 16) {
             ZStack {
                 Circle()
-                    .fill(LinearGradient.fitnessGradient)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color.blue, Color.blue.opacity(0.6)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
                     .frame(width: 96, height: 96)
                     .modernFloatingShadow()
 
@@ -59,16 +76,24 @@ private extension WelcomeView {
 
                 Text("AI Trainer")
                 .font(.displayLarge)
-                .foregroundColor(.textPrimary)
+                .foregroundColor(.white)
 
                 Text("Your personal AI fitness coach")
                 .font(.bodyLarge)
-                .foregroundColor(.textSecondary)
+                .foregroundColor(.white.opacity(0.75))
         }
     }
 
     var authCard: some View {
-        ModernCard {
+        ZStack {
+            RoundedRectangle(cornerRadius: 20)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 20)
+                        .stroke(Color.blue.opacity(0.4), lineWidth: 1)
+                )
+            .modernCardShadow()
+
             VStack(spacing: 20) {
                 Picker("Auth Mode", selection: $mode) {
                     ForEach(AuthMode.allCases, id: \.self) { option in
@@ -76,9 +101,11 @@ private extension WelcomeView {
             }
                 }
                 .pickerStyle(SegmentedPickerStyle())
+                .tint(.blue)
+                .colorScheme(.dark)
 
                 if mode == .signUp {
-                    ModernTextField(
+                    AuthTextField(
                         title: "Full Name",
                         text: $name,
                         icon: "person.fill",
@@ -86,7 +113,7 @@ private extension WelcomeView {
                     )
                 }
 
-                ModernTextField(
+                AuthTextField(
                     title: "Email",
                     text: $email,
                     icon: "envelope.fill",
@@ -113,12 +140,18 @@ private extension WelcomeView {
                         .foregroundColor(.red)
                 }
 
-                ModernPrimaryButton(title: mode.rawValue) {
+                AuthPrimaryButton(title: mode.rawValue) {
                     handleAuth()
                 }
+                .disabled(authManager.isLoading)
+
+                AuthSecondaryButton(title: "Continue with Google") {
+                    handleGoogleSignIn()
+                }
+                .disabled(authManager.isLoading)
 
                 if mode == .signIn {
-                    ModernSecondaryButton(title: "Skip to Demo") {
+                    AuthSecondaryButton(title: "Skip to Demo") {
                     authManager.signIn(email: "demo", password: "demo")
                 }
                 }
@@ -131,7 +164,7 @@ private extension WelcomeView {
         VStack(spacing: 8) {
             Text("By continuing, you agree to our Terms & Privacy Policy.")
                 .font(.captionMedium)
-                .foregroundColor(.textTertiary)
+                .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
             }
         .padding(.horizontal, 24)
@@ -161,6 +194,21 @@ private extension WelcomeView {
             authManager.signIn(email: trimmedEmail, password: password)
         }
     }
+
+    func handleGoogleSignIn() {
+        errorMessage = nil
+        guard let viewController = rootViewController() else {
+            errorMessage = "Unable to start Google Sign-In."
+            return
+        }
+        authManager.signInWithGoogle(presenting: viewController)
+    }
+
+    func rootViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes
+        let windowScene = scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
+        return windowScene?.windows.first { $0.isKeyWindow }?.rootViewController
+    }
 }
 
 struct SecureFieldView: View {
@@ -172,25 +220,108 @@ struct SecureFieldView: View {
             HStack(spacing: 8) {
                 Image(systemName: "lock.fill")
                     .font(.system(size: 14))
-                    .foregroundColor(.fitnessGradientStart)
+                    .foregroundColor(.blue)
 
                 Text(title)
                     .font(.bodyMedium)
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
         }
 
             SecureField("Enter your password", text: $text)
                 .font(.bodyLarge)
+                .foregroundColor(.white)
                 .padding(16)
                 .background(
                     RoundedRectangle(cornerRadius: 12)
-                        .fill(Color.backgroundGradientStart)
+                        .fill(Color.white.opacity(0.08))
                 )
                 .overlay(
                     RoundedRectangle(cornerRadius: 12)
-                        .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
+                        .stroke(Color.blue.opacity(0.4), lineWidth: 1)
                 )
         }
+    }
+}
+
+struct AuthTextField: View {
+    let title: String
+    @Binding var text: String
+    let icon: String
+    let placeholder: String
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 14))
+                    .foregroundColor(.blue)
+
+                Text(title)
+                    .font(.bodyMedium)
+                    .foregroundColor(.white)
+            }
+
+            TextField(placeholder, text: $text)
+                .font(.bodyLarge)
+                .foregroundColor(.white)
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.white.opacity(0.08))
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.blue.opacity(0.4), lineWidth: 1)
+                )
+        }
+    }
+}
+
+struct AuthPrimaryButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.bodyLarge)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(
+                    LinearGradient(
+                        colors: [Color.blue, Color.blue.opacity(0.6)],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .cornerRadius(16)
+                .modernButtonShadow()
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+}
+
+struct AuthSecondaryButton: View {
+    let title: String
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            Text(title)
+                .font(.bodyLarge)
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 52)
+                .background(Color.white.opacity(0.08))
+                .cornerRadius(16)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.blue.opacity(0.4), lineWidth: 1)
+                )
+                .modernCardShadow()
+        }
+        .buttonStyle(PlainButtonStyle())
     }
 }
 

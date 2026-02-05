@@ -6,6 +6,7 @@
 //
 
 import SwiftUI
+import GoogleSignIn
 
 @main
 struct AITrainerApp: App {
@@ -32,6 +33,9 @@ struct AITrainerApp: App {
                     // Request permissions on app launch
                     healthKitManager.requestAuthorization()
                     notificationManager.requestAuthorization()
+                }
+                .onOpenURL { url in
+                    GIDSignIn.sharedInstance.handle(url)
                 }
         }
     }

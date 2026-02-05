@@ -16,6 +16,21 @@
 	<string>1.0</string>
 	<key>BackendBaseURL</key>
 	<string>http://localhost:8000</string>
+	<key>SupabaseURL</key>
+	<string>https://fubkjshjbnlaqybvpnqy.supabase.co</string>
+	<key>SupabaseAnonKey</key>
+	<string>REPLACE_WITH_SUPABASE_ANON_KEY</string>
+	<key>GIDClientID</key>
+	<string>741977123745-1fdbj1u0egaltl71jn0bbrl2lct1p4pt.apps.googleusercontent.com</string>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>com.googleusercontent.apps.741977123745-1fdbj1u0egaltl71jn0bbrl2lct1p4pt</string>
+			</array>
+		</dict>
+	</array>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
 	<key>UILaunchStoryboardName</key>
@@ -77,7 +92,7 @@
 				<key>NSExceptionAllowsInsecureHTTPLoads</key>
 				<true/>
 				<key>NSExceptionMinimumTLSVersion</key>
-				<string>TLSv1.0</string>
+				<string>TLSv1.2</string>
 			</dict>
 		</dict>
 	</dict>
