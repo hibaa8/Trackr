@@ -21,6 +21,16 @@ enum SupabaseConfig {
         return trimmed.isEmpty ? nil : trimmed
     }
 
+    static var authRedirectURL: URL? {
+        let value = value(forKey: "OAuthRedirectURL") ?? value(forKey: "GOOGLE_IOS_URL_SCHEME")
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.contains("://") {
+            return URL(string: trimmed)
+        }
+        return URL(string: "\(trimmed)://login-callback")
+    }
+
     private static func value(forKey key: String) -> String? {
         if let envValue = ProcessInfo.processInfo.environment[key], !envValue.isEmpty {
             return envValue

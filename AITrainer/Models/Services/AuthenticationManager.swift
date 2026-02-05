@@ -8,7 +8,7 @@
 import Foundation
 import Combine
 import Supabase
-import GoogleSignIn
+import AuthenticationServices
 import UIKit
 
 @MainActor
@@ -148,31 +148,31 @@ class AuthenticationManager: ObservableObject {
         userDefaults.set(true, forKey: "hasCompletedOnboarding")
     }
 
-    func signInWithGoogle(presenting viewController: UIViewController) {
+    func signInWithGoogle() {
         authErrorMessage = nil
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
         }
-        guard let clientID = SupabaseConfig.googleClientID else {
-            authErrorMessage = "Google Sign-In is not configured."
-            return
-        }
 
         isLoading = true
-        let configuration = GIDConfiguration(clientID: clientID)
-        GIDSignIn.sharedInstance.configuration = configuration
         Task {
             do {
-                let result = try await GIDSignIn.sharedInstance.signIn(withPresenting: viewController)
-                guard let idToken = result.user.idToken?.tokenString else {
-                    throw NSError(domain: "GoogleSignIn", code: -1, userInfo: [NSLocalizedDescriptionKey: "Missing Google ID token."])
+                guard let redirectURL = SupabaseConfig.authRedirectURL else {
+                    authErrorMessage = "Google redirect URL is missing."
+                    isLoading = false
+                    return
                 }
-                let accessToken = result.user.accessToken.tokenString
-                _ = try await supabase.auth.signInWithIdToken(credentials: OpenIDConnectCredentials(provider: .google, idToken: idToken, accessToken: accessToken))
+                let session = try await supabase.auth.signInWithOAuth(
+                    provider: .google,
+                    redirectTo: redirectURL
+                ) { session in
+                    session.presentationContextProvider = AuthPresentationContextProvider.shared
+                    session.prefersEphemeralWebBrowserSession = true
+                }
 
-                let email = result.user.profile?.email ?? ""
-                let name = result.user.profile?.name ?? "Google User"
+                let email = session.user.email ?? ""
+                let name = session.user.userMetadata["full_name"] as? String ?? "Google User"
                 let existingUser = try await fetchUserRecord(email: email)
                 if existingUser == nil {
                     let insert = UserInsert(
@@ -237,5 +237,20 @@ class AuthenticationManager: ObservableObject {
         isAuthenticated = true
         hasCompletedOnboarding = onboardingCompleted
         userDefaults.set(onboardingCompleted, forKey: "hasCompletedOnboarding")
+    }
+
+    func handleAuthCallback(url: URL) {
+        guard let supabase else { return }
+        supabase.auth.handle(url)
+    }
+}
+
+private final class AuthPresentationContextProvider: NSObject, ASWebAuthenticationPresentationContextProviding {
+    static let shared = AuthPresentationContextProvider()
+
+    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
+        let scenes = UIApplication.shared.connectedScenes
+        let windowScene = scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
+        return windowScene?.windows.first { $0.isKeyWindow } ?? ASPresentationAnchor()
     }
 }

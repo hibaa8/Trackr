@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import UIKit
 
 struct WelcomeView: View {
     @EnvironmentObject var authManager: AuthenticationManager
@@ -197,17 +196,7 @@ private extension WelcomeView {
 
     func handleGoogleSignIn() {
         errorMessage = nil
-        guard let viewController = rootViewController() else {
-            errorMessage = "Unable to start Google Sign-In."
-            return
-        }
-        authManager.signInWithGoogle(presenting: viewController)
-    }
-
-    func rootViewController() -> UIViewController? {
-        let scenes = UIApplication.shared.connectedScenes
-        let windowScene = scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
-        return windowScene?.windows.first { $0.isKeyWindow }?.rootViewController
+        authManager.signInWithGoogle()
     }
 }
 

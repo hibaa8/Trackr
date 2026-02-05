@@ -6,7 +6,6 @@
 //
 
 import SwiftUI
-import GoogleSignIn
 
 @main
 struct AITrainerApp: App {
@@ -35,7 +34,7 @@ struct AITrainerApp: App {
                     notificationManager.requestAuthorization()
                 }
                 .onOpenURL { url in
-                    GIDSignIn.sharedInstance.handle(url)
+                    authManager.handleAuthCallback(url: url)
                 }
         }
     }
