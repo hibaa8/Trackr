@@ -125,6 +125,6 @@ _POOL_DSN: Optional[str] = None
 def _get_pool(dsn: str) -> ThreadedConnectionPool:
     global _POOL, _POOL_DSN
     if _POOL is None or _POOL_DSN != dsn:
-        _POOL = ThreadedConnectionPool(minconn=1, maxconn=5, dsn=dsn, sslmode="require")
+        _POOL = ThreadedConnectionPool(minconn=1, maxconn=15, dsn=dsn, sslmode="require")
         _POOL_DSN = dsn
     return _POOL

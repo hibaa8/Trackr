@@ -13,9 +13,9 @@ def _resolve_age(age_years: Optional[int]) -> int:
     return 30
 
 
-def _bmr_mifflin(weight_kg: float, height_cm: float, age: int, gender: str) -> float:
+def _bmr_mifflin(weight_kg: float, height_cm: float, age: int, gender: Optional[str]) -> float:
     base = 10 * weight_kg + 6.25 * height_cm - 5 * age
-    if gender.lower().startswith("f"):
+    if (gender or "").lower().startswith("f"):
         return base - 161
     return base + 5
 

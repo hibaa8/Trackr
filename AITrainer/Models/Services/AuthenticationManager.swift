@@ -19,10 +19,12 @@ class AuthenticationManager: ObservableObject {
     @Published var authErrorMessage: String?
     @Published var isLoading = false
     @Published var demoUserId: Int?
+    @Published var currentUserId: Int?
 
     private let userDefaults = UserDefaults.standard
     private let supabase: SupabaseClient?
     private let isoFormatter = ISO8601DateFormatter()
+    private var cancellables = Set<AnyCancellable>()
 
     private struct UserRecord: Codable {
         let id: Int?
@@ -54,14 +56,20 @@ class AuthenticationManager: ObservableObject {
         checkAuthenticationStatus()
     }
 
+    var effectiveUserId: Int? {
+        demoUserId ?? currentUserId
+    }
+
     func checkAuthenticationStatus() {
         hasCompletedOnboarding = userDefaults.bool(forKey: "hasCompletedOnboarding")
         currentUser = userDefaults.string(forKey: "currentUserEmail")
+        currentUserId = userDefaults.object(forKey: "currentUserId") as? Int
 
         let hasLocalAuth = userDefaults.string(forKey: "authToken") != nil
         if !hasLocalAuth {
             isAuthenticated = false
             currentUser = nil
+            currentUserId = nil
             Task { await clearSupabaseSessionIfNeeded() }
             return
         }
@@ -72,6 +80,7 @@ class AuthenticationManager: ObservableObject {
     func signIn(email: String, password: String) {
         authErrorMessage = nil
         demoUserId = nil
+        currentUserId = nil
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -90,6 +99,7 @@ class AuthenticationManager: ObservableObject {
                     return
                 }
                 setAuthenticated(email: record.email, onboardingCompleted: true)
+                resolveAndStoreUserId(email: record.email)
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -100,12 +110,14 @@ class AuthenticationManager: ObservableObject {
 
     func signInDemo() {
         demoUserId = 1
+        currentUserId = nil
         setAuthenticated(email: "demo", onboardingCompleted: false)
     }
 
     func signUp(email: String, password: String) {
         authErrorMessage = nil
         demoUserId = nil
+        currentUserId = nil
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -126,6 +138,7 @@ class AuthenticationManager: ObservableObject {
                 )
                 _ = try await supabase.from("users").insert(insert).execute()
                 setAuthenticated(email: email, onboardingCompleted: false)
+                resolveAndStoreUserId(email: email)
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -141,10 +154,12 @@ class AuthenticationManager: ObservableObject {
         isAuthenticated = false
         hasCompletedOnboarding = false
         demoUserId = nil
+        currentUserId = nil
         userDefaults.removeObject(forKey: "hasCompletedOnboarding")
         userDefaults.removeObject(forKey: "authToken")
         userDefaults.removeObject(forKey: "currentUserEmail")
         userDefaults.removeObject(forKey: "currentUserName")
+        userDefaults.removeObject(forKey: "currentUserId")
     }
 
     func completeOnboarding() {
@@ -193,6 +208,7 @@ class AuthenticationManager: ObservableObject {
                 } else {
                     setAuthenticated(email: email, onboardingCompleted: true)
                 }
+                resolveAndStoreUserId(email: email)
                 userDefaults.set(name, forKey: "currentUserName")
                 isLoading = false
             } catch {
@@ -212,10 +228,26 @@ class AuthenticationManager: ObservableObject {
             let session = try await supabase.auth.session
             isAuthenticated = true
             currentUser = session.user.email
+            if currentUserId == nil, let email = currentUser {
+                resolveAndStoreUserId(email: email)
+            }
         } catch {
             isAuthenticated = false
             currentUser = nil
         }
+    }
+
+    private func resolveAndStoreUserId(email: String) {
+        APIService.shared.getUserId(email: email)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { [weak self] response in
+                    self?.currentUserId = response.user_id
+                    self?.userDefaults.set(response.user_id, forKey: "currentUserId")
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private func clearSupabaseSessionIfNeeded() async {

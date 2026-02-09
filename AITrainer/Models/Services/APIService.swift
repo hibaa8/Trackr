@@ -195,6 +195,11 @@ class APIService {
         let dateString = formatter.string(from: date)
         return request(endpoint: "/plans/today?day=\(dateString)&user_id=\(userId)")
     }
+
+    func getUserId(email: String) -> AnyPublisher<UserIdResponse, APIError> {
+        let encoded = email.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? email
+        return request(endpoint: "/api/user-id?email=\(encoded)")
+    }
     
     // MARK: - AI Coaching
     
