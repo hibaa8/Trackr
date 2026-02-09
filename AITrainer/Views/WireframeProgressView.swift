@@ -122,7 +122,7 @@ struct WireframeProgressView: View {
             ModernCard {
                 HStack(spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("178.3 lbs")
+                        Text("80.9 kg")
                             .font(.displayMedium)
                             .foregroundColor(.textPrimary)
 
@@ -145,7 +145,7 @@ struct WireframeProgressView: View {
                                     .foregroundColor(.green)
                             }
 
-                            Text("-1.7 lbs")
+                            Text("-0.8 kg")
                                 .font(.headlineMedium)
                                 .foregroundColor(.green)
                                 .fontWeight(.bold)

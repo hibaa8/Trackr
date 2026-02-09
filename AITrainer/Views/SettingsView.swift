@@ -250,7 +250,7 @@ struct SettingsView: View {
                     ModernPickerRow(
                         title: "Units",
                         selection: $viewModel.units,
-                        options: ["Imperial (lbs, ft)", "Metric (kg, cm)"],
+                        options: ["Metric (kg, cm)"],
                         icon: "ruler"
                     )
 
@@ -407,7 +407,7 @@ class SettingsViewModel: ObservableObject {
     @Published var enableMacroTracking = true
 
     // App preferences
-    @Published var units = "Imperial (lbs, ft)"
+    @Published var units = "Metric (kg, cm)"
     @Published var theme = "System"
     @Published var enableAnalytics = true
 

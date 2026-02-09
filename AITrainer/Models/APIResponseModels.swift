@@ -38,6 +38,7 @@ struct DailyIntakeResponse: Codable {
     let total_carbs_g: Double
     let total_fat_g: Double
     let meals_count: Int
+    let daily_calorie_target: Int?
 }
 
 struct MealLogItemResponse: Codable {

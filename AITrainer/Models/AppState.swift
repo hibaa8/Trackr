@@ -2,6 +2,10 @@ import Foundation
 import SwiftUI
 import Combine
 
+extension Notification.Name {
+    static let dataDidUpdate = Notification.Name("DataDidUpdate")
+}
+
 class AppState: ObservableObject {
     @Published var hasCompletedOnboarding: Bool = false
     @Published var userData: UserData?
@@ -55,17 +59,17 @@ class AppState: ObservableObject {
         ]
     }
 
-    func logMeal(_ meal: MealEntry) {
+    func logMeal(_ meal: MealEntry, userId: Int = 1) {
         meals.insert(meal, at: 0)
         caloriesIn += meal.calories
         proteinCurrent += meal.protein
         carbsCurrent += meal.carbs
         fatsCurrent += meal.fats
-        refreshDailyData(for: selectedDate)
+        refreshDailyData(for: selectedDate, userId: userId)
     }
 
-    func refreshDailyData(for date: Date) {
-        FoodScanService.shared.getDailyIntake(date: date) { [weak self] result in
+    func refreshDailyData(for date: Date, userId: Int = 1) {
+        FoodScanService.shared.getDailyIntake(date: date, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let intake):
@@ -73,13 +77,18 @@ class AppState: ObservableObject {
                     self?.proteinCurrent = Int(intake.total_protein_g)
                     self?.carbsCurrent = Int(intake.total_carbs_g)
                     self?.fatsCurrent = Int(intake.total_fat_g)
+                    if let target = intake.daily_calorie_target, var data = self?.userData {
+                        data.calorieTarget = target
+                        self?.userData = data
+                        self?.updateMacroTargets()
+                    }
                 case .failure:
                     break
                 }
             }
         }
 
-        FoodScanService.shared.getDailyMeals(date: date) { [weak self] result in
+        FoodScanService.shared.getDailyMeals(date: date, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let response):

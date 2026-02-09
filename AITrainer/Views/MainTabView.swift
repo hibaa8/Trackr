@@ -115,6 +115,7 @@ struct ProgressPageView: View {
     @State private var selectedPeriod = 0
     @State private var weeklyCalories: [Int] = Array(repeating: 0, count: 7)
     @State private var progress: ProgressResponse?
+    @State private var profileUser: ProfileUserResponse?
     private let periods = ["Week", "Month", "Year"]
     private let calendar = Calendar.current
 
@@ -151,6 +152,9 @@ struct ProgressPageView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
+            loadProgressData()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
             loadProgressData()
         }
     }
@@ -345,7 +349,7 @@ struct ProgressPageView: View {
     }
 
     private var workoutCompletionCard: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        return VStack(alignment: .leading, spacing: 16) {
             HStack {
                 Text("Workout Completion")
                     .font(.system(size: 18, weight: .semibold))
@@ -390,23 +394,7 @@ struct ProgressPageView: View {
                     // Calendar grid - 4 weeks
                     VStack(spacing: 4) {
                         ForEach(0..<4, id: \.self) { week in
-                            HStack(spacing: 4) {
-                                ForEach(0..<7, id: \.self) { day in
-                                    let dayIndex = week * 7 + day
-                                    let date = calendar.date(byAdding: .day, value: dayIndex - 27, to: Date())
-                                    let dateKey = date.map { dayKeyFormatter.string(from: $0) }
-                                    let isWorkoutDay = dateKey.map { workoutDateKeys.contains($0) } ?? false
-                                    let isToday = dateKey == dayKeyFormatter.string(from: Date())
-
-                                    Circle()
-                                        .fill(isWorkoutDay ? Color.blue : Color.white.opacity(0.2))
-                                        .frame(width: 16, height: 16)
-                                        .overlay(
-                                            Circle()
-                                                .stroke(isToday ? Color.white : Color.clear, lineWidth: 2)
-                                        )
-                                }
-                            }
+                            workoutWeekRow(week: week)
                         }
                     }
                 }
@@ -417,6 +405,26 @@ struct ProgressPageView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.black.opacity(0.6))
         )
+    }
+
+    private func workoutWeekRow(week: Int) -> some View {
+        HStack(spacing: 4) {
+            ForEach(0..<7, id: \.self) { day in
+                let dayIndex = week * 7 + day
+                let date = calendar.date(byAdding: .day, value: dayIndex - 27, to: Date())
+                let dateKey = date.map { dayKeyFormatter.string(from: $0) }
+                let isWorkoutDay = dateKey.map { workoutDateKeys.contains($0) } ?? false
+                let isToday = dateKey == dayKeyFormatter.string(from: Date())
+
+                Circle()
+                    .fill(isWorkoutDay ? Color.blue : Color.white.opacity(0.2))
+                    .frame(width: 16, height: 16)
+                    .overlay(
+                        Circle()
+                            .stroke(isToday ? Color.white : Color.clear, lineWidth: 2)
+                    )
+            }
+        }
     }
 
     private var bottomToolbar: some View {
@@ -475,6 +483,11 @@ struct ProgressPageView: View {
                 }
             }
         }
+        backendConnector.loadProfile(userId: userId) { result in
+            if case .success(let response) = result {
+                profileUser = response.user
+            }
+        }
     }
 
     private func buildWeeklyCalories(from meals: [ProgressMealResponse]) -> [Int] {
@@ -498,7 +511,7 @@ struct ProgressPageView: View {
     }
 
     private var weightSeries: [Double] {
-        let values = sortedCheckins.compactMap { $0.weight_kg }.map { $0 * 2.20462 }
+        let values = sortedCheckins.compactMap { $0.weight_kg }
         return Array(values.suffix(7))
     }
 
@@ -540,8 +553,13 @@ struct ProgressPageView: View {
     }
 
     private var latestWeightText: String {
-        guard let kg = sortedCheckins.last?.weight_kg else { return "—" }
-        return String(format: "%.1f lbs", kg * 2.20462)
+        if let kg = profileUser?.weight_kg {
+            return String(format: "%.1f kg", kg)
+        }
+        if let kg = sortedCheckins.last?.weight_kg {
+            return String(format: "%.1f kg", kg)
+        }
+        return "—"
     }
 
     private var weightDeltaText: String {
@@ -549,9 +567,9 @@ struct ProgressPageView: View {
               let last = sortedCheckins.last?.weight_kg,
               let prev = sortedCheckins.dropLast().last?.weight_kg
         else { return "No recent change" }
-        let delta = (last - prev) * 2.20462
+        let delta = last - prev
         let sign = delta >= 0 ? "+" : ""
-        return String(format: "%@%.1f lbs", sign, delta)
+        return String(format: "%@%.1f kg", sign, delta)
     }
 
     private var weightDeltaIcon: String {
@@ -574,10 +592,10 @@ struct ProgressPageView: View {
         guard let checkpoint = progress?.checkpoints.first else {
             return "No checkpoints yet"
         }
-        let expected = checkpoint.expected_weight_kg * 2.20462
-        let min = checkpoint.min_weight_kg * 2.20462
-        let max = checkpoint.max_weight_kg * 2.20462
-        return String(format: "Week %d target: %.1f lbs (%.1f–%.1f)", checkpoint.week, expected, min, max)
+        let expected = checkpoint.expected_weight_kg
+        let min = checkpoint.min_weight_kg
+        let max = checkpoint.max_weight_kg
+        return String(format: "Week %d target: %.1f kg (%.1f–%.1f)", checkpoint.week, expected, min, max)
     }
 
     private var latestCaloriesText: String {
@@ -709,7 +727,7 @@ struct SettingsPageView: View {
 
     private var profileStatsText: String {
         let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) } ?? "--"
-        let weightText = profileUser?.weight_kg.map { String(format: "%.0f kg", $0) } ?? "--"
+        let weightText = profileUser?.weight_kg.map { String(format: "%.1f kg", $0) } ?? "--"
         let ageText = profileAgeText
         return "Height: \(heightText) | Weight: \(weightText) | Age: \(ageText)"
     }

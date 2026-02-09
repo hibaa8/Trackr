@@ -3,6 +3,7 @@ import SwiftUI
 struct CalorieBalanceDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var selectedDate = Date()
     @State private var showLogFood = false
     @State private var showVoiceChat = false
@@ -34,10 +35,16 @@ struct CalorieBalanceDetailView: View {
         }
         .onAppear {
             selectedDate = appState.selectedDate
-            appState.refreshDailyData(for: selectedDate)
+            let userId = authManager.demoUserId ?? 1
+            appState.refreshDailyData(for: selectedDate, userId: userId)
         }
         .onChange(of: selectedDate) { _, newValue in
-            appState.refreshDailyData(for: newValue)
+            let userId = authManager.demoUserId ?? 1
+            appState.refreshDailyData(for: newValue, userId: userId)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            let userId = authManager.demoUserId ?? 1
+            appState.refreshDailyData(for: selectedDate, userId: userId)
         }
         .sheet(isPresented: $showLogFood) {
             MealLoggingView()
@@ -365,4 +372,5 @@ struct MealRow: View {
 #Preview {
     CalorieBalanceDetailView()
         .environmentObject(AppState())
+        .environmentObject(AuthenticationManager())
 }

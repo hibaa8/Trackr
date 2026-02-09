@@ -154,7 +154,7 @@ struct OnboardingView: View {
             VStack(spacing: 20) {
                 ModernCard {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Current Weight (lbs)")
+                        Text("Current Weight (kg)")
                             .font(.captionLarge)
                             .foregroundColor(.textSecondary)
 
@@ -176,7 +176,7 @@ struct OnboardingView: View {
 
                 ModernCard {
                     VStack(alignment: .leading, spacing: 16) {
-                        Text("Goal Weight (lbs)")
+                        Text("Goal Weight (kg)")
                             .font(.captionLarge)
                             .foregroundColor(.textSecondary)
 
