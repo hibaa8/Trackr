@@ -19,3 +19,6 @@ AITrainer/Config/Info.plist
 AITrainer.xcodeproj/project.xcworkspace/xcuserdata/admin.xcuserdatad/UserInterfaceState.xcuserstate
 AITrainer.xcodeproj/xcshareddata/
 AITrainer.xcodeproj/xcuserdata/admin.xcuserdatad/xcschemes/xcschememanagement.plist
+agent/redis/__pycache__/__init__.cpython-312.pyc
+agent/redis/__pycache__/cache.cpython-312.pyc
+AITrainer.xcodeproj/project.xcworkspace/xcuserdata/admin.xcuserdatad/UserInterfaceState.xcuserstate

@@ -12,6 +12,7 @@ class AppState: ObservableObject {
     @Published var chatMessages: [WireframeChatMessage] = []
     @Published var selectedDate: Date = Date()
     @Published var selectedCoach: Coach?
+    @Published var todayPlan: PlanDayResponse?
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
 

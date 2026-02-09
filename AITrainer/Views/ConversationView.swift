@@ -251,12 +251,30 @@ struct ConversationView: View {
                 },
                 receiveValue: { response in
                     if response.ok == true {
-                        appState.completeOnboarding(with: userData)
-                        authManager.completeOnboarding()
+                        let userId = authManager.demoUserId ?? 1
+                        APIService.shared.getTodayPlan(userId: userId)
+                            .receive(on: DispatchQueue.main)
+                            .sink(
+                                receiveCompletion: { completion in
+                                    if case .failure(let error) = completion {
+                                        submitError = "Failed to load today's plan: \(error)"
+                                        isSubmitting = false
+                                    }
+                                },
+                                receiveValue: { plan in
+                                    appState.todayPlan = plan
+                                    var updatedUserData = userData
+                                    updatedUserData.calorieTarget = plan.calorie_target
+                                    appState.completeOnboarding(with: updatedUserData)
+                                    authManager.completeOnboarding()
+                                    isSubmitting = false
+                                }
+                            )
+                            .store(in: &subscriptions)
                     } else {
                         submitError = response.error ?? "Unable to finish onboarding."
+                        isSubmitting = false
                     }
-                    isSubmitting = false
                 }
             )
             .store(in: &subscriptions)

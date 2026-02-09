@@ -167,6 +167,7 @@ struct TrainerMainView: View {
     @State private var cancellables = Set<AnyCancellable>()
 
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
+    private var activePlan: PlanDayResponse? { appState.todayPlan ?? todayPlan }
 
     var body: some View {
         GeometryReader { geometry in
@@ -224,9 +225,11 @@ struct TrainerMainView: View {
             currentTime = Date()
         }
         .onAppear {
-            // Temporarily disabled to prevent freezing
-            // appState.refreshDailyData(for: Date())
-            // loadTodayPlan()
+            if appState.todayPlan == nil {
+                loadTodayPlan()
+            } else {
+                todayPlan = appState.todayPlan
+            }
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
@@ -323,11 +326,11 @@ struct TrainerMainView: View {
     }
 
     private var todaysPlanCard: some View {
-        let workoutTitle = todayPlan?.workout_plan ?? "Leg Day - 45 min"
+        let workoutTitle = activePlan?.workout_plan ?? "Leg Day - 45 min"
         let workoutDetails: String
-        if todayPlan?.rest_day == true {
+        if activePlan?.rest_day == true {
             workoutDetails = "Rest, recover, and stretch today."
-        } else if let plan = todayPlan?.workout_plan, !plan.isEmpty {
+        } else if let plan = activePlan?.workout_plan, !plan.isEmpty {
             workoutDetails = plan
         } else {
             workoutDetails = "Warm-up, Squats, Lunges, Cool-down"
@@ -386,7 +389,7 @@ struct TrainerMainView: View {
 
     private var calorieBalanceCard: some View {
         let caloriesConsumed = appState.caloriesIn
-        let caloriesGoal = appState.userData?.calorieTarget ?? 2000
+        let caloriesGoal = activePlan?.calorie_target ?? appState.userData?.calorieTarget ?? 2000
         let progress = min(1.0, max(0.0, Double(caloriesConsumed) / Double(max(caloriesGoal, 1))))
         let remaining = max(0, caloriesGoal - caloriesConsumed)
 
@@ -568,6 +571,11 @@ struct TrainerMainView: View {
                 },
                 receiveValue: { plan in
                     self.todayPlan = plan
+                    self.appState.todayPlan = plan
+                    if var existing = self.appState.userData {
+                        existing.calorieTarget = plan.calorie_target
+                        self.appState.userData = existing
+                    }
                 }
             )
             .store(in: &cancellables)
