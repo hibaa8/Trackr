@@ -13,6 +13,7 @@ import ssl
 import sys
 import time
 import uuid
+import tempfile
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +29,7 @@ import urllib.parse
 import urllib.request
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from googleapiclient.discovery import build
@@ -36,6 +37,7 @@ import google.generativeai as genai
 from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 from pydantic import BaseModel
+from openai import OpenAI
 
 from agent.state import SESSION_CACHE
 
@@ -111,6 +113,7 @@ _AGENT_PRELOAD_FN = None
 _AGENT_RAG_INIT = None
 _PENDING_PLANS: Dict[str, Dict[str, Any]] = {}
 _GEMINI_MODEL = None
+_OPENAI_CLIENT = None
 
 
 def _get_agent_graph():
@@ -159,6 +162,15 @@ def _get_gemini_model():
 def _reset_gemini_model():
     global _GEMINI_MODEL
     _GEMINI_MODEL = None
+
+
+def _get_openai_client() -> OpenAI:
+    global _OPENAI_CLIENT
+    if _OPENAI_CLIENT is None:
+        if not OPENAI_API_KEY:
+            raise RuntimeError("Missing OPENAI_API_KEY env var")
+        _OPENAI_CLIENT = OpenAI()
+    return _OPENAI_CLIENT
 
 
 def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
@@ -1422,6 +1434,71 @@ def get_today_plan(user_id: int = 1, day: Optional[str] = None):
 def get_profile(user_id: int = 1):
     """Return user profile and preferences."""
     return _load_user_profile(user_id)
+
+
+@app.get("/api/voice")
+def generate_voice(
+    text: str = Query(..., min_length=1),
+    voice: str = Query("alloy"),
+    instructions: Optional[str] = Query(None),
+):
+    """Generate TTS audio from text."""
+    try:
+        client = _get_openai_client()
+        args: Dict[str, Any] = {
+            "model": "gpt-4o-mini-tts",
+            "voice": voice,
+            "input": text,
+        }
+        if instructions:
+            args["instructions"] = instructions
+        response = client.audio.speech.create(**args)
+        return Response(content=response.content, media_type="audio/mpeg")
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"TTS failed: {exc}") from exc
+
+
+@app.post("/api/voice-to-text")
+async def voice_to_text(
+    audio: UploadFile = File(...),
+    trainer_id: str = Form(...),
+):
+    """Transcribe voice audio to text using Whisper."""
+    try:
+        client = _get_openai_client()
+        audio_bytes = await audio.read()
+        suffix = os.path.splitext(audio.filename or "")[1] or ".m4a"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as handle:
+            handle.write(audio_bytes)
+            temp_path = handle.name
+        with open(temp_path, "rb") as audio_file:
+            transcript = client.audio.transcriptions.create(
+                model="whisper-1",
+                file=audio_file,
+            )
+        os.remove(temp_path)
+        return {"transcribed_text": transcript.text, "trainer_id": trainer_id}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Voice-to-text failed: {exc}") from exc
+
+
+@app.post("/api/upload-image")
+async def upload_image(
+    image: UploadFile = File(...),
+    trainer_id: str = Form(...),
+    message: Optional[str] = Form(None),
+):
+    """Accept an image upload and return base64 for downstream use."""
+    try:
+        image_bytes = await image.read()
+        image_base64 = base64.b64encode(image_bytes).decode("utf-8")
+        return {
+            "image_base64": image_base64,
+            "trainer_id": trainer_id,
+            "message": message,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Image upload failed: {exc}") from exc
 
 
 @app.get("/api/user-id")

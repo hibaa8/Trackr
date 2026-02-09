@@ -4,107 +4,23 @@ import Combine
 struct MainTabView: View {
     let coach: Coach
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
-    @State private var showVoiceChat = false
-    @State private var focusChatOnOpen = false
 
     var body: some View {
         TabView(selection: $selectedTab) {
             // Progress Page
-            ZStack {
-                ProgressPageView()
-                VStack {
-                    Spacer()
-                    globalBottomToolbar
-                }
-            }
+            ProgressPageView()
             .tag(0)
 
             // Trainer Page (default)
-            ZStack {
-                TrainerMainViewContent(coach: coach)
-                VStack {
-                    Spacer()
-                    globalBottomToolbar
-                }
-            }
+            TrainerMainViewContent(coach: coach)
             .tag(1)
 
             // Settings Page
-            ZStack {
-                SettingsPageView(coach: coach)
-                VStack {
-                    Spacer()
-                    globalBottomToolbar
-                }
-            }
+            SettingsPageView(coach: coach)
             .tag(2)
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
         .preferredColorScheme(.dark)
-        .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
-        }
-    }
-
-    private var globalBottomToolbar: some View {
-        HStack(spacing: 0) {
-            // Keyboard icon
-            Button(action: {}) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
-            }
-            .onTapGesture {
-                focusChatOnOpen = true
-                showVoiceChat = true
-            }
-
-            Spacer()
-
-            // Voice microphone (main action)
-            Button(action: {
-                focusChatOnOpen = false
-                showVoiceChat = true
-            }) {
-                ZStack {
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 64, height: 64)
-
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-
-            Spacer()
-
-            // Camera icon
-            Button(action: {}) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
-            }
-        }
-        .frame(height: 100)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 25)
-        .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(.ultraThinMaterial.opacity(0.9))
-                .background(Color.black.opacity(0.4))
-        )
-        .padding(.horizontal, 20)
     }
 }
 
@@ -167,15 +83,6 @@ struct ProgressPageView: View {
                     .foregroundColor(.white)
 
                 Spacer()
-
-                Button(action: {}) {
-                    Image(systemName: "ellipsis")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
-                        .padding(12)
-                        .background(Color.white.opacity(0.2))
-                        .clipShape(Circle())
-                }
             }
 
             // Period selector
@@ -684,12 +591,6 @@ struct SettingsPageView: View {
                 .foregroundColor(.white)
 
             Spacer()
-
-            Button(action: {}) {
-                Image(systemName: "ellipsis.circle.fill")
-                    .font(.system(size: 24))
-                    .foregroundColor(.white.opacity(0.6))
-            }
         }
         .padding(.top, 50)
     }

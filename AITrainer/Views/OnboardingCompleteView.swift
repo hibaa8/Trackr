@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UIKit
+import AVFoundation
 
 struct OnboardingCompleteView: View {
     let coach: Coach
@@ -233,7 +234,11 @@ struct TrainerMainView: View {
             }
         }
         .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
+            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen, startRecording: !focusChatOnOpen)
+        }
+        .safeAreaInset(edge: .bottom) {
+            bottomInputBar
+                .padding(.bottom, 10)
         }
         .sheet(isPresented: $showMealLogging) {
             MealLoggingView()
@@ -289,15 +294,6 @@ struct TrainerMainView: View {
             }
 
             Spacer()
-
-            Button(action: {}) {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(Color.white.opacity(0.2))
-                    .clipShape(Circle())
-            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 40) // Moved higher as requested
@@ -484,60 +480,50 @@ struct TrainerMainView: View {
         }
     }
 
-    private var bottomToolbar: some View {
-        HStack(spacing: 0) {
-            // Keyboard icon
+    private var bottomInputBar: some View {
+        HStack(spacing: 16) {
             Button(action: {
                 focusChatOnOpen = true
                 showVoiceChat = true
             }) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
+                HStack(spacing: 8) {
+                    Image(systemName: "bubble.left.and.bubble.right")
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Text")
+                        .font(.system(size: 16, weight: .semibold))
+                }
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(Color.white.opacity(0.15))
+                )
             }
 
-            Spacer()
-
-            // Voice microphone (main action) - matches mockup
             Button(action: {
                 focusChatOnOpen = false
                 showVoiceChat = true
             }) {
-                ZStack {
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 64, height: 64)
-
+                HStack(spacing: 8) {
                     Image(systemName: "mic.fill")
-                        .font(.system(size: 24, weight: .medium))
-                        .foregroundColor(.white)
+                        .font(.system(size: 18, weight: .semibold))
+                    Text("Voice")
+                        .font(.system(size: 16, weight: .semibold))
                 }
-            }
-
-            Spacer()
-
-            // Camera icon
-            Button(action: {}) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
+                .foregroundColor(.white)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+                .background(
+                    RoundedRectangle(cornerRadius: 24)
+                        .fill(Color.white.opacity(0.15))
+                )
             }
         }
-        .frame(height: 120)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 50) // Moved lower as requested
+        .padding(.horizontal, 20)
+        .padding(.vertical, 16)
         .background(
-            RoundedRectangle(cornerRadius: 24)
+            RoundedRectangle(cornerRadius: 28)
                 .fill(.ultraThinMaterial.opacity(0.9))
                 .background(Color.black.opacity(0.4))
         )
@@ -590,11 +576,18 @@ typealias TrainerMainViewContent = TrainerMainView
 struct VoiceActiveView: View {
     let coach: Coach
     var autoFocus: Bool = false
+    var startRecording: Bool = false
     @State private var messages: [VoiceMessage] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var messageText = ""
     @State private var isLoading = false
     @State private var threadId: String?
+    @State private var selectedImage: UIImage?
+    @State private var showImagePicker = false
+    @State private var showImageOptions = false
+    @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
+    @State private var isRecording = false
+    @State private var audioRecorder: AVAudioRecorder?
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
 
@@ -618,22 +611,20 @@ struct VoiceActiveView: View {
             VStack(spacing: 0) {
                 // Header
                 HStack {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.white.opacity(0.15))
+                            .clipShape(Circle())
+                    }
+
                     Text("Trainer")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundColor(.white)
 
                     Spacer()
-
-                    Button(action: {
-                        dismiss()
-                    }) {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color.white.opacity(0.2))
-                            .clipShape(Circle())
-                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 60)
@@ -653,33 +644,72 @@ struct VoiceActiveView: View {
 
                 Spacer()
 
-                // Text input for agent chat
-                HStack(spacing: 12) {
-                    TextField("Type to ask your coach...", text: $messageText)
-                        .font(.system(size: 15))
-                        .foregroundColor(.white)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(
-                            RoundedRectangle(cornerRadius: 20)
-                                .fill(Color.white.opacity(0.15))
-                        )
-                        .focused($inputFocused)
-
-                    Button(action: sendMessage) {
-                        Image(systemName: "paperplane.fill")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(10)
-                            .background(
-                                Circle()
-                                    .fill(messageText.isEmpty ? Color.gray.opacity(0.4) : Color.blue)
-                            )
+                // Input bar (image + text + voice/send)
+                VStack(spacing: 10) {
+                    if let selectedImage {
+                        HStack(spacing: 12) {
+                            Image(uiImage: selectedImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 52, height: 52)
+                                .clipShape(RoundedRectangle(cornerRadius: 12))
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                                )
+                            Spacer()
+                            Button(action: { self.selectedImage = nil }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .font(.system(size: 20))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        .padding(.horizontal, 20)
                     }
-                    .disabled(messageText.isEmpty || isLoading)
+
+                    HStack(spacing: 12) {
+                        Button(action: { showImageOptions = true }) {
+                            Image(systemName: "plus.circle")
+                                .font(.system(size: 28))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
+
+                        TextField("Type to ask your coach...", text: $messageText, axis: .vertical)
+                            .font(.system(size: 15))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 10)
+                            .background(
+                                RoundedRectangle(cornerRadius: 18)
+                                    .fill(Color.white.opacity(0.15))
+                            )
+                            .focused($inputFocused)
+
+                        if !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedImage != nil {
+                            Button(action: sendMessage) {
+                                Image(systemName: "arrow.up.circle.fill")
+                                    .font(.system(size: 28))
+                                    .foregroundColor(.blue)
+                            }
+                            .disabled(isLoading)
+                        } else {
+                            Button(action: {}) {
+                                Image(systemName: isRecording ? "mic.fill" : "mic")
+                                    .font(.system(size: 24, weight: .semibold))
+                                    .foregroundColor(isRecording ? .red : .white.opacity(0.7))
+                            }
+                            .onLongPressGesture(minimumDuration: 0.1, pressing: { pressing in
+                                if pressing {
+                                    startVoiceRecording()
+                                } else {
+                                    stopVoiceRecording()
+                                }
+                            }, perform: {})
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 30)
                 }
-                .padding(.horizontal, 20)
-                .padding(.bottom, 40)
             }
         }
         .onAppear {
@@ -689,6 +719,27 @@ struct VoiceActiveView: View {
                     inputFocused = true
                 }
             }
+            if startRecording {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+                    startVoiceRecording()
+                }
+            }
+        }
+        .sheet(isPresented: $showImagePicker) {
+            ImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
+        }
+        .confirmationDialog("Add Image", isPresented: $showImageOptions, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Camera") {
+                    imagePickerSource = .camera
+                    showImagePicker = true
+                }
+            }
+            Button("Photo Library") {
+                imagePickerSource = .photoLibrary
+                showImagePicker = true
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
 
@@ -699,7 +750,8 @@ struct VoiceActiveView: View {
                     id: UUID(),
                     text: "Hi! I'm \(coach.name). Ask me anything about workouts, nutrition, or your plan.",
                     isFromCoach: true,
-                    timestamp: Date()
+                    timestamp: Date(),
+                    image: nil
                 )
             ]
         }
@@ -707,14 +759,27 @@ struct VoiceActiveView: View {
 
     private func sendMessage() {
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let outgoingText = trimmed.isEmpty && selectedImage != nil ? "Sent an image." : trimmed
+        guard !outgoingText.isEmpty else { return }
 
-        let userMessage = VoiceMessage(id: UUID(), text: trimmed, isFromCoach: false, timestamp: Date())
+        let userMessage = VoiceMessage(
+            id: UUID(),
+            text: outgoingText,
+            isFromCoach: false,
+            timestamp: Date(),
+            image: selectedImage
+        )
         messages.append(userMessage)
         messageText = ""
+        let imageToUpload = selectedImage
+        selectedImage = nil
         isLoading = true
 
-        AICoachService.shared.sendMessage(trimmed, threadId: threadId, agentId: coach.id) { result in
+        if let imageToUpload {
+            uploadImage(imageToUpload, message: outgoingText) { _ in }
+        }
+
+        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -725,7 +790,8 @@ struct VoiceActiveView: View {
                         id: UUID(),
                         text: replyText,
                         isFromCoach: true,
-                        timestamp: Date()
+                        timestamp: Date(),
+                        image: nil
                     )
                     self.messages.append(coachMessage)
                 case .failure:
@@ -733,12 +799,119 @@ struct VoiceActiveView: View {
                         id: UUID(),
                         text: "I couldn’t reach the coach service. Please make sure the backend is running.",
                         isFromCoach: true,
-                        timestamp: Date()
+                        timestamp: Date(),
+                        image: nil
                     )
                     self.messages.append(errorMessage)
                 }
             }
         }
+    }
+
+    private func startVoiceRecording() {
+        guard !isRecording else { return }
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+            try session.setActive(true)
+
+            let filename = "voice-\(UUID().uuidString).m4a"
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+            let settings: [String: Any] = [
+                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                AVSampleRateKey: 12000,
+                AVNumberOfChannelsKey: 1,
+                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+            ]
+            let recorder = try AVAudioRecorder(url: url, settings: settings)
+            recorder.record()
+            audioRecorder = recorder
+            isRecording = true
+        } catch {
+            isRecording = false
+        }
+    }
+
+    private func stopVoiceRecording() {
+        guard isRecording else { return }
+        audioRecorder?.stop()
+        let url = audioRecorder?.url
+        audioRecorder = nil
+        isRecording = false
+        guard let url else { return }
+        transcribeVoice(url: url)
+    }
+
+    private func transcribeVoice(url: URL) {
+        guard let requestUrl = URL(string: "\(BackendConfig.baseURL)/api/voice-to-text") else { return }
+        var request = URLRequest(url: requestUrl)
+        request.httpMethod = "POST"
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"audio\"; filename=\"voice.m4a\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        if let data = try? Data(contentsOf: url) {
+            body.append(data)
+        }
+        body.append("\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"trainer_id\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(coach.id)\r\n".data(using: .utf8)!)
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        URLSession.shared.uploadTask(with: request, from: body) { data, _, _ in
+            guard let data,
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let text = payload["transcribed_text"] as? String else {
+                return
+            }
+            DispatchQueue.main.async {
+                messageText = text
+                sendMessage()
+            }
+        }.resume()
+    }
+
+    private func uploadImage(_ image: UIImage, message: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+        guard let requestUrl = URL(string: "\(BackendConfig.baseURL)/api/upload-image") else {
+            completion(.failure(URLError(.badURL)))
+            return
+        }
+        var request = URLRequest(url: requestUrl)
+        request.httpMethod = "POST"
+
+        let boundary = UUID().uuidString
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        if let data = image.jpegData(compressionQuality: 0.85) {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"image\"; filename=\"photo.jpg\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: image/jpeg\r\n\r\n".data(using: .utf8)!)
+            body.append(data)
+            body.append("\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"trainer_id\"\r\n\r\n".data(using: .utf8)!)
+        body.append("\(coach.id)\r\n".data(using: .utf8)!)
+        if let message, !message.isEmpty {
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"message\"\r\n\r\n".data(using: .utf8)!)
+            body.append("\(message)\r\n".data(using: .utf8)!)
+        }
+        body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+        URLSession.shared.uploadTask(with: request, from: body) { _, _, error in
+            if let error {
+                completion(.failure(error))
+            } else {
+                completion(.success(()))
+            }
+        }.resume()
     }
 
     private var coachProfileHeader: some View {
@@ -789,6 +962,7 @@ struct VoiceMessage: Identifiable {
     let text: String
     let isFromCoach: Bool
     let timestamp: Date
+    let image: UIImage?
 }
 
 struct VoiceMessageBubble: View {
@@ -817,32 +991,50 @@ struct VoiceMessageBubble: View {
                         }
                     }
 
-                    Text(.init(message.text))
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(.white)
-                        .lineSpacing(4)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 12)
-                        .background(
-                            LinearGradient(
-                                colors: [Color(coach.primaryColor).opacity(0.9), Color.blue.opacity(0.8)],
-                                startPoint: .topLeading,
-                                endPoint: .bottomTrailing
-                            )
+                    VStack(alignment: .leading, spacing: 8) {
+                        if let image = message.image {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 180, height: 120)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
+                        Text(.init(message.text))
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(.white)
+                            .lineSpacing(4)
+                    }
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(
+                        LinearGradient(
+                            colors: [Color(coach.primaryColor).opacity(0.9), Color.blue.opacity(0.8)],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
                         )
-                        .cornerRadius(18, corners: [.topLeft, .topRight, .bottomRight])
+                    )
+                    .cornerRadius(18, corners: [.topLeft, .topRight, .bottomRight])
                 }
                 Spacer()
             } else {
                 Spacer()
-                Text(.init(message.text))
-                    .font(.system(size: 15, weight: .medium))
-                    .foregroundColor(.white)
-                    .lineSpacing(4)
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .background(Color.white.opacity(0.2))
-                    .cornerRadius(18, corners: [.topLeft, .topRight, .bottomLeft])
+                VStack(alignment: .trailing, spacing: 8) {
+                    if let image = message.image {
+                        Image(uiImage: image)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 180, height: 120)
+                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                    }
+                    Text(.init(message.text))
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.white)
+                        .lineSpacing(4)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 12)
+                .background(Color.white.opacity(0.2))
+                .cornerRadius(18, corners: [.topLeft, .topRight, .bottomLeft])
             }
         }
     }
@@ -853,6 +1045,43 @@ struct VoiceMessageBubble: View {
             return nil
         }
         return Image(uiImage: uiImage)
+    }
+}
+
+struct ImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    @Binding var selectedImage: UIImage?
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = sourceType
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let parent: ImagePicker
+
+        init(_ parent: ImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            picker.dismiss(animated: true)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
     }
 }
 
