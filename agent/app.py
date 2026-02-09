@@ -16,6 +16,12 @@ import uuid
 from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
+_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if _ROOT_DIR not in sys.path:
+    sys.path.insert(0, _ROOT_DIR)
+_ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
+_ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+
 import certifi
 import json
 import urllib.parse
@@ -31,16 +37,10 @@ from langchain_core.messages import HumanMessage, ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 
-from state import SESSION_CACHE
+from agent.state import SESSION_CACHE
 
 from config.constants import DB_PATH
-
-# Configuration
-_ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
-if _ROOT_DIR not in sys.path:
-    sys.path.insert(0, _ROOT_DIR)
-_ROOT_ENV_PATH = os.path.join(_ROOT_DIR, ".env")
-_ENV_PATH = os.path.join(os.path.dirname(__file__), ".env")
+from agent.db.connection import get_db_conn
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
@@ -635,6 +635,13 @@ class RecipeSuggestion(BaseModel):
 class RecipeSuggestResponse(BaseModel):
     recipes: List[RecipeSuggestion]
     detected_ingredients: List[str] = []
+
+
+class OnboardingCompletePayload(BaseModel):
+    user_id: Optional[int] = None
+    current_weight_kg: Optional[float] = None
+    height_cm: Optional[float] = None
+    age: Optional[int] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -1422,6 +1429,42 @@ def get_coach_suggestion(user_id: int = 1):
     except Exception:
         suggestion = None
     return {"suggestion": suggestion}
+
+
+@app.get("/api/health")
+def health_check():
+    try:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1")
+            cur.fetchone()
+            using_sqlite = conn._adapt_query is False
+        return {"ok": True, "db": "sqlite" if using_sqlite else "postgres"}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+
+@app.post("/api/onboarding/complete")
+def complete_onboarding(payload: OnboardingCompletePayload):
+    user_id = payload.user_id or 1
+    fields = []
+    values: list[Any] = []
+    if payload.current_weight_kg is not None:
+        fields.append("weight_kg = ?")
+        values.append(payload.current_weight_kg)
+    if payload.height_cm is not None:
+        fields.append("height_cm = ?")
+        values.append(payload.height_cm)
+    if payload.age is not None:
+        fields.append("age_years = ?")
+        values.append(payload.age)
+    if fields:
+        values.append(user_id)
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
+            conn.commit()
+    return {"ok": True}
 
 
 if __name__ == "__main__":

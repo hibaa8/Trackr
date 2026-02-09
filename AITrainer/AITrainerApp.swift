@@ -30,7 +30,6 @@ struct AITrainerApp: App {
                 .environmentObject(notificationManager)
                 .onAppear {
                     // Request permissions on app launch
-                    print("[App] Hello world - app loaded")
                     healthKitManager.requestAuthorization()
                     notificationManager.requestAuthorization()
                 }

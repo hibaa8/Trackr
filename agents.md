@@ -1,3 +1,5 @@
+-- WARNING: This schema is for context only and is not meant to be run.
+-- Table order and constraints may not be valid for execution.
 
 CREATE TABLE public.calendar_blocks (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
@@ -48,17 +50,19 @@ CREATE TABLE public.meal_logs (
 );
 CREATE TABLE public.plan_checkpoints (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
-  plan_id integer NOT NULL,
+  plan_id integer,
   checkpoint_week integer NOT NULL,
   expected_weight_kg double precision NOT NULL,
   min_weight_kg double precision NOT NULL,
   max_weight_kg double precision NOT NULL,
+  template_id integer,
   CONSTRAINT plan_checkpoints_pkey PRIMARY KEY (id),
-  CONSTRAINT plan_checkpoints_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id)
+  CONSTRAINT plan_checkpoints_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id),
+  CONSTRAINT plan_checkpoints_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.plan_templates(id)
 );
 CREATE TABLE public.plan_overrides (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
-  plan_id integer NOT NULL,
+  plan_id integer,
   date text NOT NULL,
   override_type text NOT NULL,
   workout_json text,
@@ -66,8 +70,10 @@ CREATE TABLE public.plan_overrides (
   calorie_delta integer,
   reason text,
   created_at text NOT NULL,
+  template_id integer,
   CONSTRAINT plan_overrides_pkey PRIMARY KEY (id),
-  CONSTRAINT plan_overrides_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id)
+  CONSTRAINT plan_overrides_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id),
+  CONSTRAINT plan_overrides_template_id_fkey FOREIGN KEY (template_id) REFERENCES public.plan_templates(id)
 );
 CREATE TABLE public.plan_template_days (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
@@ -81,7 +87,7 @@ CREATE TABLE public.plan_template_days (
 );
 CREATE TABLE public.plan_templates (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
-  plan_id integer NOT NULL,
+  plan_id integer,
   cycle_length_days integer NOT NULL,
   timezone text,
   default_calories integer NOT NULL,
@@ -89,8 +95,17 @@ CREATE TABLE public.plan_templates (
   default_carbs_g integer NOT NULL,
   default_fat_g integer NOT NULL,
   created_at text NOT NULL,
+  user_id integer,
+  start_date text,
+  end_date text,
+  daily_calorie_target integer,
+  protein_g integer,
+  carbs_g integer,
+  fat_g integer,
+  status text,
   CONSTRAINT plan_templates_pkey PRIMARY KEY (id),
-  CONSTRAINT plan_templates_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id)
+  CONSTRAINT plan_templates_plan_id_fkey FOREIGN KEY (plan_id) REFERENCES public.plans(id),
+  CONSTRAINT plan_templates_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
 );
 CREATE TABLE public.plans (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
@@ -160,6 +175,7 @@ CREATE TABLE public.users (
   height_cm double precision,
   weight_kg double precision,
   created_at text NOT NULL,
+  age_years integer,
   CONSTRAINT users_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.workout_sessions (

@@ -151,13 +151,6 @@ class AuthenticationManager: ObservableObject {
     func completeOnboarding() {
         hasCompletedOnboarding = true
         userDefaults.set(true, forKey: "hasCompletedOnboarding")
-        if userDefaults.string(forKey: "authToken") == nil {
-            userDefaults.set(UUID().uuidString, forKey: "authToken")
-        }
-        if !isAuthenticated {
-            isAuthenticated = true
-        }
-        print("[Auth] Onboarding completed. isAuthenticated=\(isAuthenticated), hasCompletedOnboarding=\(hasCompletedOnboarding)")
     }
 
     func signInWithGoogle() {

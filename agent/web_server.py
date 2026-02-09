@@ -52,7 +52,10 @@ WEB_DIR = BASE_DIR / "web"
 SUPABASE_BUCKET = "meal-photos"
 ASSET_DIR = WEB_DIR / "assets"
 
-load_dotenv()
+_ROOT_ENV_PATH = BASE_DIR / ".env"
+_ENV_PATH = Path(__file__).with_name(".env")
+load_dotenv(dotenv_path=_ROOT_ENV_PATH)
+load_dotenv(dotenv_path=_ENV_PATH)
 
 from openai import OpenAI
 
@@ -420,7 +423,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
     }
     with get_db_conn() as conn:
         cur = conn.cursor()
-        if current_weight_kg is not None or height_cm is not None:
+        if current_weight_kg is not None or height_cm is not None or age is not None:
             fields = []
             values: list[Any] = []
             if current_weight_kg is not None:
@@ -429,6 +432,9 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
             if height_cm is not None:
                 fields.append("height_cm = ?")
                 values.append(height_cm)
+            if age is not None:
+                fields.append("age_years = ?")
+                values.append(age)
             values.append(user_id)
             cur.execute(
                 f"UPDATE users SET {', '.join(fields)} WHERE id = ?",
@@ -450,27 +456,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
                     """,
                     (user_id, today, current_weight_kg, "onboarding", "Initial check-in"),
                 )
-        cur.execute(
-            """
-            UPDATE user_preferences
-            SET goal_type = ?,
-                target_weight_kg = ?,
-                weekly_weight_change_kg = ?,
-                activity_level = ?,
-                workout_preferences = ?,
-                dietary_preferences = ?
-            WHERE user_id = ?
-            """,
-            (
-                goal_type,
-                target_weight_kg,
-                weekly_weight_change_kg,
-                activity_level,
-                json.dumps(onboarding_payload),
-                json.dumps({"storyline": storyline}),
-                user_id,
-            ),
-        )
+        # User preferences mapping intentionally omitted for now.
         conn.commit()
 
 
@@ -1083,6 +1069,17 @@ def create_handler(agent_service: AgentService):
                 user_id = _require_user_id(self)
                 _send_json(self, 200, _load_user_profile(user_id))
                 return
+            if parsed.path == "/api/health":
+                try:
+                    with get_db_conn() as conn:
+                        cur = conn.cursor()
+                        cur.execute("SELECT 1")
+                        cur.fetchone()
+                        using_sqlite = conn._adapt_query is False
+                    _send_json(self, 200, {"ok": True, "db": "sqlite" if using_sqlite else "postgres"})
+                except Exception as exc:
+                    _send_json(self, 500, {"ok": False, "error": str(exc)})
+                return
             if parsed.path == "/api/dashboard":
                 user_id = _require_user_id(self)
                 plan_bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
@@ -1485,10 +1482,6 @@ def create_handler(agent_service: AgentService):
                 payload_user_id = payload.get("user_id")
                 user_id = payload_user_id if isinstance(payload_user_id, int) else _require_user_id(self)
                 _update_onboarding_preferences(user_id, payload)
-                goal_type = payload.get("goal_type")
-                timeframe_weeks = payload.get("timeframe_weeks")
-                weekly_change_kg = payload.get("weekly_weight_change_kg")
-                _generate_plan_for_user(user_id, goal_type, timeframe_weeks, weekly_change_kg)
                 _send_json(self, 200, {"ok": True})
                 return
 

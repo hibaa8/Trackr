@@ -15,3 +15,7 @@ data/*
 .DS_Store
 */__pycache__/*
 AITrainer/Config/Info.plist
+
+AITrainer.xcodeproj/project.xcworkspace/xcuserdata/admin.xcuserdatad/UserInterfaceState.xcuserstate
+AITrainer.xcodeproj/xcshareddata/
+AITrainer.xcodeproj/xcuserdata/admin.xcuserdatad/xcschemes/xcschememanagement.plist
