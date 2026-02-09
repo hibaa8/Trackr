@@ -25,10 +25,11 @@ struct TodayPlanDetailView: View {
                         let plan = plansByDate[dateKey]
                         let workoutText = (plan?.workout_plan ?? "Workout").trimmingCharacters(in: .whitespacesAndNewlines)
                         let calorieText = plan?.calorie_target ?? 0
+                        let formattedDetails = formatWorkoutDetails(workoutText)
                         planCard(
-                            title: workoutText.isEmpty ? "Workout" : workoutText,
+                            title: workoutTitle(from: workoutText),
                             subtitle: calorieText > 0 ? "\(calorieText) kcal target" : "Workout",
-                            details: workoutText.isEmpty ? ["Workout"] : [workoutText],
+                            details: formattedDetails.isEmpty ? ["🏋️ Workout"] : formattedDetails,
                             primaryButton: "Start Workout"
                         )
                     }
@@ -252,6 +253,46 @@ struct TodayPlanDetailView: View {
                 }
             )
             .store(in: &cancellables)
+    }
+
+    private func workoutTitle(from text: String) -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            return "Today's Workout"
+        }
+        let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
+        return firstLine.count > 40 ? "Today's Workout" : firstLine
+    }
+
+    private func formatWorkoutDetails(_ text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        let rawLines = trimmed
+            .split(whereSeparator: \.isNewline)
+            .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return rawLines.map { line in
+            let lower = line.lowercased()
+            if lower.contains("warm") {
+                return "🔥 \(line)"
+            }
+            if lower.contains("mobility") || lower.contains("stretch") {
+                return "🧘 \(line)"
+            }
+            if lower.contains("cardio") || lower.contains("run") || lower.contains("bike") {
+                return "🏃 \(line)"
+            }
+            if lower.contains("strength") || lower.contains("lift") || lower.contains("squat") || lower.contains("bench") {
+                return "🏋️ \(line)"
+            }
+            if lower.contains("core") || lower.contains("abs") {
+                return "💪 \(line)"
+            }
+            if lower.contains("rest") || lower.contains("recovery") {
+                return "🛌 \(line)"
+            }
+            return "✅ \(line)"
+        }
     }
 }
 

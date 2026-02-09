@@ -24,12 +24,12 @@ struct ConversationView: View {
         ),
         OnboardingQuestion(
             id: "weight",
-            text: "What's your current weight?",
+            text: "What's your current weight? (kg)",
             quickReplies: []
         ),
         OnboardingQuestion(
             id: "height",
-            text: "What's your height?",
+            text: "What's your height? (cm)",
             quickReplies: []
         ),
         OnboardingQuestion(
@@ -276,6 +276,7 @@ struct ConversationView: View {
                                     updatedUserData.calorieTarget = plan.calorie_target
                                     appState.completeOnboarding(with: updatedUserData)
                                     authManager.completeOnboarding()
+                                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                                     isSubmitting = false
                                 }
                             )

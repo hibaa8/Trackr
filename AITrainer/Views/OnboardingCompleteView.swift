@@ -743,6 +743,7 @@ struct VoiceActiveView: View {
         }
     }
 
+
     private func loadWelcomeMessage() {
         if messages.isEmpty {
             messages = [
@@ -964,6 +965,7 @@ struct VoiceMessage: Identifiable {
     let timestamp: Date
     let image: UIImage?
 }
+
 
 struct VoiceMessageBubble: View {
     let message: VoiceMessage

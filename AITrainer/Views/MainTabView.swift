@@ -634,16 +634,10 @@ struct SettingsPageView: View {
     }
 
     private var profileAgeText: String {
-        guard let birthdate = profileUser?.birthdate else {
-            return "--"
+        if let ageYears = profileUser?.age_years, ageYears > 0 {
+            return "\(ageYears)"
         }
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        guard let date = formatter.date(from: birthdate) else {
-            return "--"
-        }
-        let years = Calendar.current.dateComponents([.year], from: date, to: Date()).year ?? 0
-        return years > 0 ? "\(years)" : "--"
+        return "--"
     }
 
     private var currentCoachCard: some View {
