@@ -405,6 +405,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
     activity_level = payload.get("activity_level") or "moderate"
     storyline = payload.get("storyline")
     trainer = payload.get("trainer")
+    full_name = payload.get("full_name")
     personality = payload.get("personality")
     voice = payload.get("voice")
     timeframe_weeks = payload.get("timeframe_weeks")
@@ -423,7 +424,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
     }
     with get_db_conn() as conn:
         cur = conn.cursor()
-        if current_weight_kg is not None or height_cm is not None or age is not None or trainer:
+        if current_weight_kg is not None or height_cm is not None or age is not None or trainer or full_name:
             fields = []
             values: list[Any] = []
             if current_weight_kg is not None:
@@ -438,6 +439,9 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
             if trainer:
                 fields.append("agent_name = ?")
                 values.append(trainer)
+            if full_name:
+                fields.append("name = ?")
+                values.append(full_name)
             values.append(user_id)
             cur.execute(
                 f"UPDATE users SET {', '.join(fields)} WHERE id = ?",

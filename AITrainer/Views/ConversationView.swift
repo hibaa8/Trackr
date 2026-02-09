@@ -18,6 +18,11 @@ struct ConversationView: View {
     
     private let questions = [
         OnboardingQuestion(
+            id: "full_name",
+            text: "What's your full name?",
+            quickReplies: []
+        ),
+        OnboardingQuestion(
             id: "weight",
             text: "What's your current weight?",
             quickReplies: []
@@ -316,6 +321,7 @@ struct ConversationView: View {
     }
     
     private func buildOnboardingPayload() -> OnboardingCompletePayload {
+        let fullName = answers["full_name"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let weightKg = parseWeightKg(from: answers["weight"])
         let heightCm = parseHeightCm(from: answers["height"])
         let ageInt = parseInt(from: answers["age"])
@@ -343,7 +349,8 @@ struct ConversationView: View {
             current_weight_kg: weightKg,
             height_cm: heightCm,
             age: ageInt,
-            fitness_background: answers["experience"]
+            fitness_background: answers["experience"],
+            full_name: fullName
         )
     }
     

@@ -11,7 +11,6 @@ struct WelcomeView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @State private var mode: AuthMode = .signIn
 
-    @State private var name = ""
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
@@ -103,15 +102,6 @@ private extension WelcomeView {
                 .tint(.blue)
                 .colorScheme(.dark)
 
-                if mode == .signUp {
-                    AuthTextField(
-                        title: "Full Name",
-                        text: $name,
-                        icon: "person.fill",
-                        placeholder: "Enter your name"
-                    )
-                }
-
                 AuthTextField(
                     title: "Email",
                     text: $email,
@@ -172,23 +162,17 @@ private extension WelcomeView {
     func handleAuth() {
         errorMessage = nil
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
-        let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-
         if trimmedEmail.isEmpty || password.isEmpty {
             errorMessage = "Email and password are required."
             return
         }
 
         if mode == .signUp {
-            if trimmedName.isEmpty {
-                errorMessage = "Please enter your name."
-                return
-            }
             if password != confirmPassword {
                 errorMessage = "Passwords do not match."
                 return
             }
-            authManager.signUp(name: trimmedName, email: trimmedEmail, password: password)
+            authManager.signUp(email: trimmedEmail, password: password)
         } else {
             authManager.signIn(email: trimmedEmail, password: password)
         }

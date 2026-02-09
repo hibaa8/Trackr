@@ -111,6 +111,7 @@ struct MainTabView: View {
 // Progress Page matching screen 10 mockup
 struct ProgressPageView: View {
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var selectedPeriod = 0
     @State private var weeklyCalories: [Int] = Array(repeating: 0, count: 7)
     @State private var progress: ProgressResponse?
@@ -216,43 +217,38 @@ struct ProgressPageView: View {
                         .foregroundColor(weightDeltaColor)
                         .font(.system(size: 14, weight: .medium))
                 }
+
+                Text(nextCheckpointText)
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.white.opacity(0.7))
             }
 
-            // Blue wave chart matching mockup
             ZStack {
                 RoundedRectangle(cornerRadius: 12)
                     .fill(Color.black.opacity(0.3))
                     .frame(height: 100)
 
-                // Blue wave area
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: 60))
-                    path.addCurve(to: CGPoint(x: 80, y: 45), control1: CGPoint(x: 20, y: 50), control2: CGPoint(x: 60, y: 40))
-                    path.addCurve(to: CGPoint(x: 160, y: 50), control1: CGPoint(x: 100, y: 48), control2: CGPoint(x: 140, y: 52))
-                    path.addCurve(to: CGPoint(x: 240, y: 35), control1: CGPoint(x: 180, y: 45), control2: CGPoint(x: 220, y: 30))
-                    path.addCurve(to: CGPoint(x: 320, y: 40), control1: CGPoint(x: 260, y: 38), control2: CGPoint(x: 300, y: 42))
-                    path.addLine(to: CGPoint(x: 320, y: 100))
-                    path.addLine(to: CGPoint(x: 0, y: 100))
-                    path.closeSubpath()
+                if weightSeries.count >= 2 {
+                    GeometryReader { proxy in
+                        let rect = CGRect(origin: .zero, size: proxy.size)
+                        ZStack {
+                            weightAreaPath(in: rect)
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color.blue.opacity(0.6), Color.blue.opacity(0.1)],
+                                        startPoint: .top,
+                                        endPoint: .bottom
+                                    )
+                                )
+                            weightLinePath(in: rect)
+                                .stroke(Color.blue, lineWidth: 2)
+                        }
+                    }
+                } else {
+                    Text("No weight data yet")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
                 }
-                .fill(
-                    LinearGradient(
-                        colors: [Color.blue.opacity(0.6), Color.blue.opacity(0.1)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                )
-
-                // Blue line on top
-                Path { path in
-                    path.move(to: CGPoint(x: 0, y: 60))
-                    path.addCurve(to: CGPoint(x: 80, y: 45), control1: CGPoint(x: 20, y: 50), control2: CGPoint(x: 60, y: 40))
-                    path.addCurve(to: CGPoint(x: 160, y: 50), control1: CGPoint(x: 100, y: 48), control2: CGPoint(x: 140, y: 52))
-                    path.addCurve(to: CGPoint(x: 240, y: 35), control1: CGPoint(x: 180, y: 45), control2: CGPoint(x: 220, y: 30))
-                    path.addCurve(to: CGPoint(x: 320, y: 40), control1: CGPoint(x: 260, y: 38), control2: CGPoint(x: 300, y: 42))
-                }
-                .stroke(Color.blue, lineWidth: 2)
-                .frame(height: 100)
             }
         }
         .padding(20)
@@ -320,7 +316,7 @@ struct ProgressPageView: View {
                     // Highlight current day value
                     HStack {
                         Spacer()
-                        Text(latestWeightText)
+                        Text(latestCaloriesText)
                             .font(.system(size: 12, weight: .bold))
                             .foregroundColor(.white)
                             .padding(.horizontal, 8)
@@ -390,8 +386,10 @@ struct ProgressPageView: View {
                             HStack(spacing: 4) {
                                 ForEach(0..<7, id: \.self) { day in
                                     let dayIndex = week * 7 + day
-                                    let isWorkoutDay = [2, 4, 6, 8, 10, 13, 15, 17, 20, 22, 24, 26].contains(dayIndex)
-                                    let isToday = dayIndex == 18
+                                    let date = calendar.date(byAdding: .day, value: dayIndex - 27, to: Date())
+                                    let dateKey = date.map { formatter.string(from: $0) }
+                                    let isWorkoutDay = dateKey.map { workoutDateKeys.contains($0) } ?? false
+                                    let isToday = dateKey == formatter.string(from: Date())
 
                                     Circle()
                                         .fill(isWorkoutDay ? Color.blue : Color.white.opacity(0.2))
@@ -458,7 +456,8 @@ struct ProgressPageView: View {
     }
 
     private func loadProgressData() {
-        backendConnector.loadProgress { result in
+        let userId = authManager.demoUserId ?? 1
+        backendConnector.loadProgress(userId: userId) { result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let response):
@@ -494,6 +493,48 @@ struct ProgressPageView: View {
         (progress?.checkins ?? []).sorted { $0.date < $1.date }
     }
 
+    private var weightSeries: [Double] {
+        let values = sortedCheckins.compactMap { $0.weight_kg }.map { $0 * 2.20462 }
+        return Array(values.suffix(7))
+    }
+
+    private func weightLinePath(in rect: CGRect) -> Path {
+        let points = weightChartPoints(in: rect)
+        var path = Path()
+        guard let first = points.first else { return path }
+        path.move(to: first)
+        for point in points.dropFirst() {
+            path.addLine(to: point)
+        }
+        return path
+    }
+
+    private func weightAreaPath(in rect: CGRect) -> Path {
+        let points = weightChartPoints(in: rect)
+        var path = Path()
+        guard let first = points.first, let last = points.last else { return path }
+        path.move(to: CGPoint(x: first.x, y: rect.height))
+        for point in points {
+            path.addLine(to: point)
+        }
+        path.addLine(to: CGPoint(x: last.x, y: rect.height))
+        path.closeSubpath()
+        return path
+    }
+
+    private func weightChartPoints(in rect: CGRect) -> [CGPoint] {
+        let values = weightSeries
+        guard values.count >= 2 else { return [] }
+        let minValue = values.min() ?? 0
+        let maxValue = values.max() ?? 1
+        let range = max(maxValue - minValue, 1)
+        return values.enumerated().map { index, value in
+            let x = rect.width * CGFloat(index) / CGFloat(max(values.count - 1, 1))
+            let y = rect.height - rect.height * CGFloat((value - minValue) / range)
+            return CGPoint(x: x, y: y)
+        }
+    }
+
     private var latestWeightText: String {
         guard let kg = sortedCheckins.last?.weight_kg else { return "—" }
         return String(format: "%.1f lbs", kg * 2.20462)
@@ -525,6 +566,21 @@ struct ProgressPageView: View {
         return last <= prev ? .green : .red
     }
 
+    private var nextCheckpointText: String {
+        guard let checkpoint = progress?.checkpoints.first else {
+            return "No checkpoints yet"
+        }
+        let expected = checkpoint.expected_weight_kg * 2.20462
+        let min = checkpoint.min_weight_kg * 2.20462
+        let max = checkpoint.max_weight_kg * 2.20462
+        return String(format: "Week %d target: %.1f lbs (%.1f–%.1f)", checkpoint.week, expected, min, max)
+    }
+
+    private var latestCaloriesText: String {
+        guard let latest = weeklyCalories.last else { return "—" }
+        return "\(latest) kcal"
+    }
+
     private var workoutCompletionRatio: Double {
         let workouts = progress?.workouts ?? []
         let calendar = Calendar.current
@@ -534,9 +590,19 @@ struct ProgressPageView: View {
             guard let dateStr = workout.date,
                   let date = formatter.date(from: dateStr)
             else { return false }
-            return calendar.dateComponents([.day], from: date, to: Date()).day ?? 0 <= 6
+            let days = calendar.dateComponents([.day], from: date, to: Date()).day ?? 0
+            return days <= 6 && (workout.completed ?? false)
         }
-        return min(1.0, Double(recent.count) / 5.0)
+        return min(1.0, Double(recent.count) / 7.0)
+    }
+
+    private var workoutDateKeys: Set<String> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return Set((progress?.workouts ?? []).compactMap { workout in
+            guard workout.completed == true, let date = workout.date else { return nil }
+            return date
+        })
     }
 
     private func shortDayLabel(offsetFromToday: Int) -> String {
@@ -554,8 +620,10 @@ struct ProgressPageView: View {
 struct SettingsPageView: View {
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
+    @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @State private var notificationsEnabled = true
     @State private var healthSyncEnabled = false
+    @State private var profileUser: ProfileUserResponse?
 
     var body: some View {
         NavigationView {
@@ -583,6 +651,14 @@ struct SettingsPageView: View {
             }
         }
         .navigationBarHidden(true)
+        .onAppear {
+            let userId = authManager.demoUserId ?? 1
+            backendConnector.loadProfile(userId: userId) { result in
+                if case .success(let response) = result {
+                    profileUser = response.user
+                }
+            }
+        }
     }
 
     private var headerView: some View {
@@ -615,11 +691,11 @@ struct SettingsPageView: View {
                 )
 
             VStack(alignment: .leading, spacing: 4) {
-                Text("Harry Guo")
+                Text(profileUser?.name?.isEmpty == false ? profileUser?.name ?? "" : "Your Profile")
                     .font(.system(size: 18, weight: .semibold))
                     .foregroundColor(.white)
 
-                Text("Height: 183 cm | Weight: 70 kg | Age: 25")
+                Text(profileStatsText)
                     .font(.system(size: 14))
                     .foregroundColor(.white.opacity(0.7))
             }
@@ -631,6 +707,26 @@ struct SettingsPageView: View {
             RoundedRectangle(cornerRadius: 16)
                 .fill(Color.white.opacity(0.1))
         )
+    }
+
+    private var profileStatsText: String {
+        let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) } ?? "--"
+        let weightText = profileUser?.weight_kg.map { String(format: "%.0f kg", $0) } ?? "--"
+        let ageText = profileAgeText
+        return "Height: \(heightText) | Weight: \(weightText) | Age: \(ageText)"
+    }
+
+    private var profileAgeText: String {
+        guard let birthdate = profileUser?.birthdate else {
+            return "--"
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let date = formatter.date(from: birthdate) else {
+            return "--"
+        }
+        let years = Calendar.current.dateComponents([.year], from: date, to: Date()).year ?? 0
+        return years > 0 ? "\(years)" : "--"
     }
 
     private var currentCoachCard: some View {

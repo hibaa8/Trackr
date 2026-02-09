@@ -399,6 +399,7 @@ struct OnboardingCompletePayload: Codable {
     let height_cm: Double?
     let age: Int?
     let fitness_background: String?
+    let full_name: String?
 }
 
 struct OnboardingCompleteResponse: Decodable {

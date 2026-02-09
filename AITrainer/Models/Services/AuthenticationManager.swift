@@ -103,7 +103,7 @@ class AuthenticationManager: ObservableObject {
         setAuthenticated(email: "demo", onboardingCompleted: false)
     }
 
-    func signUp(name: String, email: String, password: String) {
+    func signUp(email: String, password: String) {
         authErrorMessage = nil
         demoUserId = nil
         guard let supabase else {
@@ -117,7 +117,7 @@ class AuthenticationManager: ObservableObject {
                 _ = try await supabase.auth.signUp(email: email, password: password)
                 let insert = UserInsert(
                     email: email,
-                    name: name,
+                    name: "New User",
                     gender: nil,
                     birthdate: nil,
                     height_cm: nil,
@@ -126,7 +126,6 @@ class AuthenticationManager: ObservableObject {
                 )
                 _ = try await supabase.from("users").insert(insert).execute()
                 setAuthenticated(email: email, onboardingCompleted: false)
-                userDefaults.set(name, forKey: "currentUserName")
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription

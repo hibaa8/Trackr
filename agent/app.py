@@ -648,6 +648,7 @@ class OnboardingCompletePayload(BaseModel):
     timeframe_weeks: Optional[float] = None
     weekly_weight_change_kg: Optional[float] = None
     trainer: Optional[str] = None
+    full_name: Optional[str] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -1597,6 +1598,9 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.trainer:
         fields.append("agent_name = ?")
         values.append(payload.trainer)
+    if payload.full_name:
+        fields.append("name = ?")
+        values.append(payload.full_name)
     if fields:
         values.append(user_id)
         with get_db_conn() as conn:
