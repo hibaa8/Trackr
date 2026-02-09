@@ -1,10 +1,15 @@
 import SwiftUI
+import AVFoundation
 
 struct CoachView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var backendConnector: FrontendBackendConnector
     @State private var messageText = ""
     @State private var isTyping = false
+    @State private var isRecording = false
+    @State private var audioRecorder: AVAudioRecorder?
+    @State private var recordingURL: URL?
+    @State private var audioErrorMessage: String?
 
     var body: some View {
         NavigationView {
@@ -250,7 +255,7 @@ struct CoachView: View {
 
     private var modernInputSection: some View {
         ModernCard {
-            HStack(spacing: 16) {
+                HStack(spacing: 16) {
                 // Message input field
                 HStack(spacing: 12) {
                     TextField("Ask your Vaylow coach anything...", text: $messageText, axis: .vertical)
@@ -265,6 +270,17 @@ struct CoachView: View {
                             RoundedRectangle(cornerRadius: 24)
                                 .stroke(Color.textTertiary.opacity(0.2), lineWidth: 1)
                         )
+
+                        Button(action: toggleRecording) {
+                            ZStack {
+                                Circle()
+                                    .fill(isRecording ? Color.red : Color.textTertiary.opacity(0.3))
+                                    .frame(width: 44, height: 44)
+                                Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                                    .font(.system(size: 18, weight: .bold))
+                                    .foregroundColor(.white)
+                            }
+                        }
 
                     // Send button with stunning design
                     Button(action: {
@@ -330,6 +346,87 @@ struct CoachView: View {
             isTyping = false
         }
     }
+
+    private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        audioErrorMessage = nil
+        let session = AVAudioSession.sharedInstance()
+        session.requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                if granted {
+                    do {
+                        try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                        try session.setActive(true, options: .notifyOthersOnDeactivation)
+
+                        let filename = UUID().uuidString + ".m4a"
+                        let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                        let settings: [String: Any] = [
+                            AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                            AVSampleRateKey: 44100,
+                            AVNumberOfChannelsKey: 1,
+                            AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                        ]
+                        let recorder = try AVAudioRecorder(url: url, settings: settings)
+                        recorder.record()
+                        audioRecorder = recorder
+                        recordingURL = url
+                        isRecording = true
+                    } catch {
+                        audioErrorMessage = "Could not start recording."
+                    }
+                } else {
+                    audioErrorMessage = "Microphone permission denied."
+                }
+            }
+        }
+    }
+
+    private func stopRecording() {
+        audioRecorder?.stop()
+        isRecording = false
+        guard let url = recordingURL else { return }
+        sendAudioForTranscription(url: url)
+    }
+
+    private func sendAudioForTranscription(url: URL) {
+        guard let data = try? Data(contentsOf: url) else { return }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        let endpoint = "\(BackendConfig.baseURL)/api/transcribe"
+        guard let requestURL = URL(string: endpoint) else { return }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            guard let data else { return }
+            if let decoded = try? JSONDecoder().decode(TranscriptionResponse.self, from: data),
+               !decoded.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                DispatchQueue.main.async {
+                    messageText = decoded.text
+                    sendMessage()
+                }
+            }
+        }.resume()
+    }
+}
+
+private struct TranscriptionResponse: Decodable {
+    let text: String
 }
 
 // MARK: - Enhanced Message Bubble

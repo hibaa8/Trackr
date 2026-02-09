@@ -56,6 +56,8 @@
 	<string>AI Trainer needs access to your location to find nearby gyms and fitness classes.</string>
 	<key>NSLocationAlwaysAndWhenInUseUsageDescription</key>
 	<string>AI Trainer needs access to your location to find nearby gyms and fitness classes.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>AI Trainer needs access to the microphone to send voice messages.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import UIKit
+import AVFoundation
 
 struct OnboardingCompleteView: View {
     let coach: Coach
@@ -289,15 +290,6 @@ struct TrainerMainView: View {
             }
 
             Spacer()
-
-            Button(action: {}) {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(12)
-                    .background(Color.white.opacity(0.2))
-                    .clipShape(Circle())
-            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 40) // Moved higher as requested
@@ -595,6 +587,10 @@ struct VoiceActiveView: View {
     @State private var messageText = ""
     @State private var isLoading = false
     @State private var threadId: String?
+    @State private var isRecording = false
+    @State private var audioRecorder: AVAudioRecorder?
+    @State private var recordingURL: URL?
+    @State private var audioErrorMessage: String?
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
 
@@ -623,17 +619,6 @@ struct VoiceActiveView: View {
                         .foregroundColor(.white)
 
                     Spacer()
-
-                    Button(action: {
-                        dismiss()
-                    }) {
-                        Image(systemName: "ellipsis")
-                            .font(.system(size: 16, weight: .semibold))
-                            .foregroundColor(.white)
-                            .padding(12)
-                            .background(Color.white.opacity(0.2))
-                            .clipShape(Circle())
-                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 60)
@@ -666,6 +651,17 @@ struct VoiceActiveView: View {
                         )
                         .focused($inputFocused)
 
+                    Button(action: toggleRecording) {
+                        Image(systemName: isRecording ? "stop.fill" : "mic.fill")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(
+                                Circle()
+                                    .fill(isRecording ? Color.red : Color.white.opacity(0.2))
+                            )
+                    }
+
                     Button(action: sendMessage) {
                         Image(systemName: "paperplane.fill")
                             .font(.system(size: 16, weight: .semibold))
@@ -690,6 +686,82 @@ struct VoiceActiveView: View {
                 }
             }
         }
+    }
+
+    private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        audioErrorMessage = nil
+        let session = AVAudioSession.sharedInstance()
+        session.requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                guard granted else {
+                    audioErrorMessage = "Microphone permission denied."
+                    return
+                }
+                do {
+                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                    try session.setActive(true, options: .notifyOthersOnDeactivation)
+                    let filename = UUID().uuidString + ".m4a"
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                    let settings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 44100,
+                        AVNumberOfChannelsKey: 1,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                    ]
+                    let recorder = try AVAudioRecorder(url: url, settings: settings)
+                    recorder.record()
+                    audioRecorder = recorder
+                    recordingURL = url
+                    isRecording = true
+                } catch {
+                    audioErrorMessage = "Could not start recording."
+                }
+            }
+        }
+    }
+
+    private func stopRecording() {
+        audioRecorder?.stop()
+        isRecording = false
+        guard let url = recordingURL else { return }
+        sendAudioForTranscription(url: url)
+    }
+
+    private func sendAudioForTranscription(url: URL) {
+        guard let data = try? Data(contentsOf: url) else { return }
+        let boundary = "Boundary-\(UUID().uuidString)"
+        let endpoint = "\(BackendConfig.baseURL)/api/transcribe"
+        guard let requestURL = URL(string: endpoint) else { return }
+        var request = URLRequest(url: requestURL)
+        request.httpMethod = "POST"
+        request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+        var body = Data()
+        body.append("--\(boundary)\r\n".data(using: .utf8)!)
+        body.append("Content-Disposition: form-data; name=\"file\"; filename=\"audio.m4a\"\r\n".data(using: .utf8)!)
+        body.append("Content-Type: audio/m4a\r\n\r\n".data(using: .utf8)!)
+        body.append(data)
+        body.append("\r\n--\(boundary)--\r\n".data(using: .utf8)!)
+        request.httpBody = body
+
+        URLSession.shared.dataTask(with: request) { data, _, _ in
+            guard let data,
+                  let decoded = try? JSONDecoder().decode(TranscriptionResponse.self, from: data) else { return }
+            let trimmed = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return }
+            DispatchQueue.main.async {
+                messageText = trimmed
+                sendMessage()
+            }
+        }.resume()
     }
 
     private func loadWelcomeMessage() {
@@ -789,6 +861,10 @@ struct VoiceMessage: Identifiable {
     let text: String
     let isFromCoach: Bool
     let timestamp: Date
+}
+
+private struct TranscriptionResponse: Decodable {
+    let text: String
 }
 
 struct VoiceMessageBubble: View {

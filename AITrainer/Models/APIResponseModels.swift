@@ -108,6 +108,7 @@ struct ProfileUserResponse: Codable {
     let height_cm: Double?
     let weight_kg: Double?
     let gender: String?
+    let age_years: Int?
     let agent_name: String?
 }
 

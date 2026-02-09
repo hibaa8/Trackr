@@ -29,6 +29,7 @@ import urllib.request
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
+from openai import OpenAI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
 from googleapiclient.discovery import build
@@ -38,6 +39,7 @@ from PIL import Image
 from pydantic import BaseModel
 
 from agent.state import SESSION_CACHE
+from agent.redis.cache import _redis_set_json
 
 from config.constants import DB_PATH
 from agent.db.connection import get_db_conn
@@ -92,6 +94,7 @@ CATEGORY_VIDEOS = {
 }
 
 app = FastAPI(title="AI Trainer Backend", version="1.0.0")
+openai_client = OpenAI()
 
 # Allow CORS for iOS app
 app.add_middleware(
@@ -1311,6 +1314,23 @@ def log_food(payload: FoodLogRequest):
     return {"status": "ok"}
 
 
+@app.post("/api/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    if not file:
+        raise HTTPException(status_code=400, detail="Missing audio file")
+    data = await file.read()
+    if not data:
+        raise HTTPException(status_code=400, detail="Empty audio file")
+    try:
+        response = openai_client.audio.transcriptions.create(
+            model="gpt-4o-mini-transcribe",
+            file=(file.filename or "audio.m4a", data, file.content_type or "audio/m4a"),
+        )
+        return {"text": response.text}
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Transcription failed: {exc}") from exc
+
+
 @app.get("/food/intake", response_model=DailyIntakeResponse)
 def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
     """Return daily calorie intake totals for a user."""
@@ -1422,6 +1442,15 @@ def get_today_plan(user_id: int = 1, day: Optional[str] = None):
 def get_profile(user_id: int = 1):
     """Return user profile and preferences."""
     return _load_user_profile(user_id)
+
+
+def _refresh_profile_cache(user_id: int) -> None:
+    try:
+        profile = _load_user_profile(user_id)
+        _redis_set_json(f"user:{user_id}:profile", profile, ttl_seconds=CACHE_TTL_LONG)
+        SESSION_CACHE.setdefault(user_id, {})["context"] = profile
+    except Exception:
+        pass
 
 
 @app.get("/api/user-id")
@@ -1632,12 +1661,13 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
-    if fields:
-        values.append(user_id)
-        with get_db_conn() as conn:
-            cur = conn.cursor()
-            cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
-            conn.commit()
+        if fields:
+            values.append(user_id)
+            with get_db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
+                conn.commit()
+        _refresh_profile_cache(user_id)
     _generate_plan_for_user(
         user_id,
         goal_type=payload.goal_type,
