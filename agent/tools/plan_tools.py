@@ -22,13 +22,7 @@ from agent.config.constants import (
 )
 from agent.config.constants import _draft_meal_logs_key, _draft_workout_sessions_key
 from agent.db import queries
-from agent.plan.plan_generation import (
-    _age_from_birthdate,
-    _build_plan_data,
-    _format_plan_text,
-    _macro_split,
-    generate_workout_plan,
-)
+from agent.plan.plan_generation import _build_plan_data, _format_plan_text, _macro_split, generate_workout_plan
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
@@ -219,9 +213,10 @@ def _compact_context_summary(context: Dict[str, Any], active_plan: Dict[str, Any
     height_cm = user[3] if len(user) > 3 else None
     weight_kg = user[4] if len(user) > 4 else None
     gender = user[5] if len(user) > 5 else None
+    age_years = user[6] if len(user) > 6 else None
     goal_type = pref[2] if len(pref) > 2 else None
     activity_level = pref[1] if len(pref) > 1 else None
-    age = _age_from_birthdate(birthdate) if birthdate else None
+    age = age_years
 
     plan = active_plan.get("plan") or {}
     plan_days = active_plan.get("plan_days", [])

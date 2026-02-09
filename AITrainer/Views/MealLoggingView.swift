@@ -4,6 +4,7 @@ import UIKit
 
 struct MealLoggingView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
     @State private var currentStep = 0
     @State private var showCamera = false
@@ -430,6 +431,7 @@ struct MealLoggingView: View {
     }
     
     func logMeal() {
+        let userId = authManager.demoUserId ?? 1
         let meal = MealEntry(
             name: mealName.isEmpty ? "Meal" : mealName,
             calories: totalCalories,
@@ -438,11 +440,11 @@ struct MealLoggingView: View {
             fats: totalFats,
             timestamp: Date()
         )
-        appState.logMeal(meal)
+        appState.logMeal(meal, userId: userId)
         let payload = buildScanPayload()
-        FoodScanService.shared.logMeal(payload, nameOverride: mealName.isEmpty ? nil : mealName) { _ in
+        FoodScanService.shared.logMeal(payload, userId: userId, nameOverride: mealName.isEmpty ? nil : mealName) { _ in
             DispatchQueue.main.async {
-                appState.refreshDailyData(for: appState.selectedDate)
+                appState.refreshDailyData(for: appState.selectedDate, userId: userId)
             }
         }
         dismiss()

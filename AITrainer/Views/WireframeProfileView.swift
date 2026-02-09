@@ -221,7 +221,7 @@ struct WireframeProfileView: View {
                         ModernProfileRow(
                             icon: "scalemass.fill",
                             title: "Current Weight",
-                        value: valueOrSetup(userData.weight, suffix: "lbs"),
+                        value: valueOrSetup(userData.weight, suffix: "kg"),
                             color: .purple
                         ) {
                         showPhysicalStatsEdit = true
@@ -255,7 +255,7 @@ struct WireframeProfileView: View {
                     ModernProfileRow(
                         icon: "target",
                         title: "Goal Weight",
-                        value: valueOrSetup(userData.goalWeight, suffix: "lbs"),
+                        value: valueOrSetup(userData.goalWeight, suffix: "kg"),
                         color: .orange
                         ) {
                         showGoalsEdit = true
@@ -621,7 +621,7 @@ struct PhysicalStatsEditSheet: View {
                         .keyboardType(.numberPad)
                     TextField("Height (in)", text: $height)
                         .keyboardType(.decimalPad)
-                    TextField("Weight (lbs)", text: $weight)
+                    TextField("Weight (kg)", text: $weight)
                         .keyboardType(.decimalPad)
                 }
             }
@@ -676,7 +676,7 @@ struct GoalsEditSheet: View {
         NavigationView {
             Form {
                 Section(header: Text("Goals")) {
-                    TextField("Goal Weight (lbs)", text: $goalWeight)
+                    TextField("Goal Weight (kg)", text: $goalWeight)
                         .keyboardType(.decimalPad)
                     TextField("Daily Calorie Target", text: $calorieTarget)
                         .keyboardType(.numberPad)

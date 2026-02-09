@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ManualMealEntryView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var authManager: AuthenticationManager
     @Environment(\.dismiss) var dismiss
 
     @State private var mealName = ""
@@ -80,6 +81,7 @@ struct ManualMealEntryView: View {
     }
 
     private func logMeal() {
+        let userId = authManager.demoUserId ?? 1
         let safeName = mealName.trimmingCharacters(in: .whitespacesAndNewlines)
         let itemName = safeName.isEmpty ? "Manual entry" : safeName
 
@@ -106,12 +108,12 @@ struct ManualMealEntryView: View {
 
         isSaving = true
         errorMessage = nil
-        FoodScanService.shared.logMeal(payload, nameOverride: safeName.isEmpty ? nil : safeName) { result in
+        FoodScanService.shared.logMeal(payload, userId: userId, nameOverride: safeName.isEmpty ? nil : safeName) { result in
             DispatchQueue.main.async {
                 self.isSaving = false
                 switch result {
                 case .success:
-                    self.appState.refreshDailyData(for: self.appState.selectedDate)
+                    self.appState.refreshDailyData(for: self.appState.selectedDate, userId: userId)
                     self.dismiss()
                 case .failure:
                     self.errorMessage = "Could not log your meal. Please try again."
@@ -124,4 +126,5 @@ struct ManualMealEntryView: View {
 #Preview {
     ManualMealEntryView()
         .environmentObject(AppState())
+        .environmentObject(AuthenticationManager())
 }

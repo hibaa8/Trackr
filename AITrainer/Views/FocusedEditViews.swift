@@ -156,7 +156,7 @@ struct WeightEditView: View {
             icon: "scalemass.fill",
             color: .purple,
             value: $weight,
-            unit: "lbs"
+            unit: "kg"
         )
     }
 }
@@ -170,7 +170,7 @@ struct GoalWeightEditView: View {
             icon: "target",
             color: .orange,
             value: $goalWeight,
-            unit: "lbs"
+            unit: "kg"
         )
     }
 }

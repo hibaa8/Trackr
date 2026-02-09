@@ -252,7 +252,7 @@ struct ProfileEditView: View {
                         title: "Current Weight",
                         value: $viewModel.weightPounds,
                         icon: "scalemass.fill",
-                        unit: "lbs",
+                        unit: "kg",
                         placeholder: "Enter weight"
                     )
 
@@ -260,7 +260,7 @@ struct ProfileEditView: View {
                         title: "Goal Weight",
                         value: $viewModel.goalWeightPounds,
                         icon: "target",
-                        unit: "lbs",
+                        unit: "kg",
                         placeholder: "Enter goal weight"
                     )
                 }

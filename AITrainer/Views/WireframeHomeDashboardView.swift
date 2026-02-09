@@ -2,6 +2,7 @@ import SwiftUI
 
 struct WireframeHomeDashboardView: View {
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var authManager: AuthenticationManager
     @State private var showMealLogging = false
     @State private var showDailyMeals = false
     @State private var showGymClasses = false
@@ -81,7 +82,12 @@ struct WireframeHomeDashboardView: View {
                 CommunityView()
             }
             .onChange(of: appState.selectedDate) { newDate in
-                appState.refreshDailyData(for: newDate)
+                let userId = authManager.demoUserId ?? 1
+                appState.refreshDailyData(for: newDate, userId: userId)
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+                let userId = authManager.demoUserId ?? 1
+                appState.refreshDailyData(for: appState.selectedDate, userId: userId)
             }
         }
     }

@@ -324,7 +324,7 @@ def _extract_og_image(url: str) -> Optional[str]:
 def _store_meal_log(payload: FoodLogRequest) -> None:
     logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
     description = payload.food_name
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -360,6 +360,8 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "height_cm": row[3],
             "weight_kg": row[4],
             "gender": row[5],
+            "age_years": row[6],
+            "agent_name": row[7],
         }
 
     def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
@@ -416,7 +418,7 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
 
 def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -432,13 +434,13 @@ def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
             {"date": row[0], "weight_kg": row[1], "mood": row[2], "notes": row[3]}
             for row in rows
         ]
-    except sqlite3.Error:
+    except Exception:
         return []
 
 
 def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -467,13 +469,13 @@ def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
                 }
             )
         return sessions
-    except sqlite3.Error:
+    except Exception:
         return []
 
 
 def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
     try:
-        with sqlite3.connect(DB_PATH) as conn:
+        with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
@@ -503,7 +505,7 @@ def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
                 }
             )
         return meals
-    except sqlite3.Error:
+    except Exception:
         return []
 
 
@@ -586,6 +588,7 @@ class DailyIntakeResponse(BaseModel):
     total_carbs_g: float
     total_fat_g: float
     meals_count: int
+    daily_calorie_target: Optional[int] = None
 
 
 class MealLogItem(BaseModel):
@@ -1314,7 +1317,7 @@ def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
     target_day = day or date.today().isoformat()
     start = f"{target_day}T00:00:00"
     end = f"{target_day}T23:59:59"
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """
@@ -1329,6 +1332,21 @@ def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
     total_protein = sum(row[1] for row in rows)
     total_carbs = sum(row[2] for row in rows)
     total_fat = sum(row[3] for row in rows)
+    daily_target = None
+    try:
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        plan_row = bundle.get("plan")
+        if isinstance(plan_row, tuple) and len(plan_row) >= 4:
+            daily_target = plan_row[3]
+        elif isinstance(plan_row, dict):
+            daily_target = plan_row.get("daily_calorie_target")
+        plan_day = next((d for d in bundle.get("plan_days", []) if d.get("date") == target_day), None)
+        if plan_day and plan_day.get("calorie_target") is not None:
+            daily_target = plan_day.get("calorie_target")
+    except Exception:
+        daily_target = None
     return DailyIntakeResponse(
         date=target_day,
         total_calories=total_calories,
@@ -1336,6 +1354,7 @@ def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
         total_carbs_g=total_carbs,
         total_fat_g=total_fat,
         meals_count=len(rows),
+        daily_calorie_target=daily_target,
     )
 
 
@@ -1345,7 +1364,7 @@ def get_food_logs(user_id: int = 1, day: Optional[str] = None):
     target_day = day or date.today().isoformat()
     start = f"{target_day}T00:00:00"
     end = f"{target_day}T23:59:59"
-    with sqlite3.connect(DB_PATH) as conn:
+    with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
             """

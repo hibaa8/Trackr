@@ -411,7 +411,7 @@ struct ConversationView: View {
         if lower.contains("lb") {
             return value * 0.453592
         }
-        return value * 0.453592
+        return value
     }
     
     private func parseHeightCm(from text: String?) -> Double? {

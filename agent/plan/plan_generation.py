@@ -7,10 +7,10 @@ from agent.db.connection import get_db_conn
 from agent.db import queries
 
 
-def _age_from_birthdate(birthdate: str) -> int:
-    born = datetime.strptime(birthdate, "%Y-%m-%d").date()
-    today = date.today()
-    return today.year - born.year - ((today.month, today.day) < (born.month, born.day))
+def _resolve_age(age_years: Optional[int]) -> int:
+    if age_years:
+        return int(age_years)
+    return 30
 
 
 def _bmr_mifflin(weight_kg: float, height_cm: float, age: int, gender: str) -> float:
@@ -207,7 +207,7 @@ def calc_targets(
     pref_row: Optional[tuple],
     goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
-    birthdate, height_cm, weight_kg, gender = user_row
+    birthdate, height_cm, weight_kg, gender, age_years = user_row
     weekly_delta = pref_row[0] if pref_row else -0.5
     activity_level = pref_row[1] if pref_row else "moderate"
     goal_type = goal_override or (pref_row[2] if pref_row else "lose")
@@ -218,7 +218,7 @@ def calc_targets(
     elif goal_type == "maintain":
         weekly_delta = 0.0
 
-    age = _age_from_birthdate(birthdate)
+    age = _resolve_age(age_years)
     bmr = _bmr_mifflin(weight_kg, height_cm, age, gender)
     tdee = bmr * _activity_multiplier(activity_level)
     calorie_target = int(tdee)
@@ -398,7 +398,10 @@ def _build_plan_data(
     requested_days = days
     with get_db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?", (user_id,))
+        cur.execute(
+            "SELECT birthdate, height_cm, weight_kg, gender, age_years FROM users WHERE id = ?",
+            (user_id,),
+        )
         user_row = cur.fetchone()
         if not user_row:
             return {"error": "User not found."}

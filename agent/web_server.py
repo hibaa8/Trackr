@@ -637,7 +637,8 @@ def _load_user_profile(user_id: int) -> dict[str, Any]:
             "height_cm": user_row[3],
             "weight_kg": user_row[4],
             "gender": user_row[5],
-            "agent_name": user_row[6],
+            "age_years": user_row[6],
+            "agent_name": user_row[7],
         }
     prefs = None
     if pref_row:

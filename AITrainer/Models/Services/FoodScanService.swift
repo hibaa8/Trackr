@@ -54,6 +54,7 @@ final class FoodScanService {
 
     func logMeal(
         _ payload: FoodScanResponse,
+        userId: Int = 1,
         nameOverride: String?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
@@ -63,7 +64,7 @@ final class FoodScanService {
         }
 
         let body: [String: Any] = [
-            "user_id": 1,
+            "user_id": userId,
             "food_name": (nameOverride?.isEmpty == false ? nameOverride! : payload.food_name),
             "total_calories": payload.total_calories,
             "protein_g": payload.protein_g,
@@ -98,15 +99,16 @@ final class FoodScanService {
                 completion(.failure(URLError(.badServerResponse)))
                 return
             }
+            NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
             completion(.success(()))
         }.resume()
     }
 
-    func getDailyIntake(date: Date, completion: @escaping (Result<DailyIntakeResponse, Error>) -> Void) {
+    func getDailyIntake(date: Date, userId: Int = 1, completion: @escaping (Result<DailyIntakeResponse, Error>) -> Void) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
-        guard let url = URL(string: "\(baseURL)/food/intake?day=\(dateString)&user_id=1") else {
+        guard let url = URL(string: "\(baseURL)/food/intake?day=\(dateString)&user_id=\(userId)") else {
             completion(.failure(URLError(.badURL)))
             return
         }
@@ -131,11 +133,11 @@ final class FoodScanService {
         }.resume()
     }
 
-    func getDailyMeals(date: Date, completion: @escaping (Result<DailyMealLogsResponse, Error>) -> Void) {
+    func getDailyMeals(date: Date, userId: Int = 1, completion: @escaping (Result<DailyMealLogsResponse, Error>) -> Void) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
-        guard let url = URL(string: "\(baseURL)/food/logs?day=\(dateString)&user_id=1") else {
+        guard let url = URL(string: "\(baseURL)/food/logs?day=\(dateString)&user_id=\(userId)") else {
             completion(.failure(URLError(.badURL)))
             return
         }

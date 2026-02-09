@@ -5,6 +5,7 @@ import UIKit
 struct OnboardingCompleteView: View {
     let coach: Coach
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var showMainApp = false
     @State private var confettiOpacity = 0.0
     @State private var checkmarkScale = 0.0
@@ -887,4 +888,5 @@ struct VoiceWaveform: View {
 #Preview {
     OnboardingCompleteView(coach: Coach.allCoaches[0])
         .environmentObject(FrontendBackendConnector.shared)
+        .environmentObject(AuthenticationManager())
 }
