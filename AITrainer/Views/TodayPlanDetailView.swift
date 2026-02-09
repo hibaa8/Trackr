@@ -7,10 +7,9 @@ struct TodayPlanDetailView: View {
     @State private var selectedDate = Date()
     @State private var isLoading = false
     @State private var dayPlan: PlanDayResponse?
-    @State private var showVoiceChat = false
-    @State private var showLogFood = false
     @State private var cancellables = Set<AnyCancellable>()
     @State private var plansByDate: [String: PlanDayResponse] = [:]
+    @State private var showFullDetails = false
 
     var body: some View {
         ZStack {
@@ -37,11 +36,6 @@ struct TodayPlanDetailView: View {
                     .padding(.bottom, 120)
                 }
             }
-
-            VStack {
-                Spacer()
-                bottomToolbar
-            }
         }
         .onAppear {
             selectedDate = appState.selectedDate
@@ -49,12 +43,6 @@ struct TodayPlanDetailView: View {
         }
         .onChange(of: selectedDate) { newValue in
             loadSelectedPlan()
-        }
-        .sheet(isPresented: $showLogFood) {
-            MealLoggingView()
-        }
-        .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: Coach.allCoaches[0])
         }
     }
 
@@ -125,22 +113,45 @@ struct TodayPlanDetailView: View {
         primaryButton: String? = nil,
         secondaryButton: String? = nil
     ) -> some View {
-        VStack(alignment: .leading, spacing: 12) {
+        let previewItems = Array(details.prefix(2))
+        let hasMore = details.count > previewItems.count
+        let visibleItems = showFullDetails ? details : previewItems
+
+        return VStack(alignment: .leading, spacing: 12) {
             Text(title)
                 .font(.system(size: 18, weight: .semibold))
                 .foregroundColor(.white)
 
             Text(subtitle)
-                .font(.system(size: 13))
+                .font(.system(size: 13, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.7))
 
-            if !details.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(details, id: \.self) { item in
-                        Text(item)
-                            .font(.system(size: 13))
-                            .foregroundColor(Color.white.opacity(0.85))
+            if !visibleItems.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(visibleItems, id: \.self) { item in
+                        HStack(alignment: .top, spacing: 8) {
+                            Circle()
+                                .fill(Color.blue.opacity(0.8))
+                                .frame(width: 6, height: 6)
+                                .padding(.top, 6)
+                            Text(item)
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundColor(Color.white.opacity(0.82))
+                                .lineLimit(showFullDetails ? nil : 2)
+                        }
                     }
+                }
+            } else {
+                Text("Details will appear once your plan is ready.")
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(Color.white.opacity(0.6))
+            }
+
+            if hasMore {
+                Button(action: { showFullDetails.toggle() }) {
+                    Text(showFullDetails ? "Show less" : "Show full plan")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(Color.blue.opacity(0.9))
                 }
             }
 
@@ -174,48 +185,6 @@ struct TodayPlanDetailView: View {
         .padding(20)
         .background(Color(red: 0.12, green: 0.12, blue: 0.12).opacity(0.85))
         .cornerRadius(16)
-    }
-
-    private var bottomToolbar: some View {
-        HStack(spacing: 0) {
-            Button(action: {}) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 44, height: 44)
-            }
-
-            Spacer()
-
-            Button(action: { showVoiceChat = true }) {
-                ZStack {
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 64, height: 64)
-                        .shadow(color: Color.blue.opacity(0.6), radius: 16)
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-
-            Spacer()
-
-            Button(action: { showLogFood = true }) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 44, height: 44)
-            }
-        }
-        .frame(height: 90)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(Color.black.opacity(0.7))
-        )
-        .padding(.horizontal, 20)
     }
 
     private var visibleDates: [Date] {

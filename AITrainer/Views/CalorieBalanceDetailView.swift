@@ -6,7 +6,6 @@ struct CalorieBalanceDetailView: View {
     @EnvironmentObject private var authManager: AuthenticationManager
     @State private var selectedDate = Date()
     @State private var showLogFood = false
-    @State private var showVoiceChat = false
 
     var body: some View {
         ZStack {
@@ -27,11 +26,6 @@ struct CalorieBalanceDetailView: View {
                     .padding(.bottom, 120)
                 }
             }
-
-            VStack {
-                Spacer()
-                bottomToolbar
-            }
         }
         .onAppear {
             selectedDate = appState.selectedDate
@@ -48,9 +42,6 @@ struct CalorieBalanceDetailView: View {
         }
         .sheet(isPresented: $showLogFood) {
             MealLoggingView()
-        }
-        .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: Coach.allCoaches[0])
         }
     }
 
@@ -117,11 +108,11 @@ struct CalorieBalanceDetailView: View {
         let burned = appState.caloriesOut
         let progress = min(1.0, max(0.0, Double(intake) / Double(max(target, 1))))
 
-        return VStack(spacing: 16) {
+        return VStack(spacing: 20) {
             ZStack {
                 Circle()
-                    .stroke(Color(red: 0.11, green: 0.11, blue: 0.12), lineWidth: 20)
-                    .frame(width: 200, height: 200)
+                    .stroke(Color(red: 0.11, green: 0.11, blue: 0.12), lineWidth: 22)
+                    .frame(width: 240, height: 240)
 
                 Circle()
                     .trim(from: 0, to: progress)
@@ -130,9 +121,9 @@ struct CalorieBalanceDetailView: View {
                             gradient: Gradient(colors: [Color.blue, Color.cyan]),
                             center: .center
                         ),
-                        style: StrokeStyle(lineWidth: 20, lineCap: .round)
+                        style: StrokeStyle(lineWidth: 22, lineCap: .round)
                     )
-                    .frame(width: 200, height: 200)
+                    .frame(width: 240, height: 240)
                     .rotationEffect(.degrees(-90))
                     .shadow(color: Color.blue.opacity(0.5), radius: 16)
 
@@ -226,48 +217,6 @@ struct CalorieBalanceDetailView: View {
             .background(Color.blue)
             .cornerRadius(12)
         }
-    }
-
-    private var bottomToolbar: some View {
-        HStack(spacing: 0) {
-            Button(action: {}) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 44, height: 44)
-            }
-
-            Spacer()
-
-            Button(action: { showVoiceChat = true }) {
-                ZStack {
-                    Circle()
-                        .fill(Color.blue)
-                        .frame(width: 64, height: 64)
-                        .shadow(color: Color.blue.opacity(0.6), radius: 16)
-                    Image(systemName: "mic.fill")
-                        .font(.system(size: 22, weight: .medium))
-                        .foregroundColor(.white)
-                }
-            }
-
-            Spacer()
-
-            Button(action: { showLogFood = true }) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 20))
-                    .foregroundColor(.white.opacity(0.7))
-                    .frame(width: 44, height: 44)
-            }
-        }
-        .frame(height: 90)
-        .padding(.horizontal, 24)
-        .padding(.bottom, 24)
-        .background(
-            RoundedRectangle(cornerRadius: 24)
-                .fill(Color.black.opacity(0.7))
-        )
-        .padding(.horizontal, 20)
     }
 
     private var visibleDates: [Date] {

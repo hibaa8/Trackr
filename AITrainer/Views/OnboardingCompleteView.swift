@@ -693,22 +693,28 @@ struct VoiceActiveView: View {
                             }
                             .disabled(isLoading)
                         } else {
-                            Button(action: {}) {
+                            Button(action: {
+                                if isRecording {
+                                    stopVoiceRecording()
+                                } else {
+                                    startVoiceRecording()
+                                }
+                            }) {
                                 Image(systemName: isRecording ? "mic.fill" : "mic")
                                     .font(.system(size: 24, weight: .semibold))
                                     .foregroundColor(isRecording ? .red : .white.opacity(0.7))
                             }
-                            .onLongPressGesture(minimumDuration: 0.1, pressing: { pressing in
-                                if pressing {
-                                    startVoiceRecording()
-                                } else {
-                                    stopVoiceRecording()
-                                }
-                            }, perform: {})
                         }
                     }
                     .padding(.horizontal, 20)
                     .padding(.bottom, 30)
+
+                    if isRecording {
+                        Text("Recording...")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.red)
+                            .padding(.bottom, 8)
+                    }
                 }
             }
         }
@@ -811,25 +817,30 @@ struct VoiceActiveView: View {
 
     private func startVoiceRecording() {
         guard !isRecording else { return }
-        do {
-            let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-            try session.setActive(true)
+        let session = AVAudioSession.sharedInstance()
+        session.requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                guard granted else { return }
+                do {
+                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                    try session.setActive(true, options: .notifyOthersOnDeactivation)
 
-            let filename = "voice-\(UUID().uuidString).m4a"
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-            let settings: [String: Any] = [
-                AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                AVSampleRateKey: 12000,
-                AVNumberOfChannelsKey: 1,
-                AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
-            ]
-            let recorder = try AVAudioRecorder(url: url, settings: settings)
-            recorder.record()
-            audioRecorder = recorder
-            isRecording = true
-        } catch {
-            isRecording = false
+                    let filename = "voice-\(UUID().uuidString).m4a"
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                    let settings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 12000,
+                        AVNumberOfChannelsKey: 1,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue,
+                    ]
+                    let recorder = try AVAudioRecorder(url: url, settings: settings)
+                    recorder.record()
+                    audioRecorder = recorder
+                    isRecording = true
+                } catch {
+                    isRecording = false
+                }
+            }
         }
     }
 
