@@ -67,6 +67,8 @@ def _render_plan_days(
         template = template_days.get(day_index, {})
         base_calories = default_calories + int(template.get("calorie_delta") or 0)
         workout_json = template.get("workout_json")
+        if day_key == date.today().isoformat():
+            print("workout_json fetched for today:", workout_json)
         rest_day = _workout_label_from_json(workout_json).lower() == "rest day"
         override = overrides.get(day_key)
         if override:
@@ -80,10 +82,14 @@ def _render_plan_days(
             if override.get("override_type") in {"pause", "deload"}:
                 rest_day = True
         macros = _macro_split(base_calories) if base_calories else default_macros
+        workout_label = _workout_label_from_json(workout_json)
+        if workout_label == "workout" and workout_json:
+            workout_label = str(workout_json)
         plan_days.append(
             {
                 "date": day_key,
-                "workout_plan": _workout_label_from_json(workout_json),
+                "workout_plan": workout_label,
+                "workout_raw": workout_json,
                 "rest_day": 1 if rest_day else 0,
                 "calorie_target": base_calories,
                 "protein_g": macros["protein_g"],
@@ -1241,6 +1247,7 @@ def propose_plan_patch_with_llm(
     llm = ChatOpenAI(model="gpt-4o", temperature=0, max_retries=0, request_timeout=30)
     response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)])
     raw_content = response.content if isinstance(response.content, str) else ""
+    print("LLM plan patch raw response:", raw_content)
     try:
         patch = json.loads(raw_content)
     except json.JSONDecodeError:
@@ -1252,6 +1259,7 @@ def propose_plan_patch_with_llm(
                 "apply_result": None,
             }
         )
+    print("LLM plan patch parsed:", patch)
     if not isinstance(patch, dict):
         return json.dumps(
             {

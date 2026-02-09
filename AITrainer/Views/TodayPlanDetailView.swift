@@ -10,6 +10,7 @@ struct TodayPlanDetailView: View {
     @State private var showVoiceChat = false
     @State private var showLogFood = false
     @State private var cancellables = Set<AnyCancellable>()
+    @State private var plansByDate: [String: PlanDayResponse] = [:]
 
     var body: some View {
         ZStack {
@@ -20,28 +21,15 @@ struct TodayPlanDetailView: View {
                 dateSelector
                 ScrollView(showsIndicators: false) {
                     VStack(alignment: .leading, spacing: 16) {
-                        sectionTitle("MORNING")
+                        let dateKey = isoDateFormatter.string(from: selectedDate)
+                        let plan = plansByDate[dateKey]
+                        let workoutText = (plan?.workout_plan ?? "Workout").trimmingCharacters(in: .whitespacesAndNewlines)
+                        let calorieText = plan?.calorie_target ?? 0
                         planCard(
-                            title: "Rest / Mobility",
-                            subtitle: "10 min",
-                            details: ["0/10 min"],
-                            primaryButton: "Start"
-                        )
-
-                        sectionTitle("AFTERNOON")
-                        planCard(
-                            title: afternoonTitle,
-                            subtitle: "45 min",
-                            details: afternoonDetails,
+                            title: workoutText.isEmpty ? "Workout" : workoutText,
+                            subtitle: calorieText > 0 ? "\(calorieText) kcal target" : "Workout",
+                            details: workoutText.isEmpty ? ["Workout"] : [workoutText],
                             primaryButton: "Start Workout"
-                        )
-
-                        sectionTitle("EVENING")
-                        planCard(
-                            title: "Cardio",
-                            subtitle: "20 min running",
-                            details: [],
-                            secondaryButton: "Log Activity"
                         )
                     }
                     .padding(.horizontal, 20)
@@ -56,10 +44,10 @@ struct TodayPlanDetailView: View {
         }
         .onAppear {
             selectedDate = appState.selectedDate
-            loadPlan(for: selectedDate)
+            loadSelectedPlan()
         }
         .onChange(of: selectedDate) { newValue in
-            loadPlan(for: newValue)
+            loadSelectedPlan()
         }
         .sheet(isPresented: $showLogFood) {
             MealLoggingView()
@@ -127,33 +115,6 @@ struct TodayPlanDetailView: View {
             }
             .padding(.horizontal, 20)
         }
-    }
-
-    private var afternoonTitle: String {
-        if dayPlan?.rest_day == true {
-            return "Rest Day"
-        }
-        return dayPlan?.workout_plan ?? "Upper Body Strength"
-    }
-
-    private var afternoonDetails: [String] {
-        if dayPlan?.rest_day == true {
-            return ["Light stretching", "Mobility work", "Foam rolling"]
-        }
-        return [
-            "🏋️ Bench Press 3x10",
-            "🚣 Rows 3x12",
-            "💪 Shoulder Press 3x10",
-            "🤸 Pull-ups 3x8",
-            "💪 Bicep Curls 3x12",
-            "💪 Tricep Dips 3x12"
-        ]
-    }
-
-    private func sectionTitle(_ text: String) -> some View {
-        Text(text)
-            .font(.system(size: 14, weight: .bold))
-            .foregroundColor(Color.white.opacity(0.8))
     }
 
     private func planCard(
@@ -267,8 +228,15 @@ struct TodayPlanDetailView: View {
         return formatter
     }
 
-    private func loadPlan(for date: Date) {
+    private var isoDateFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
+
+    private func loadSelectedPlan() {
         isLoading = true
+        let date = selectedDate
         APIService.shared.getTodayPlan(date: date)
             .receive(on: DispatchQueue.main)
             .sink(
@@ -279,7 +247,8 @@ struct TodayPlanDetailView: View {
                     }
                 },
                 receiveValue: { plan in
-                    self.dayPlan = plan
+                    let key = self.isoDateFormatter.string(from: date)
+                    self.plansByDate[key] = plan
                 }
             )
             .store(in: &cancellables)

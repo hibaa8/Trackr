@@ -41,6 +41,8 @@ from agent.state import SESSION_CACHE
 
 from config.constants import DB_PATH
 from agent.db.connection import get_db_conn
+from agent.plan.plan_generation import _build_plan_data
+from agent.tools.plan_tools import _set_active_plan_cache
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_ENV_PATH)
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
@@ -642,6 +644,9 @@ class OnboardingCompletePayload(BaseModel):
     current_weight_kg: Optional[float] = None
     height_cm: Optional[float] = None
     age: Optional[int] = None
+    goal_type: Optional[str] = None
+    timeframe_weeks: Optional[float] = None
+    weekly_weight_change_kg: Optional[float] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -1151,7 +1156,7 @@ def suggest_recipes(payload: RecipeSuggestRequest):
 
     plan_context: Dict[str, Any] = {}
     try:
-        from tools.plan_tools import _get_active_plan_bundle_data
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
 
         bundle = _get_active_plan_bundle_data(payload.user_id, allow_db_fallback=True)
         plan_row = bundle.get("plan")
@@ -1367,7 +1372,7 @@ def get_food_logs(user_id: int = 1, day: Optional[str] = None):
 @app.get("/plans/today", response_model=PlanDayResponse)
 def get_today_plan(user_id: int = 1, day: Optional[str] = None):
     """Return the active plan day for a specific date (defaults to today)."""
-    from tools.plan_tools import _get_active_plan_bundle_data
+    from agent.tools.plan_tools import _get_active_plan_bundle_data
 
     target_day = day or date.today().isoformat()
     bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
@@ -1376,7 +1381,11 @@ def get_today_plan(user_id: int = 1, day: Optional[str] = None):
     if not day_data:
         raise HTTPException(status_code=404, detail="No plan found for requested day")
 
-    workout_plan = day_data.get("workout_plan") or "Workout"
+    workout_plan = day_data.get("workout_plan") or day_data.get("workout") or "Workout"
+    if workout_plan == "Workout":
+        raw = day_data.get("workout_raw")
+        if raw:
+            workout_plan = str(raw)
     return PlanDayResponse(
         date=day_data.get("date", target_day),
         workout_plan=workout_plan,
@@ -1398,7 +1407,7 @@ def get_profile(user_id: int = 1):
 def get_progress(user_id: int = 1):
     """Return progress data (checkins, plan, meals, workouts)."""
     try:
-        from tools.plan_tools import _get_active_plan_bundle_data
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
 
         plan_bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
         plan = plan_bundle.get("plan")
@@ -1420,7 +1429,7 @@ def get_coach_suggestion(user_id: int = 1):
     """Return a coach suggestion derived from plan status."""
     suggestion = None
     try:
-        from tools.plan_tools import compute_plan_status
+        from agent.tools.plan_tools import compute_plan_status
 
         status_raw = compute_plan_status.func(user_id)
         payload = _safe_parse_json(status_raw)
@@ -1444,6 +1453,132 @@ def health_check():
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
+def _activate_plan_from_data(user_id: int, plan_data: dict[str, Any]) -> None:
+    cache_days = []
+    for day in plan_data["plan_days"]:
+        cache_day = dict(day)
+        if "workout_plan" not in cache_day and cache_day.get("workout"):
+            cache_day["workout_plan"] = cache_day["workout"]
+        cache_days.append(cache_day)
+    cache_bundle = {
+        "plan": {
+            "id": None,
+            "start_date": plan_data["start_date"],
+            "end_date": plan_data["end_date"],
+            "daily_calorie_target": plan_data["calorie_target"],
+            "protein_g": plan_data["macros"]["protein_g"],
+            "carbs_g": plan_data["macros"]["carbs_g"],
+            "fat_g": plan_data["macros"]["fat_g"],
+            "status": "active",
+        },
+        "plan_days": cache_days,
+        "checkpoints": plan_data.get("checkpoints", []),
+    }
+    _set_active_plan_cache(user_id, cache_bundle)
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("UPDATE plan_templates SET status = 'inactive' WHERE user_id = ?", (user_id,))
+        cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
+        pref_row = cur.fetchone()
+        timezone = pref_row[0] if pref_row else None
+        cycle_length = min(7, len(plan_data["plan_days"]))
+        cur.execute(
+            """
+            INSERT INTO plan_templates (
+                user_id, start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g,
+                status, cycle_length_days, timezone, default_calories, default_protein_g,
+                default_carbs_g, default_fat_g, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            RETURNING id
+            """,
+            (
+                user_id,
+                plan_data["start_date"],
+                plan_data["end_date"],
+                plan_data["calorie_target"],
+                plan_data["macros"]["protein_g"],
+                plan_data["macros"]["carbs_g"],
+                plan_data["macros"]["fat_g"],
+                "active",
+                cycle_length,
+                timezone,
+                plan_data["calorie_target"],
+                plan_data["macros"]["protein_g"],
+                plan_data["macros"]["carbs_g"],
+                plan_data["macros"]["fat_g"],
+                datetime.now().isoformat(timespec="seconds"),
+            ),
+        )
+        template_id = cur.fetchone()[0]
+        for day_index in range(cycle_length):
+            day = plan_data["plan_days"][day_index]
+            workout_json = json.dumps({"label": day["workout"]})
+            calorie_delta = day["calorie_target"] - plan_data["calorie_target"]
+            cur.execute(
+                """
+                INSERT INTO plan_template_days (
+                    template_id, day_index, workout_json, calorie_delta, notes
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    template_id,
+                    day_index,
+                    workout_json,
+                    calorie_delta,
+                    None,
+                ),
+            )
+        for checkpoint in plan_data.get("checkpoints", []):
+            cur.execute(
+                """
+                INSERT INTO plan_checkpoints (
+                    template_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    template_id,
+                    checkpoint["week"],
+                    checkpoint["expected_weight_kg"],
+                    checkpoint["min_weight_kg"],
+                    checkpoint["max_weight_kg"],
+                ),
+            )
+        conn.commit()
+
+
+def _generate_plan_for_user(
+    user_id: int,
+    goal_type: Optional[str] = None,
+    timeframe_weeks: Optional[float] = None,
+    weekly_change_kg: Optional[float] = None,
+) -> Optional[dict[str, Any]]:
+    days = 28
+    if timeframe_weeks:
+        try:
+            days = int(float(timeframe_weeks) * 7)
+        except (TypeError, ValueError):
+            days = 28
+    target_loss_lbs = None
+    if goal_type == "lose" and timeframe_weeks and weekly_change_kg:
+        try:
+            total_kg = abs(float(weekly_change_kg) * float(timeframe_weeks))
+            target_loss_lbs = round(total_kg * 2.20462, 1)
+        except (TypeError, ValueError):
+            target_loss_lbs = None
+    plan_data = _build_plan_data(
+        user_id,
+        days,
+        target_loss_lbs,
+        goal_override=goal_type,
+    )
+    if not plan_data or plan_data.get("error"):
+        print("Plan generation failed:", plan_data)
+        return None
+    print("Plan generation payload:", json.dumps(plan_data, indent=2, default=str))
+    _activate_plan_from_data(user_id, plan_data)
+    return plan_data
+
+
 @app.post("/api/onboarding/complete")
 def complete_onboarding(payload: OnboardingCompletePayload):
     user_id = payload.user_id or 1
@@ -1464,6 +1599,12 @@ def complete_onboarding(payload: OnboardingCompletePayload):
             cur = conn.cursor()
             cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
             conn.commit()
+    _generate_plan_for_user(
+        user_id,
+        goal_type=payload.goal_type,
+        timeframe_weeks=payload.timeframe_weeks,
+        weekly_change_kg=payload.weekly_weight_change_kg,
+    )
     return {"ok": True}
 
 
