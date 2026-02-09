@@ -15,7 +15,9 @@ struct ContentView: View {
     
     var body: some View {
         Group {
-            if authManager.isAuthenticated {
+            if authManager.forceLoginOnLaunch {
+                WelcomeView()
+            } else if authManager.isAuthenticated {
                 if authManager.hasCompletedOnboarding {
                     MainTabView(coach: appState.selectedCoach ?? Coach.allCoaches[0])
                 } else {
@@ -26,8 +28,7 @@ struct ContentView: View {
             }
         }
         .onAppear {
-            authManager.checkAuthenticationStatus()
-            refreshForUser()
+            authManager.forceShowLoginOnLaunch()
         }
         .onChange(of: authManager.currentUserId) { _, _ in
             refreshForUser()

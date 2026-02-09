@@ -20,6 +20,7 @@ class AuthenticationManager: ObservableObject {
     @Published var isLoading = false
     @Published var demoUserId: Int?
     @Published var currentUserId: Int?
+    @Published var forceLoginOnLaunch = true
 
     private let userDefaults = UserDefaults.standard
     private let supabase: SupabaseClient?
@@ -81,6 +82,7 @@ class AuthenticationManager: ObservableObject {
         authErrorMessage = nil
         demoUserId = nil
         currentUserId = nil
+        forceLoginOnLaunch = false
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -111,6 +113,7 @@ class AuthenticationManager: ObservableObject {
     func signInDemo() {
         demoUserId = 1
         currentUserId = nil
+        forceLoginOnLaunch = false
         setAuthenticated(email: "demo", onboardingCompleted: false)
     }
 
@@ -118,6 +121,7 @@ class AuthenticationManager: ObservableObject {
         authErrorMessage = nil
         demoUserId = nil
         currentUserId = nil
+        forceLoginOnLaunch = false
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -155,6 +159,21 @@ class AuthenticationManager: ObservableObject {
         hasCompletedOnboarding = false
         demoUserId = nil
         currentUserId = nil
+        forceLoginOnLaunch = true
+        userDefaults.removeObject(forKey: "hasCompletedOnboarding")
+        userDefaults.removeObject(forKey: "authToken")
+        userDefaults.removeObject(forKey: "currentUserEmail")
+        userDefaults.removeObject(forKey: "currentUserName")
+        userDefaults.removeObject(forKey: "currentUserId")
+    }
+
+    func forceShowLoginOnLaunch() {
+        isAuthenticated = false
+        hasCompletedOnboarding = false
+        demoUserId = nil
+        currentUserId = nil
+        currentUser = nil
+        forceLoginOnLaunch = true
         userDefaults.removeObject(forKey: "hasCompletedOnboarding")
         userDefaults.removeObject(forKey: "authToken")
         userDefaults.removeObject(forKey: "currentUserEmail")
@@ -174,6 +193,7 @@ class AuthenticationManager: ObservableObject {
             return
         }
 
+        forceLoginOnLaunch = false
         isLoading = true
         Task {
             do {

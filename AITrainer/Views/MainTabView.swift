@@ -10,33 +10,24 @@ struct MainTabView: View {
     var body: some View {
         TabView(selection: $selectedTab) {
             // Progress Page
-            ZStack {
-                ProgressPageView()
-                VStack {
-                    Spacer()
+            ProgressPageView()
+                .safeAreaInset(edge: .bottom) {
                     globalBottomToolbar
                 }
-            }
             .tag(0)
 
             // Trainer Page (default)
-            ZStack {
-                TrainerMainViewContent(coach: coach)
-                VStack {
-                    Spacer()
+            TrainerMainViewContent(coach: coach)
+                .safeAreaInset(edge: .bottom) {
                     globalBottomToolbar
                 }
-            }
             .tag(1)
 
             // Settings Page
-            ZStack {
-                SettingsPageView(coach: coach)
-                VStack {
-                    Spacer()
+            SettingsPageView(coach: coach)
+                .safeAreaInset(edge: .bottom) {
                     globalBottomToolbar
                 }
-            }
             .tag(2)
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
