@@ -475,7 +475,7 @@ struct ProgressPageView: View {
     }
 
     private func loadProgressData() {
-        let userId = authManager.demoUserId ?? 1
+        guard let userId = authManager.effectiveUserId else { return }
         backendConnector.loadProgress(userId: userId) { result in
             DispatchQueue.main.async {
                 switch result {
@@ -681,7 +681,7 @@ struct SettingsPageView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
-            let userId = authManager.demoUserId ?? 1
+            guard let userId = authManager.effectiveUserId else { return }
             backendConnector.loadProfile(userId: userId) { result in
                 if case .success(let response) = result {
                     profileUser = response.user

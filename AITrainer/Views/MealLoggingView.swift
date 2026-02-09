@@ -431,7 +431,7 @@ struct MealLoggingView: View {
     }
     
     func logMeal() {
-        let userId = authManager.demoUserId ?? 1
+        guard let userId = authManager.effectiveUserId else { return }
         let meal = MealEntry(
             name: mealName.isEmpty ? "Meal" : mealName,
             calories: totalCalories,

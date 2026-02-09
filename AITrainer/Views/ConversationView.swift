@@ -242,7 +242,12 @@ struct ConversationView: View {
     
     private func submitOnboarding() {
         isSubmitting = true
-        let payload = buildOnboardingPayload()
+        guard let userId = authManager.effectiveUserId else {
+            submitError = "Missing user ID. Please try again."
+            isSubmitting = false
+            return
+        }
+        let payload = buildOnboardingPayload(userId: userId)
         let userData = buildUserData(from: payload)
 
         APIService.shared.completeOnboarding(payload: payload)
@@ -256,7 +261,6 @@ struct ConversationView: View {
                 },
                 receiveValue: { response in
                     if response.ok == true {
-                        let userId = authManager.demoUserId ?? 1
                         APIService.shared.getTodayPlan(userId: userId)
                             .receive(on: DispatchQueue.main)
                             .sink(
@@ -320,7 +324,7 @@ struct ConversationView: View {
         return next
     }
     
-    private func buildOnboardingPayload() -> OnboardingCompletePayload {
+    private func buildOnboardingPayload(userId: Int) -> OnboardingCompletePayload {
         let fullName = answers["full_name"]?.trimmingCharacters(in: .whitespacesAndNewlines)
         let weightKg = parseWeightKg(from: answers["weight"])
         let heightCm = parseHeightCm(from: answers["height"])
@@ -336,7 +340,7 @@ struct ConversationView: View {
         )
         
         return OnboardingCompletePayload(
-            user_id: authManager.demoUserId,
+            user_id: userId,
             goal_type: goalType,
             target_weight_kg: targetWeightKg,
             weekly_weight_change_kg: weeklyDelta,
@@ -355,12 +359,10 @@ struct ConversationView: View {
     }
     
     private func buildUserData(from payload: OnboardingCompletePayload) -> UserData {
-        let weightLbs = payload.current_weight_kg.map { $0 * 2.20462 }
-        let heightIn = payload.height_cm.map { $0 / 2.54 }
         let ageText = payload.age.map { String($0) } ?? ""
-        let weightText = weightLbs.map { String(format: "%.0f", $0) } ?? ""
-        let heightText = heightIn.map { String(format: "%.0f", $0) } ?? ""
-        let goalWeightText = payload.target_weight_kg.map { String(format: "%.0f", $0 * 2.20462) } ?? ""
+        let weightText = payload.current_weight_kg.map { String(format: "%.0f", $0) } ?? ""
+        let heightText = payload.height_cm.map { String(format: "%.0f", $0) } ?? ""
+        let goalWeightText = payload.target_weight_kg.map { String(format: "%.0f", $0) } ?? ""
         
         let activity = payload.activity_level ?? "moderate"
         let calorieTarget = estimateCalories(

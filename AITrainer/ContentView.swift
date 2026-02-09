@@ -27,14 +27,33 @@ struct ContentView: View {
         }
         .onAppear {
             authManager.checkAuthenticationStatus()
-            backendConnector.initializeApp()
-            loadSelectedCoach()
+            refreshForUser()
+        }
+        .onChange(of: authManager.currentUserId) { _, _ in
+            refreshForUser()
+        }
+        .onChange(of: authManager.demoUserId) { _, _ in
+            refreshForUser()
+        }
+        .onChange(of: authManager.isAuthenticated) { _, _ in
+            refreshForUser()
         }
         .environmentObject(backendConnector)
     }
 
+    private func refreshForUser() {
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
+        backendConnector.initializeApp(userId: userId)
+        appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+        loadSelectedCoach()
+    }
+
     private func loadSelectedCoach() {
-        let userId = authManager.demoUserId ?? 1
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
         backendConnector.loadProfile(userId: userId) { result in
             switch result {
             case .success(let profile):

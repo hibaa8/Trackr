@@ -82,11 +82,11 @@ struct WireframeHomeDashboardView: View {
                 CommunityView()
             }
             .onChange(of: appState.selectedDate) { newDate in
-                let userId = authManager.demoUserId ?? 1
+                guard let userId = authManager.effectiveUserId else { return }
                 appState.refreshDailyData(for: newDate, userId: userId)
             }
             .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
-                let userId = authManager.demoUserId ?? 1
+                guard let userId = authManager.effectiveUserId else { return }
                 appState.refreshDailyData(for: appState.selectedDate, userId: userId)
             }
         }

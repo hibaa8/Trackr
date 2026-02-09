@@ -81,7 +81,7 @@ struct ManualMealEntryView: View {
     }
 
     private func logMeal() {
-        let userId = authManager.demoUserId ?? 1
+        guard let userId = authManager.effectiveUserId else { return }
         let safeName = mealName.trimmingCharacters(in: .whitespacesAndNewlines)
         let itemName = safeName.isEmpty ? "Manual entry" : safeName
 

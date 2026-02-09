@@ -1424,6 +1424,18 @@ def get_profile(user_id: int = 1):
     return _load_user_profile(user_id)
 
 
+@app.get("/api/user-id")
+def get_user_id(email: str):
+    """Lookup user id by email."""
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE email = ?", (email,))
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="User not found")
+    return {"user_id": row[0]}
+
+
 @app.get("/api/progress")
 def get_progress(user_id: int = 1):
     """Return progress data (checkins, plan, meals, workouts)."""

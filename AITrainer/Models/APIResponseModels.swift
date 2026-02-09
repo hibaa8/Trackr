@@ -41,6 +41,10 @@ struct DailyIntakeResponse: Codable {
     let daily_calorie_target: Int?
 }
 
+struct UserIdResponse: Decodable {
+    let user_id: Int
+}
+
 struct MealLogItemResponse: Codable {
     let name: String
     let calories: Int

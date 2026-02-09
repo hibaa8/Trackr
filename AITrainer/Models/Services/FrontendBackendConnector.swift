@@ -26,9 +26,9 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Food & Nutrition
 
-    func loadDailyIntake(for date: Date = Date()) {
+    func loadDailyIntake(for date: Date = Date(), userId: Int = 1) {
         isLoading = true
-        APIService.shared.getDailyIntake(date: date)
+        APIService.shared.getDailyIntake(date: date, userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
@@ -47,13 +47,13 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
-    func loadWeeklyCalories() {
+    func loadWeeklyCalories(userId: Int = 1) {
         let calendar = Calendar.current
 
         for dayOffset in 0..<7 {
             let date = calendar.date(byAdding: .day, value: -dayOffset, to: Date()) ?? Date()
 
-            APIService.shared.getDailyIntake(date: date)
+            APIService.shared.getDailyIntake(date: date, userId: userId)
                 .receive(on: DispatchQueue.main)
                 .sink(
                     receiveCompletion: { completion in
@@ -261,10 +261,10 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Initialize
 
-    func initializeApp() {
+    func initializeApp(userId: Int = 1) {
         print("🚀 Initializing app with backend connection...")
         checkBackendHealth()
-        loadDailyIntake()
-        loadWeeklyCalories()
+        loadDailyIntake(userId: userId)
+        loadWeeklyCalories(userId: userId)
     }
 }

@@ -37,7 +37,6 @@ class AppState: ObservableObject {
         // Start with empty meals; load from backend
         meals = []
         updateMacroTargets()
-        refreshDailyData(for: selectedDate)
     }
 
     func completeOnboarding(with data: UserData) {

@@ -35,15 +35,15 @@ struct CalorieBalanceDetailView: View {
         }
         .onAppear {
             selectedDate = appState.selectedDate
-            let userId = authManager.demoUserId ?? 1
+            guard let userId = authManager.effectiveUserId else { return }
             appState.refreshDailyData(for: selectedDate, userId: userId)
         }
         .onChange(of: selectedDate) { _, newValue in
-            let userId = authManager.demoUserId ?? 1
+            guard let userId = authManager.effectiveUserId else { return }
             appState.refreshDailyData(for: newValue, userId: userId)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
-            let userId = authManager.demoUserId ?? 1
+            guard let userId = authManager.effectiveUserId else { return }
             appState.refreshDailyData(for: selectedDate, userId: userId)
         }
         .sheet(isPresented: $showLogFood) {
