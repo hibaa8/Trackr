@@ -25,8 +25,15 @@ struct ContentView: View {
             }
         }
         .onAppear {
+            print("[ContentView] Appeared")
             authManager.checkAuthenticationStatus()
             backendConnector.initializeApp()
+        }
+        .onChange(of: authManager.hasCompletedOnboarding) { _, newValue in
+            print("[ContentView] hasCompletedOnboarding changed -> \(newValue)")
+        }
+        .onChange(of: authManager.isAuthenticated) { _, newValue in
+            print("[ContentView] isAuthenticated changed -> \(newValue)")
         }
         .environmentObject(backendConnector)
     }

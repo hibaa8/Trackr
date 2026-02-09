@@ -357,6 +357,15 @@ class APIService {
     func getProgress(userId: Int = 1) -> AnyPublisher<ProgressResponse, APIError> {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
+
+    // MARK: - Onboarding
+
+    func completeOnboarding(payload: OnboardingCompletePayload) -> AnyPublisher<OnboardingCompleteResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/onboarding/complete", method: "POST", body: jsonData)
+    }
     
     // MARK: - Helper Methods
     
@@ -373,4 +382,26 @@ class APIService {
     func clearAuthToken() {
         UserDefaults.standard.removeObject(forKey: "authToken")
     }
+}
+
+struct OnboardingCompletePayload: Codable {
+    let user_id: Int?
+    let goal_type: String?
+    let target_weight_kg: Double?
+    let weekly_weight_change_kg: Double?
+    let activity_level: String?
+    let storyline: String?
+    let trainer: String?
+    let personality: String?
+    let voice: String?
+    let timeframe_weeks: Int?
+    let current_weight_kg: Double?
+    let height_cm: Double?
+    let age: Int?
+    let fitness_background: String?
+}
+
+struct OnboardingCompleteResponse: Decodable {
+    let ok: Bool?
+    let error: String?
 }

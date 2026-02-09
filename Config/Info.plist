@@ -19,9 +19,11 @@
 	<key>SupabaseURL</key>
 	<string>https://fubkjshjbnlaqybvpnqy.supabase.co</string>
 	<key>SupabaseAnonKey</key>
-	<string>REPLACE_WITH_SUPABASE_ANON_KEY</string>
+	<string>eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImZ1Ymtqc2hqYm5sYXF5YnZwbnF5Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NjgyNjA5NDIsImV4cCI6MjA4MzgzNjk0Mn0.fFt_iUhI0UCds3nX2YxynrCq0_LhD9xmTkjVOTeYoMw</string>
 	<key>GIDClientID</key>
 	<string>741977123745-1fdbj1u0egaltl71jn0bbrl2lct1p4pt.apps.googleusercontent.com</string>
+	<key>OAuthRedirectURL</key>
+	<string>com.googleusercontent.apps.741977123745-1fdbj1u0egaltl71jn0bbrl2lct1p4pt://login-callback</string>
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>

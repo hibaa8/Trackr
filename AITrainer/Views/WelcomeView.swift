@@ -151,7 +151,7 @@ private extension WelcomeView {
 
                 if mode == .signIn {
                     AuthSecondaryButton(title: "Skip to Demo") {
-                    authManager.signIn(email: "demo", password: "demo")
+                    authManager.signInDemo()
                 }
                 }
             }

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+
+from dotenv import load_dotenv
 
 from langchain_core.messages import HumanMessage, ToolMessage
 
@@ -11,6 +14,9 @@ from agent.rag.rag import _build_rag_index
 
 
 def run_cli() -> None:
+    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+    load_dotenv(dotenv_path=os.path.join(root_dir, ".env"))
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
     graph = build_graph()
     print("Basic AI Trainer agent. Type 'exit' to quit.\n")
 

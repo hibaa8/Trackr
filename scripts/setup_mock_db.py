@@ -66,18 +66,28 @@ CREATE TABLE IF NOT EXISTS plans (
 
 CREATE TABLE IF NOT EXISTS plan_checkpoints (
     id INTEGER PRIMARY KEY,
-    plan_id INTEGER NOT NULL,
+    plan_id INTEGER,
+    template_id INTEGER,
     checkpoint_week INTEGER NOT NULL,
     expected_weight_kg REAL NOT NULL,
     min_weight_kg REAL NOT NULL,
     max_weight_kg REAL NOT NULL,
     UNIQUE (plan_id, checkpoint_week),
-    FOREIGN KEY (plan_id) REFERENCES plans (id)
+    FOREIGN KEY (plan_id) REFERENCES plans (id),
+    FOREIGN KEY (template_id) REFERENCES plan_templates (id)
 );
 
 CREATE TABLE IF NOT EXISTS plan_templates (
     id INTEGER PRIMARY KEY,
-    plan_id INTEGER NOT NULL,
+    plan_id INTEGER,
+    user_id INTEGER,
+    start_date TEXT,
+    end_date TEXT,
+    daily_calorie_target INTEGER,
+    protein_g INTEGER,
+    carbs_g INTEGER,
+    fat_g INTEGER,
+    status TEXT,
     cycle_length_days INTEGER NOT NULL,
     timezone TEXT,
     default_calories INTEGER NOT NULL,
@@ -85,7 +95,8 @@ CREATE TABLE IF NOT EXISTS plan_templates (
     default_carbs_g INTEGER NOT NULL,
     default_fat_g INTEGER NOT NULL,
     created_at TEXT NOT NULL,
-    FOREIGN KEY (plan_id) REFERENCES plans (id)
+    FOREIGN KEY (plan_id) REFERENCES plans (id),
+    FOREIGN KEY (user_id) REFERENCES users (id)
 );
 
 CREATE TABLE IF NOT EXISTS plan_template_days (
@@ -101,7 +112,8 @@ CREATE TABLE IF NOT EXISTS plan_template_days (
 
 CREATE TABLE IF NOT EXISTS plan_overrides (
     id INTEGER PRIMARY KEY,
-    plan_id INTEGER NOT NULL,
+    plan_id INTEGER,
+    template_id INTEGER,
     date TEXT NOT NULL,
     override_type TEXT NOT NULL,
     workout_json TEXT,
@@ -110,7 +122,8 @@ CREATE TABLE IF NOT EXISTS plan_overrides (
     reason TEXT,
     created_at TEXT NOT NULL,
     UNIQUE (plan_id, date),
-    FOREIGN KEY (plan_id) REFERENCES plans (id)
+    FOREIGN KEY (plan_id) REFERENCES plans (id),
+    FOREIGN KEY (template_id) REFERENCES plan_templates (id)
 );
 
 CREATE TABLE IF NOT EXISTS workout_sessions (
@@ -222,6 +235,8 @@ CREATE INDEX IF NOT EXISTS idx_plans_user_status ON plans (user_id, status);
 CREATE INDEX IF NOT EXISTS idx_plan_overrides_plan_date ON plan_overrides (plan_id, date);
 CREATE INDEX IF NOT EXISTS idx_plan_template_days_template_day ON plan_template_days (template_id, day_index);
 CREATE INDEX IF NOT EXISTS idx_plan_checkpoints_plan_week ON plan_checkpoints (plan_id, checkpoint_week);
+CREATE INDEX IF NOT EXISTS idx_plan_checkpoints_template_week ON plan_checkpoints (template_id, checkpoint_week);
+CREATE INDEX IF NOT EXISTS idx_plan_overrides_template_date ON plan_overrides (template_id, date);
 CREATE INDEX IF NOT EXISTS idx_workout_sessions_user_date ON workout_sessions (user_id, date);
 CREATE INDEX IF NOT EXISTS idx_meal_logs_user_logged_at ON meal_logs (user_id, logged_at);
 CREATE INDEX IF NOT EXISTS idx_checkins_user_date ON checkins (user_id, checkin_date);
@@ -390,15 +405,24 @@ def seed_data(conn: sqlite3.Connection) -> None:
         conn,
         """
         INSERT INTO plan_templates (
-            id, plan_id, cycle_length_days, timezone, default_calories,
-            default_protein_g, default_carbs_g, default_fat_g, created_at
+            id, plan_id, user_id, start_date, end_date, daily_calorie_target,
+            protein_g, carbs_g, fat_g, status, cycle_length_days, timezone,
+            default_calories, default_protein_g, default_carbs_g, default_fat_g, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         [
             (
                 1,
                 1,
+                1,
+                iso_date(plan_start),
+                iso_date(plan_end),
+                2200,
+                170,
+                220,
+                70,
+                "active",
                 7,
                 "America/Los_Angeles",
                 2200,
@@ -410,6 +434,14 @@ def seed_data(conn: sqlite3.Connection) -> None:
             (
                 2,
                 2,
+                2,
+                iso_date(plan_start),
+                iso_date(plan_end),
+                1900,
+                130,
+                200,
+                60,
+                "active",
                 7,
                 "America/New_York",
                 1900,

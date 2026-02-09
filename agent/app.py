@@ -136,11 +136,11 @@ def _resolve_gemini_model_name() -> str:
         models = []
     for model in models:
         name = getattr(model, "name", "")
-        if any(key in name for key in ("gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-1.5-flash", "gemini-1.5-pro")):
+        if "gemini-2.5-flash" in name:
             return name
     if models:
-        return getattr(models[0], "name", "gemini-2.5-flash-lite")
-    return "gemini-2.5-flash-lite"
+        return getattr(models[0], "name", "gemini-2.5-flash")
+    return "gemini-2.5-flash"
 
 
 def _get_gemini_model():

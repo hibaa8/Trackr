@@ -264,7 +264,7 @@ def _call_gemini_for_nutrition(image_b64: str, mime_type: str) -> dict[str, Any]
         raise RuntimeError("GEMINI_API_KEY not configured.")
     endpoint = (
         "https://generativelanguage.googleapis.com/v1beta/models/"
-        "gemini-1.5-flash:generateContent?key="
+        "gemini-2.5-flash:generateContent?key="
         f"{api_key}"
     )
     system_prompt = (
@@ -803,16 +803,18 @@ def _activate_plan_from_data(user_id: int, plan_data: dict[str, Any]) -> dict[st
     _set_active_plan_cache(user_id, cache_bundle)
     with get_db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
+        cur.execute("UPDATE plan_templates SET status = 'inactive' WHERE user_id = ?", (user_id,))
         cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
         pref_row = cur.fetchone()
         timezone = pref_row[0] if pref_row else None
+        cycle_length = min(7, len(plan_data["plan_days"]))
         cur.execute(
             """
-            INSERT INTO plans (
-                user_id, start_date, end_date, daily_calorie_target,
-                protein_g, carbs_g, fat_g, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO plan_templates (
+                user_id, start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g,
+                status, cycle_length_days, timezone, default_calories, default_protein_g,
+                default_carbs_g, default_fat_g, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -824,21 +826,6 @@ def _activate_plan_from_data(user_id: int, plan_data: dict[str, Any]) -> dict[st
                 plan_data["macros"]["carbs_g"],
                 plan_data["macros"]["fat_g"],
                 "active",
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        plan_id = cur.fetchone()[0]
-        cycle_length = min(7, len(plan_data["plan_days"]))
-        cur.execute(
-            """
-            INSERT INTO plan_templates (
-                plan_id, cycle_length_days, timezone, default_calories,
-                default_protein_g, default_carbs_g, default_fat_g, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-            """,
-            (
-                plan_id,
                 cycle_length,
                 timezone,
                 plan_data["calorie_target"],
@@ -871,11 +858,11 @@ def _activate_plan_from_data(user_id: int, plan_data: dict[str, Any]) -> dict[st
             cur.execute(
                 """
                 INSERT INTO plan_checkpoints (
-                    plan_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
+                    template_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
+                    template_id,
                     checkpoint["week"],
                     checkpoint["expected_weight_kg"],
                     checkpoint["min_weight_kg"],
@@ -1491,11 +1478,12 @@ def create_handler(agent_service: AgentService):
                 return
 
             if self.path == "/api/onboarding/complete":
-                user_id = _require_user_id(self)
                 payload = _read_json_body(self)
                 if payload is None:
                     _send_json(self, 400, {"error": "Invalid JSON payload."})
                     return
+                payload_user_id = payload.get("user_id")
+                user_id = payload_user_id if isinstance(payload_user_id, int) else _require_user_id(self)
                 _update_onboarding_preferences(user_id, payload)
                 goal_type = payload.get("goal_type")
                 timeframe_weeks = payload.get("timeframe_weeks")

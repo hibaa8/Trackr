@@ -336,6 +336,7 @@ AGENT_PROFILES: Dict[str, AgentPersona] = {
 
 AGENT_ID_ALIASES: Dict[str, str] = {
     "maya": "maria",
+    "sophia": "chloe",
     "marcus_hayes": "marcus",
     "hana_kim": "hana",
     "alex_rivera": "alex",
@@ -359,7 +360,7 @@ def _resolve_agent_id(agent_id: str | None) -> str:
 
 def _persona_block(agent_id: str | None) -> str:
     resolved = _resolve_agent_id(agent_id)
-    persona = AGENT_PROFILES.get(resolved) or AGENT_PROFILES[DEFAULT_AGENT_ID]
+    persona = AGENT_PROFILES.get(resolved) or AGENT_PROFILES.get(DEFAULT_AGENT_ID) or next(iter(AGENT_PROFILES.values()))
     quote = random.choice(persona.quotes)
     return (
         "Persona:\n"
@@ -372,8 +373,9 @@ def _persona_block(agent_id: str | None) -> str:
         f"- Intro/backstory: {persona.intro}\n"
         f"- Voice style: {persona.voice_style}\n"
         f"- Style rules: {persona.style_rules}\n"
-        f"- Signature phrases (use 0-2 per response): {', '.join(persona.signature_phrases)}\n"
+        f"- Signature phrases (use 0-2 per response, ~80% of the time): {', '.join(persona.signature_phrases)}\n"
         f"- Signature quote (use sparingly): \"{quote}\"\n"
+        "- Vary wording and avoid repeating the same signature phrase in consecutive replies.\n"
         "- Add brief, relevant personal anecdotes tied to this persona's background when it "
         "helps the user feel supported. Keep stories short (1-3 sentences) and practical.\n"
     )

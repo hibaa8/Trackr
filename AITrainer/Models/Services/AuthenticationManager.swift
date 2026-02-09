@@ -18,6 +18,7 @@ class AuthenticationManager: ObservableObject {
     @Published var currentUser: String?
     @Published var authErrorMessage: String?
     @Published var isLoading = false
+    @Published var demoUserId: Int?
 
     private let userDefaults = UserDefaults.standard
     private let supabase: SupabaseClient?
@@ -70,10 +71,7 @@ class AuthenticationManager: ObservableObject {
 
     func signIn(email: String, password: String) {
         authErrorMessage = nil
-        if email == "demo", password == "demo" {
-            setAuthenticated(email: email, onboardingCompleted: true)
-            return
-        }
+        demoUserId = nil
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -100,8 +98,14 @@ class AuthenticationManager: ObservableObject {
         }
     }
 
+    func signInDemo() {
+        demoUserId = 1
+        setAuthenticated(email: "demo", onboardingCompleted: false)
+    }
+
     func signUp(name: String, email: String, password: String) {
         authErrorMessage = nil
+        demoUserId = nil
         guard let supabase else {
             authErrorMessage = "Supabase is not configured."
             return
@@ -137,6 +141,7 @@ class AuthenticationManager: ObservableObject {
         }
         isAuthenticated = false
         hasCompletedOnboarding = false
+        demoUserId = nil
         userDefaults.removeObject(forKey: "hasCompletedOnboarding")
         userDefaults.removeObject(forKey: "authToken")
         userDefaults.removeObject(forKey: "currentUserEmail")
@@ -146,6 +151,13 @@ class AuthenticationManager: ObservableObject {
     func completeOnboarding() {
         hasCompletedOnboarding = true
         userDefaults.set(true, forKey: "hasCompletedOnboarding")
+        if userDefaults.string(forKey: "authToken") == nil {
+            userDefaults.set(UUID().uuidString, forKey: "authToken")
+        }
+        if !isAuthenticated {
+            isAuthenticated = true
+        }
+        print("[Auth] Onboarding completed. isAuthenticated=\(isAuthenticated), hasCompletedOnboarding=\(hasCompletedOnboarding)")
     }
 
     func signInWithGoogle() {

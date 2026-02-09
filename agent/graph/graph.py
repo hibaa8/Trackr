@@ -5,7 +5,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Annotated
 
 from langchain_openai import ChatOpenAI
-from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, AIMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, BaseMessage, ToolMessage, AIMessage
 from langgraph.graph import StateGraph, START, add_messages
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -14,7 +14,7 @@ from typing_extensions import TypedDict
 from agent.config.constants import CACHE_TTL_LONG, CACHE_TTL_PLAN, DEFAULT_USER_ID, _draft_plan_key
 from agent.prompts.system_prompt import DEFAULT_AGENT_ID, get_system_prompt
 from agent.rag.rag import _build_rag_index, _retrieve_rag_context, _should_apply_rag
-from state import SESSION_CACHE
+from agent.state import SESSION_CACHE
 from agent.tools.meal_tools import delete_all_meal_logs, get_meal_logs, log_meal
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.db.connection import get_db_conn
@@ -58,6 +58,7 @@ from agent.tools.workout_tools import _load_workout_sessions_draft
 
 def _system_message(agent_id: str | None) -> SystemMessage:
     return SystemMessage(content=get_system_prompt(agent_id))
+
 
 
 class AgentState(TypedDict):
@@ -139,10 +140,18 @@ def assistant(state: AgentState):
             + (f"\nReference excerpts (RAG):\n{rag_context}" if rag_context else "")
         )
     )
+    try:
+        response = llm_with_tools.invoke([_system_message(agent_id), context_msg] + state["messages"])
+    except Exception as exc:
+        return {
+            "context": context,
+            "active_plan": active_plan,
+            "messages": [AIMessage(content=f"OpenAI request failed. Try again. Details: {exc}")],
+        }
     return {
         "context": context,
         "active_plan": active_plan,
-        "messages": [llm_with_tools.invoke([_system_message(agent_id), context_msg] + state["messages"])],
+        "messages": [response],
     }
 
 
@@ -173,7 +182,7 @@ tools = [
     remove_workout_exercise,
     delete_workout_from_draft,
 ]
-llm = ChatOpenAI(model="gpt-4o", temperature=0)
+llm = ChatOpenAI(model="gpt-4o", temperature=0, max_retries=0, request_timeout=30)
 llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
 
 
@@ -230,7 +239,7 @@ def apply_plan(state: AgentState) -> AgentState:
 
     with get_db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("UPDATE plans SET status = 'inactive' WHERE user_id = ?", (user_id,))
+        cur.execute("UPDATE plan_templates SET status = 'inactive' WHERE user_id = ?", (user_id,))
         if plan_data.get("goal_type"):
             cur.execute(
                 "UPDATE user_preferences SET goal_type = ? WHERE user_id = ?",
@@ -239,12 +248,14 @@ def apply_plan(state: AgentState) -> AgentState:
         cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ?", (user_id,))
         pref_row = cur.fetchone()
         timezone = pref_row[0] if pref_row else None
+        cycle_length = min(7, len(plan_data["plan_days"]))
         cur.execute(
             """
-            INSERT INTO plans (
-                user_id, start_date, end_date, daily_calorie_target,
-                protein_g, carbs_g, fat_g, status, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            INSERT INTO plan_templates (
+                user_id, start_date, end_date, daily_calorie_target, protein_g, carbs_g, fat_g,
+                status, cycle_length_days, timezone, default_calories, default_protein_g,
+                default_carbs_g, default_fat_g, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             RETURNING id
             """,
             (
@@ -256,21 +267,6 @@ def apply_plan(state: AgentState) -> AgentState:
                 plan_data["macros"]["carbs_g"],
                 plan_data["macros"]["fat_g"],
                 "active",
-                datetime.now().isoformat(timespec="seconds"),
-            ),
-        )
-        plan_id = cur.fetchone()[0]
-        cycle_length = min(7, len(plan_data["plan_days"]))
-        cur.execute(
-            """
-            INSERT INTO plan_templates (
-                plan_id, cycle_length_days, timezone, default_calories,
-                default_protein_g, default_carbs_g, default_fat_g, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            RETURNING id
-            """,
-            (
-                plan_id,
                 cycle_length,
                 timezone,
                 plan_data["calorie_target"],
@@ -303,11 +299,11 @@ def apply_plan(state: AgentState) -> AgentState:
             cur.execute(
                 """
                 INSERT INTO plan_checkpoints (
-                    plan_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
+                    template_id, checkpoint_week, expected_weight_kg, min_weight_kg, max_weight_kg
                 ) VALUES (?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
+                    template_id,
                     checkpoint["week"],
                     checkpoint["expected_weight_kg"],
                     checkpoint["min_weight_kg"],

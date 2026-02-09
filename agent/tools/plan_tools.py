@@ -123,22 +123,24 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         plan_row = cur.fetchone()
         if not plan_row:
             return {"plan": None, "plan_days": []}
-        plan_id = plan_row[0]
-        cur.execute(queries.SELECT_PLAN_TEMPLATE, (plan_id,))
-        template_row = cur.fetchone()
-        if not template_row:
-            return {"plan": plan_row, "plan_days": []}
-        template_id = template_row[0]
-        cycle_length = template_row[1]
-        default_calories = template_row[3]
+        template_id = plan_row[0]
+        start_date = plan_row[2]
+        end_date = plan_row[3]
+        daily_calorie_target = plan_row[4]
+        protein_g = plan_row[5]
+        carbs_g = plan_row[6]
+        fat_g = plan_row[7]
+        status = plan_row[8]
+        cycle_length = plan_row[9] or 7
+        default_calories = plan_row[11] or daily_calorie_target
         default_macros = {
-            "protein_g": template_row[4],
-            "carbs_g": template_row[5],
-            "fat_g": template_row[6],
+            "protein_g": plan_row[12] or protein_g,
+            "carbs_g": plan_row[13] or carbs_g,
+            "fat_g": plan_row[14] or fat_g,
         }
         cur.execute(queries.SELECT_TEMPLATE_DAYS, (template_id,))
         template_days = {row[0]: {"workout_json": row[1], "calorie_delta": row[2]} for row in cur.fetchall()}
-        cur.execute(queries.SELECT_PLAN_OVERRIDES, (plan_id, plan_row[1], plan_row[2]))
+        cur.execute(queries.SELECT_PLAN_OVERRIDES, (template_id, start_date, end_date))
         overrides = {
             row[0]: {
                 "override_type": row[1],
@@ -149,15 +151,15 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
             for row in cur.fetchall()
         }
         plan_days = _render_plan_days(
-            start_date=plan_row[1],
-            end_date=plan_row[2],
+            start_date=start_date,
+            end_date=end_date,
             cycle_length=cycle_length,
             default_calories=default_calories,
             default_macros=default_macros,
             template_days=template_days,
             overrides=overrides,
         )
-        cur.execute(queries.SELECT_PLAN_CHECKPOINTS, (plan_id,))
+        cur.execute(queries.SELECT_PLAN_CHECKPOINTS, (template_id,))
         checkpoints = [
             {
                 "week": row[0],
@@ -169,14 +171,14 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         ]
     bundle = {
         "plan": {
-            "id": plan_row[0],
-            "start_date": plan_row[1],
-            "end_date": plan_row[2],
-            "daily_calorie_target": plan_row[3],
-            "protein_g": plan_row[4],
-            "carbs_g": plan_row[5],
-            "fat_g": plan_row[6],
-            "status": plan_row[7],
+            "id": template_id,
+            "start_date": start_date,
+            "end_date": end_date,
+            "daily_calorie_target": daily_calorie_target,
+            "protein_g": protein_g,
+            "carbs_g": carbs_g,
+            "fat_g": fat_g,
+            "status": status,
         },
         "plan_days": plan_days,
         "checkpoints": checkpoints,
@@ -238,6 +240,7 @@ def _compact_context_summary(context: Dict[str, Any], active_plan: Dict[str, Any
         "next_checkpoint": next_checkpoint,
     }
     return json.dumps(summary)
+
 
 
 def _load_active_plan_draft(user_id: int) -> Dict[str, Any]:
@@ -673,11 +676,11 @@ def shift_active_plan_end_date(
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT p.id, p.end_date, p.start_date, pref.goal_type
-            FROM plans p
-            JOIN user_preferences pref ON pref.user_id = p.user_id
-            WHERE p.user_id = ? AND p.status = 'active'
-            ORDER BY p.start_date DESC
+            SELECT t.id, t.end_date, t.start_date, pref.goal_type
+            FROM plan_templates t
+            JOIN user_preferences pref ON pref.user_id = t.user_id
+            WHERE t.user_id = ? AND t.status = 'active'
+            ORDER BY t.start_date DESC
             LIMIT 1
             """,
             (user_id,),
@@ -685,7 +688,7 @@ def shift_active_plan_end_date(
         row = cur.fetchone()
         if not row:
             return "No active plan found."
-        plan_id, end_date, start_date, goal_type = row
+        template_id, end_date, start_date, goal_type = row
         end = datetime.strptime(end_date, "%Y-%m-%d").date()
         new_end = (end + timedelta(days=days_off)).isoformat()
 
@@ -698,15 +701,15 @@ def shift_active_plan_end_date(
             calorie_delta = 100 if goal_type == "lose" else 0
 
         for day in dates:
-            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, day))
+            cur.execute("DELETE FROM plan_overrides WHERE template_id = ? AND date = ?", (template_id, day))
             cur.execute(
                 """
                 INSERT INTO plan_overrides (
-                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                    template_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
+                    template_id,
                     day,
                     "pause",
                     json.dumps({"label": "Rest day"}),
@@ -716,7 +719,7 @@ def shift_active_plan_end_date(
                 ),
             )
 
-        cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end, plan_id))
+        cur.execute("UPDATE plan_templates SET end_date = ? WHERE id = ?", (new_end, template_id))
         conn.commit()
 
     payload = {
@@ -991,7 +994,7 @@ def replace_active_plan_workouts(
         cur.execute(
             """
             SELECT id
-            FROM plans
+            FROM plan_templates
             WHERE user_id = ? AND status = 'active'
             ORDER BY start_date DESC
             LIMIT 1
@@ -1001,7 +1004,7 @@ def replace_active_plan_workouts(
         row = cur.fetchone()
         if not row:
             return "No active plan found."
-        plan_id = row[0]
+        template_id = row[0]
 
         for day in plan_days:
             if day["date"] < today or day["date"] > end_date:
@@ -1029,15 +1032,18 @@ def replace_active_plan_workouts(
                 )
 
         for override in overrides:
-            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, override["date"]))
+            cur.execute(
+                "DELETE FROM plan_overrides WHERE template_id = ? AND date = ?",
+                (template_id, override["date"]),
+            )
             cur.execute(
                 """
                 INSERT INTO plan_overrides (
-                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                    template_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
+                    template_id,
                     override["date"],
                     override["override_type"],
                     override["workout_json"],
@@ -1232,7 +1238,7 @@ def propose_plan_patch_with_llm(
         + "\n".join(day_lines)
         + f"\nStatus summary (compact): {status_block}"
     )
-    llm = ChatOpenAI(model="gpt-4o", temperature=0)
+    llm = ChatOpenAI(model="gpt-4o", temperature=0, max_retries=0, request_timeout=30)
     response = llm.invoke([SystemMessage(content=system_prompt), HumanMessage(content=human_prompt)])
     raw_content = response.content if isinstance(response.content, str) else ""
     try:
@@ -1703,23 +1709,29 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
 
     with get_db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT id FROM plans WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1", (user_id,))
+        cur.execute(
+            "SELECT id FROM plan_templates WHERE user_id = ? AND status = 'active' ORDER BY start_date DESC LIMIT 1",
+            (user_id,),
+        )
         row = cur.fetchone()
         if not row:
             return "No active plan found."
-        plan_id = row[0]
+        template_id = row[0]
         if new_end_date:
-            cur.execute("UPDATE plans SET end_date = ? WHERE id = ?", (new_end_date, plan_id))
+            cur.execute("UPDATE plan_templates SET end_date = ? WHERE id = ?", (new_end_date, template_id))
         for override in overrides:
-            cur.execute("DELETE FROM plan_overrides WHERE plan_id = ? AND date = ?", (plan_id, override["date"]))
+            cur.execute(
+                "DELETE FROM plan_overrides WHERE template_id = ? AND date = ?",
+                (template_id, override["date"]),
+            )
             cur.execute(
                 """
                 INSERT INTO plan_overrides (
-                    plan_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
+                    template_id, date, override_type, workout_json, calorie_target, calorie_delta, created_at
                 ) VALUES (?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    plan_id,
+                    template_id,
                     override.get("date"),
                     override.get("override_type", "adjust"),
                     override.get("workout_json"),
