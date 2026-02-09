@@ -116,6 +116,13 @@ struct ProgressPageView: View {
     @State private var weeklyCalories: [Int] = Array(repeating: 0, count: 7)
     @State private var progress: ProgressResponse?
     private let periods = ["Week", "Month", "Year"]
+    private let calendar = Calendar.current
+
+    private var dayKeyFormatter: DateFormatter {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter
+    }
 
     var body: some View {
         NavigationView {
@@ -387,9 +394,9 @@ struct ProgressPageView: View {
                                 ForEach(0..<7, id: \.self) { day in
                                     let dayIndex = week * 7 + day
                                     let date = calendar.date(byAdding: .day, value: dayIndex - 27, to: Date())
-                                    let dateKey = date.map { formatter.string(from: $0) }
+                                    let dateKey = date.map { dayKeyFormatter.string(from: $0) }
                                     let isWorkoutDay = dateKey.map { workoutDateKeys.contains($0) } ?? false
-                                    let isToday = dateKey == formatter.string(from: Date())
+                                    let isToday = dateKey == dayKeyFormatter.string(from: Date())
 
                                     Circle()
                                         .fill(isWorkoutDay ? Color.blue : Color.white.opacity(0.2))
@@ -471,16 +478,13 @@ struct ProgressPageView: View {
     }
 
     private func buildWeeklyCalories(from meals: [ProgressMealResponse]) -> [Int] {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        let calendar = Calendar.current
         let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
         var totals = Array(repeating: 0, count: days.count)
         for meal in meals {
             guard let loggedAt = meal.logged_at else { continue }
             let dayKey = String(loggedAt.prefix(10))
             for (idx, day) in days.enumerated() {
-                if formatter.string(from: day) == dayKey {
+                if dayKeyFormatter.string(from: day) == dayKey {
                     totals[days.count - 1 - idx] += meal.calories ?? 0
                     break
                 }
@@ -583,12 +587,9 @@ struct ProgressPageView: View {
 
     private var workoutCompletionRatio: Double {
         let workouts = progress?.workouts ?? []
-        let calendar = Calendar.current
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
         let recent = workouts.filter { workout in
             guard let dateStr = workout.date,
-                  let date = formatter.date(from: dateStr)
+                  let date = dayKeyFormatter.date(from: dateStr)
             else { return false }
             let days = calendar.dateComponents([.day], from: date, to: Date()).day ?? 0
             return days <= 6 && (workout.completed ?? false)
@@ -597,8 +598,6 @@ struct ProgressPageView: View {
     }
 
     private var workoutDateKeys: Set<String> {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
         return Set((progress?.workouts ?? []).compactMap { workout in
             guard workout.completed == true, let date = workout.date else { return nil }
             return date
@@ -606,7 +605,6 @@ struct ProgressPageView: View {
     }
 
     private func shortDayLabel(offsetFromToday: Int) -> String {
-        let calendar = Calendar.current
         guard let date = calendar.date(byAdding: .day, value: -offsetFromToday, to: Date()) else {
             return ""
         }
