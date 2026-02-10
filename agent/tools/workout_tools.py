@@ -174,6 +174,7 @@ def log_workout_session(
     exercises: Optional[List[Dict[str, Any]]] = None,
 ) -> str:
     """Log a workout session (with detailed exercises) into the draft."""
+    print(f"[log_workout_session] user_id={user_id} date={date} workout_type={workout_type} duration_min={duration_min} calories_burned={calories_burned}")
     session_date = date or datetime.now().date().isoformat()
     draft = _load_workout_sessions_draft(user_id)
     exercise_list = exercises or []

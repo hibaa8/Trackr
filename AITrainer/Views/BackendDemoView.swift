@@ -9,6 +9,7 @@ import SwiftUI
 
 struct BackendDemoView: View {
     @EnvironmentObject var backendConnector: FrontendBackendConnector
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var testMessage = "Hello AI coach, how should I start my workout today?"
 
     var body: some View {
@@ -40,7 +41,9 @@ struct BackendDemoView: View {
             .foregroundColor(.white)
         }
         .onAppear {
-            backendConnector.initializeApp()
+            if let userId = authManager.effectiveUserId {
+                backendConnector.initializeApp(userId: userId)
+            }
         }
     }
 
@@ -94,7 +97,9 @@ struct BackendDemoView: View {
             }
 
             Button("Refresh Data") {
-                backendConnector.loadDailyIntake()
+                if let userId = authManager.effectiveUserId {
+                    backendConnector.loadDailyIntake(userId: userId)
+                }
             }
             .buttonStyle(.borderedProminent)
         }
@@ -129,7 +134,9 @@ struct BackendDemoView: View {
             }
 
             Button("Load Weekly Data") {
-                backendConnector.loadWeeklyCalories()
+                if let userId = authManager.effectiveUserId {
+                    backendConnector.loadWeeklyCalories(userId: userId)
+                }
             }
             .buttonStyle(.borderedProminent)
         }
@@ -228,7 +235,9 @@ struct BackendDemoView: View {
                 .buttonStyle(.bordered)
 
                 Button("Refresh All") {
-                    backendConnector.initializeApp()
+                if let userId = authManager.effectiveUserId {
+                    backendConnector.initializeApp(userId: userId)
+                }
                 }
                 .buttonStyle(.borderedProminent)
             }
@@ -242,4 +251,5 @@ struct BackendDemoView: View {
 #Preview {
     BackendDemoView()
         .environmentObject(FrontendBackendConnector.shared)
+        .environmentObject(AuthenticationManager())
 }

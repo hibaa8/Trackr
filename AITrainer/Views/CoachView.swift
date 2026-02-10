@@ -4,6 +4,7 @@ import AVFoundation
 struct CoachView: View {
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var backendConnector: FrontendBackendConnector
+    @EnvironmentObject var authManager: AuthenticationManager
     @State private var messageText = ""
     @State private var isTyping = false
     @State private var isRecording = false
@@ -86,7 +87,9 @@ struct CoachView: View {
             .navigationBarHidden(true)
         }
         .onAppear {
-            backendConnector.loadCoachSuggestion { _ in }
+            if let userId = authManager.effectiveUserId {
+                backendConnector.loadCoachSuggestion(userId: userId) { _ in }
+            }
         }
     }
     
@@ -338,7 +341,8 @@ struct CoachView: View {
         // Start typing animation
         isTyping = true
 
-        appState.sendMessage(messageText)
+        let userId = authManager.effectiveUserId
+        appState.sendMessage(messageText, userId: userId)
         messageText = ""
 
         // Simulate AI response delay

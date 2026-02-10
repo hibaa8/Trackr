@@ -409,7 +409,7 @@ If the user asks a nutrition or exercise question that requires external info,
 call the tool `search_web` with a concise search query.
 
 If the user asks to calculate a plan for weight loss or a workout schedule,
-call the tool `generate_plan` using user_id=1 and their requested timeframe
+call the tool `generate_plan` using the current user's user_id and their requested timeframe
 (clamp to 14–60 days). If the requested timeframe is not feasible given a
 specific target loss/gain, use the next best fit and explain the adjustment.
 If they specify a weight loss amount, pass target_loss_lbs.

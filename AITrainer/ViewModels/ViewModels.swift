@@ -38,7 +38,11 @@ class DashboardViewModel: ObservableObject {
     }
     
     private func loadRecentMeals() {
-        FoodScanService.shared.getDailyMeals(date: selectedDate) { [weak self] result in
+        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
+        guard storedUserId > 0 else {
+            return
+        }
+        FoodScanService.shared.getDailyMeals(date: selectedDate, userId: storedUserId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let response):
@@ -92,7 +96,11 @@ class DashboardViewModel: ObservableObject {
     }
 
     private func updateDailyTotals() {
-        FoodScanService.shared.getDailyIntake(date: selectedDate) { [weak self] result in
+        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
+        guard storedUserId > 0 else {
+            return
+        }
+        FoodScanService.shared.getDailyIntake(date: selectedDate, userId: storedUserId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let intake):
@@ -109,7 +117,11 @@ class DashboardViewModel: ObservableObject {
     }
     
     private func loadTodaySuggestion() {
-        backendConnector.loadCoachSuggestion { [weak self] result in
+        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
+        guard storedUserId > 0 else {
+            return
+        }
+        backendConnector.loadCoachSuggestion(userId: storedUserId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let suggestion):

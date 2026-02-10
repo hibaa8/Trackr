@@ -541,7 +541,7 @@ def _derive_suggestion_from_status(payload: Dict[str, Any]) -> Optional[Dict[str
 
 class CoachChatRequest(BaseModel):
     message: str
-    user_id: int = 1
+    user_id: int
     thread_id: Optional[str] = None
     agent_id: Optional[str] = None
 

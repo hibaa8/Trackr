@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import os
 
 # BASE_DIR points to the project root (Trackr/)
 BASE_DIR = Path(__file__).resolve().parents[2]
@@ -9,7 +10,7 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = str(BASE_DIR / "data" / "ai_trainer.db")
 RAG_SOURCES_DIR = BASE_DIR / "sources"
 
-DEFAULT_USER_ID = 1
+DEFAULT_USER_ID = int(os.environ.get("DEFAULT_USER_ID", "0"))
 CACHE_TTL_LONG = 6 * 60 * 60
 CACHE_TTL_PLAN = 30 * 60
 

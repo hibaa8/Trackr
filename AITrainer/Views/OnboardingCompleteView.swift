@@ -155,6 +155,7 @@ struct ConfettiPiece: View {
 struct TrainerMainView: View {
     let coach: Coach
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
     @State private var focusChatOnOpen = false
@@ -241,10 +242,16 @@ struct TrainerMainView: View {
                 .padding(.bottom, 10)
         }
         .sheet(isPresented: $showMealLogging) {
-            MealLoggingView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .sheet(isPresented: $showManualLogging) {
-            ManualMealEntryView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .fullScreenCover(isPresented: $showPlanDetail) {
             TodayPlanDetailView()
@@ -253,11 +260,8 @@ struct TrainerMainView: View {
             CalorieBalanceDetailView()
         }
         .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
-            Button("Log by Camera") {
+            Button("Log Food") {
                 showMealLogging = true
-            }
-            Button("Log by Type") {
-                showManualLogging = true
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -546,8 +550,11 @@ struct TrainerMainView: View {
     // AppState handles daily intake refresh
 
     private func loadTodayPlan() {
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
         isLoadingPlan = true
-        APIService.shared.getTodayPlan()
+        APIService.shared.getTodayPlan(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { completion in
@@ -576,18 +583,31 @@ typealias TrainerMainViewContent = TrainerMainView
 struct VoiceActiveView: View {
     let coach: Coach
     var autoFocus: Bool = false
+<<<<<<< HEAD
     var startRecording: Bool = false
+=======
+    var initialPrompt: String? = nil
+>>>>>>> hiba-ios
     @State private var messages: [VoiceMessage] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var messageText = ""
     @State private var isLoading = false
     @State private var threadId: String?
+<<<<<<< HEAD
     @State private var selectedImage: UIImage?
     @State private var showImagePicker = false
     @State private var showImageOptions = false
     @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
+=======
+    @State private var didSendInitialPrompt = false
+    @State private var isRecording = false
+    @State private var audioRecorder: AVAudioRecorder?
+    @State private var recordingURL: URL?
+    @State private var audioErrorMessage: String?
+    @EnvironmentObject private var authManager: AuthenticationManager
+>>>>>>> hiba-ios
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
 
@@ -725,9 +745,57 @@ struct VoiceActiveView: View {
                     inputFocused = true
                 }
             }
+<<<<<<< HEAD
             if startRecording {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     startVoiceRecording()
+=======
+            if let prompt = initialPrompt, !didSendInitialPrompt {
+                didSendInitialPrompt = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    messageText = prompt
+                    sendMessage()
+                }
+            }
+        }
+    }
+
+    private func toggleRecording() {
+        if isRecording {
+            stopRecording()
+        } else {
+            startRecording()
+        }
+    }
+
+    private func startRecording() {
+        audioErrorMessage = nil
+        let session = AVAudioSession.sharedInstance()
+        session.requestRecordPermission { granted in
+            DispatchQueue.main.async {
+                guard granted else {
+                    audioErrorMessage = "Microphone permission denied."
+                    return
+                }
+                do {
+                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
+                    try session.setActive(true, options: .notifyOthersOnDeactivation)
+                    let filename = UUID().uuidString + ".m4a"
+                    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
+                    let settings: [String: Any] = [
+                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
+                        AVSampleRateKey: 44100,
+                        AVNumberOfChannelsKey: 1,
+                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
+                    ]
+                    let recorder = try AVAudioRecorder(url: url, settings: settings)
+                    recorder.record()
+                    audioRecorder = recorder
+                    recordingURL = url
+                    isRecording = true
+                } catch {
+                    audioErrorMessage = "Could not start recording."
+>>>>>>> hiba-ios
                 }
             }
         }
@@ -782,11 +850,30 @@ struct VoiceActiveView: View {
         selectedImage = nil
         isLoading = true
 
+<<<<<<< HEAD
         if let imageToUpload {
             uploadImage(imageToUpload, message: outgoingText) { _ in }
         }
 
         AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id) { result in
+=======
+        guard let userId = authManager.effectiveUserId else {
+            let errorMessage = VoiceMessage(
+                id: UUID(),
+                text: "Missing user ID. Please sign in again to log this.",
+                isFromCoach: true,
+                timestamp: Date()
+            )
+            messages.append(errorMessage)
+            return
+        }
+        AICoachService.shared.sendMessage(
+            trimmed,
+            threadId: threadId,
+            agentId: coach.id,
+            userId: userId
+        ) { result in
+>>>>>>> hiba-ios
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -801,6 +888,7 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(coachMessage)
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 case .failure:
                     let errorMessage = VoiceMessage(
                         id: UUID(),
