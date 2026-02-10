@@ -4,6 +4,7 @@ import Combine
 struct TodayPlanDetailView: View {
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var selectedDate = Date()
     @State private var isLoading = false
     @State private var dayPlan: PlanDayResponse?
@@ -26,10 +27,10 @@ struct TodayPlanDetailView: View {
                         let calorieText = plan?.calorie_target ?? 0
                         let formattedDetails = formatWorkoutDetails(workoutText)
                         planCard(
-                            title: workoutTitle(from: workoutText),
+                            title: workoutTitle(from: workoutText, date: selectedDate),
                             subtitle: calorieText > 0 ? "\(calorieText) kcal target" : "Workout",
                             details: formattedDetails.isEmpty ? ["🏋️ Workout"] : formattedDetails,
-                            primaryButton: "Start Workout"
+                            primaryButton: "Log Workout"
                         )
                     }
                     .padding(.horizontal, 20)
@@ -156,7 +157,9 @@ struct TodayPlanDetailView: View {
             }
 
             if let primaryButton = primaryButton {
-                Button(action: {}) {
+                Button(action: {
+                    showVoiceChat = true
+                }) {
                     Text(primaryButton)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
@@ -185,6 +188,7 @@ struct TodayPlanDetailView: View {
         .padding(20)
         .background(Color(red: 0.12, green: 0.12, blue: 0.12).opacity(0.85))
         .cornerRadius(16)
+        .frame(minHeight: 220)
     }
 
     private var visibleDates: [Date] {
@@ -205,9 +209,12 @@ struct TodayPlanDetailView: View {
     }
 
     private func loadSelectedPlan() {
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
         isLoading = true
         let date = selectedDate
-        APIService.shared.getTodayPlan(date: date)
+        APIService.shared.getTodayPlan(date: date, userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { completion in
@@ -224,43 +231,40 @@ struct TodayPlanDetailView: View {
             .store(in: &cancellables)
     }
 
-    private func workoutTitle(from text: String) -> String {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.isEmpty {
-            return "Today's Workout"
-        }
-        let firstLine = trimmed.split(separator: "\n").first.map(String.init) ?? trimmed
-        return firstLine.count > 40 ? "Today's Workout" : firstLine
+    private func workoutTitle(from text: String, date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "EEEE"
+        let dayLabel = formatter.string(from: date)
+        return dayLabel
     }
 
     private func formatWorkoutDetails(_ text: String) -> [String] {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
-        let rawLines = trimmed
+        var rawLines = trimmed
             .split(whereSeparator: \.isNewline)
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
+        if rawLines.count == 1 {
+            let sentenceLines = rawLines[0]
+                .split(separator: ".")
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            rawLines = sentenceLines
+            if let first = rawLines.first, first.contains(":") {
+                let parts = first.split(separator: ":", maxSplits: 1).map(String.init)
+                if parts.count == 2 {
+                    let listItems = parts[1]
+                        .split(separator: ",")
+                        .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                        .filter { !$0.isEmpty }
+                    rawLines.removeFirst()
+                    rawLines.insert(contentsOf: listItems, at: 0)
+                }
+            }
+        }
         return rawLines.map { line in
-            let lower = line.lowercased()
-            if lower.contains("warm") {
-                return "🔥 \(line)"
-            }
-            if lower.contains("mobility") || lower.contains("stretch") {
-                return "🧘 \(line)"
-            }
-            if lower.contains("cardio") || lower.contains("run") || lower.contains("bike") {
-                return "🏃 \(line)"
-            }
-            if lower.contains("strength") || lower.contains("lift") || lower.contains("squat") || lower.contains("bench") {
-                return "🏋️ \(line)"
-            }
-            if lower.contains("core") || lower.contains("abs") {
-                return "💪 \(line)"
-            }
-            if lower.contains("rest") || lower.contains("recovery") {
-                return "🛌 \(line)"
-            }
-            return "✅ \(line)"
+            "• \(line)"
         }
     }
 }
@@ -268,4 +272,5 @@ struct TodayPlanDetailView: View {
 #Preview {
     TodayPlanDetailView()
         .environmentObject(AppState())
+        .environmentObject(AuthenticationManager())
 }

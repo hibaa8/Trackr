@@ -155,6 +155,7 @@ struct ConfettiPiece: View {
 struct TrainerMainView: View {
     let coach: Coach
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
     @State private var focusChatOnOpen = false
@@ -241,10 +242,16 @@ struct TrainerMainView: View {
                 .padding(.bottom, 10)
         }
         .sheet(isPresented: $showMealLogging) {
-            MealLoggingView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .sheet(isPresented: $showManualLogging) {
-            ManualMealEntryView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .fullScreenCover(isPresented: $showPlanDetail) {
             TodayPlanDetailView()
@@ -253,11 +260,8 @@ struct TrainerMainView: View {
             CalorieBalanceDetailView()
         }
         .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
-            Button("Log by Camera") {
+            Button("Log Food") {
                 showMealLogging = true
-            }
-            Button("Log by Type") {
-                showManualLogging = true
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -546,8 +550,11 @@ struct TrainerMainView: View {
     // AppState handles daily intake refresh
 
     private func loadTodayPlan() {
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
         isLoadingPlan = true
-        APIService.shared.getTodayPlan()
+        APIService.shared.getTodayPlan(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { completion in
@@ -577,6 +584,7 @@ struct VoiceActiveView: View {
     let coach: Coach
     var autoFocus: Bool = false
     var startRecording: Bool = false
+    var initialPrompt: String? = nil
     @State private var messages: [VoiceMessage] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var messageText = ""
@@ -588,6 +596,7 @@ struct VoiceActiveView: View {
     @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
+    @State private var didSendInitialPrompt = false
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
 
@@ -730,6 +739,13 @@ struct VoiceActiveView: View {
                     startVoiceRecording()
                 }
             }
+            if let prompt = initialPrompt, !didSendInitialPrompt {
+                didSendInitialPrompt = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    messageText = prompt
+                    sendMessage()
+                }
+            }
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
@@ -749,7 +765,7 @@ struct VoiceActiveView: View {
         }
     }
 
-
+ 
     private func loadWelcomeMessage() {
         if messages.isEmpty {
             messages = [
@@ -801,6 +817,7 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(coachMessage)
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 case .failure:
                     let errorMessage = VoiceMessage(
                         id: UUID(),
