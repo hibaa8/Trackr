@@ -29,7 +29,7 @@ final class AICoachService {
         _ message: String,
         threadId: String?,
         agentId: String? = nil,
-        userId: Int = 1,
+        userId: Int? = nil,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
     ) {
         guard let url = URL(string: "\(baseURL)/coach/chat") else {
@@ -37,9 +37,15 @@ final class AICoachService {
             return
         }
 
+        let storedId = UserDefaults.standard.integer(forKey: "currentUserId")
+        let resolvedUserId = userId ?? (storedId > 0 ? storedId : nil)
+        guard let resolvedUserId else {
+            completion(.failure(URLError(.userAuthenticationRequired)))
+            return
+        }
         var payload: [String: Any] = [
             "message": message,
-            "user_id": userId,
+            "user_id": resolvedUserId,
             "thread_id": threadId as Any
         ]
         if let agentId {

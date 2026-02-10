@@ -176,6 +176,7 @@ CREATE TABLE public.users (
   weight_kg double precision,
   created_at text NOT NULL,
   age_years integer,
+  agent_name text,
   CONSTRAINT users_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.workout_sessions (

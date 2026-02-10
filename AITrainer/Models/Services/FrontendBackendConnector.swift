@@ -19,6 +19,7 @@ class FrontendBackendConnector: ObservableObject {
     @Published var progress: ProgressResponse?
     @Published var coachSuggestion: CoachSuggestionResponse?
     @Published var isLoading = false
+    private var currentUserId: Int?
 
     private var cancellables = Set<AnyCancellable>()
 
@@ -26,7 +27,7 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Food & Nutrition
 
-    func loadDailyIntake(for date: Date = Date(), userId: Int = 1) {
+    func loadDailyIntake(for date: Date = Date(), userId: Int) {
         isLoading = true
         APIService.shared.getDailyIntake(date: date, userId: userId)
             .receive(on: DispatchQueue.main)
@@ -47,7 +48,7 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
-    func loadWeeklyCalories(userId: Int = 1) {
+    func loadWeeklyCalories(userId: Int) {
         let calendar = Calendar.current
 
         for dayOffset in 0..<7 {
@@ -86,7 +87,9 @@ class FrontendBackendConnector: ObservableObject {
                 receiveValue: { savedLog in
                     print("💾 Food log saved: \(savedLog.name)")
                     // Refresh daily intake after logging food
-                    self.loadDailyIntake()
+                    if let userId = self.currentUserId {
+                        self.loadDailyIntake(userId: userId)
+                    }
                 }
             )
             .store(in: &cancellables)
@@ -98,7 +101,13 @@ class FrontendBackendConnector: ObservableObject {
         isLoading = true
         coachResponse = ""
 
-        APIService.shared.sendCoachingMessage(message)
+        guard let userId = currentUserId else {
+            isLoading = false
+            coachResponse = "Missing user session. Please sign in again."
+            return
+        }
+
+        APIService.shared.sendCoachingMessage(message, userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
@@ -120,7 +129,7 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Coach Suggestion
 
-    func loadCoachSuggestion(userId: Int = 1, completion: @escaping (Result<CoachSuggestionResponse?, Error>) -> Void) {
+    func loadCoachSuggestion(userId: Int, completion: @escaping (Result<CoachSuggestionResponse?, Error>) -> Void) {
         APIService.shared.getCoachSuggestion(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
@@ -140,7 +149,11 @@ class FrontendBackendConnector: ObservableObject {
     // MARK: - Recipes
 
     func suggestRecipes(completion: @escaping (Result<[RecipeSuggestionItem], Error>) -> Void) {
-        APIService.shared.suggestRecipes()
+        guard let userId = currentUserId else {
+            completion(.failure(URLError(.userAuthenticationRequired)))
+            return
+        }
+        APIService.shared.suggestRecipes(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { result in
@@ -209,7 +222,7 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Profile & Progress
 
-    func loadProfile(userId: Int = 1, completion: @escaping (Result<ProfileResponse, Error>) -> Void) {
+    func loadProfile(userId: Int, completion: @escaping (Result<ProfileResponse, Error>) -> Void) {
         APIService.shared.getProfile(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
@@ -226,7 +239,7 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
-    func loadProgress(userId: Int = 1, completion: @escaping (Result<ProgressResponse, Error>) -> Void) {
+    func loadProgress(userId: Int, completion: @escaping (Result<ProgressResponse, Error>) -> Void) {
         APIService.shared.getProgress(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
@@ -261,9 +274,10 @@ class FrontendBackendConnector: ObservableObject {
 
     // MARK: - Initialize
 
-    func initializeApp(userId: Int = 1) {
+    func initializeApp(userId: Int) {
         print("🚀 Initializing app with backend connection...")
         checkBackendHealth()
+        currentUserId = userId
         loadDailyIntake(userId: userId)
         loadWeeklyCalories(userId: userId)
     }

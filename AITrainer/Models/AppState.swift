@@ -58,7 +58,7 @@ class AppState: ObservableObject {
         ]
     }
 
-    func logMeal(_ meal: MealEntry, userId: Int = 1) {
+    func logMeal(_ meal: MealEntry, userId: Int) {
         meals.insert(meal, at: 0)
         caloriesIn += meal.calories
         proteinCurrent += meal.protein
@@ -67,7 +67,7 @@ class AppState: ObservableObject {
         refreshDailyData(for: selectedDate, userId: userId)
     }
 
-    func refreshDailyData(for date: Date, userId: Int = 1) {
+    func refreshDailyData(for date: Date, userId: Int) {
         FoodScanService.shared.getDailyIntake(date: date, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
@@ -118,7 +118,7 @@ class AppState: ObservableObject {
         fatsTarget = Int((Double(calorieTarget) * 0.30) / 9.0)
     }
 
-    func sendMessage(_ text: String) {
+    func sendMessage(_ text: String, userId: Int? = nil) {
         let userMessage = WireframeChatMessage(text: text, isFromUser: true, timestamp: Date())
         chatMessages.append(userMessage)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -130,7 +130,8 @@ class AppState: ObservableObject {
         AICoachService.shared.sendMessage(
             trimmed,
             threadId: coachThreadId,
-            agentId: selectedCoach?.id
+            agentId: selectedCoach?.id,
+            userId: userId
         ) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
@@ -138,6 +139,7 @@ class AppState: ObservableObject {
                     self?.coachThreadId = response.thread_id
                     let replyText = response.reply.isEmpty ? "How can I help you further?" : response.reply
                     self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
 
                     if response.requires_feedback {
                         if let planText = response.plan_text, !planText.isEmpty {

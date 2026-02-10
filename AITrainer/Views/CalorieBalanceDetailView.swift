@@ -47,10 +47,13 @@ struct CalorieBalanceDetailView: View {
             appState.refreshDailyData(for: selectedDate, userId: userId)
         }
         .sheet(isPresented: $showLogFood) {
-            MealLoggingView()
+            VoiceActiveView(
+                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: Coach.allCoaches[0])
+            VoiceActiveView(coach: appState.selectedCoach ?? Coach.allCoaches[0])
         }
     }
 

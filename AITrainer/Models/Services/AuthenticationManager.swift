@@ -101,7 +101,10 @@ class AuthenticationManager: ObservableObject {
                     return
                 }
                 setAuthenticated(email: record.email, onboardingCompleted: true)
-                resolveAndStoreUserId(email: record.email)
+                setCurrentUserId(record.id)
+                if currentUserId == nil {
+                    resolveAndStoreUserId(email: record.email)
+                }
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -111,7 +114,12 @@ class AuthenticationManager: ObservableObject {
     }
 
     func signInDemo() {
-        demoUserId = 1
+        let storedDemoId = UserDefaults.standard.integer(forKey: "demoUserId")
+        guard storedDemoId > 0 else {
+            authErrorMessage = "No demo user configured. Please sign in."
+            return
+        }
+        demoUserId = storedDemoId
         currentUserId = nil
         forceLoginOnLaunch = false
         setAuthenticated(email: "demo", onboardingCompleted: false)
@@ -142,7 +150,11 @@ class AuthenticationManager: ObservableObject {
                 )
                 _ = try await supabase.from("users").insert(insert).execute()
                 setAuthenticated(email: email, onboardingCompleted: false)
-                resolveAndStoreUserId(email: email)
+                if let record = try await fetchUserRecord(email: email) {
+                    setCurrentUserId(record.id)
+                } else {
+                    resolveAndStoreUserId(email: email)
+                }
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -228,7 +240,11 @@ class AuthenticationManager: ObservableObject {
                 } else {
                     setAuthenticated(email: email, onboardingCompleted: true)
                 }
-                resolveAndStoreUserId(email: email)
+                if let record = try await fetchUserRecord(email: email) {
+                    setCurrentUserId(record.id)
+                } else {
+                    resolveAndStoreUserId(email: email)
+                }
                 userDefaults.set(name, forKey: "currentUserName")
                 isLoading = false
             } catch {
@@ -263,11 +279,16 @@ class AuthenticationManager: ObservableObject {
             .sink(
                 receiveCompletion: { _ in },
                 receiveValue: { [weak self] response in
-                    self?.currentUserId = response.user_id
-                    self?.userDefaults.set(response.user_id, forKey: "currentUserId")
+                    self?.setCurrentUserId(response.user_id)
                 }
             )
             .store(in: &cancellables)
+    }
+
+    private func setCurrentUserId(_ id: Int?) {
+        guard let id else { return }
+        currentUserId = id
+        userDefaults.set(id, forKey: "currentUserId")
     }
 
     private func clearSupabaseSessionIfNeeded() async {

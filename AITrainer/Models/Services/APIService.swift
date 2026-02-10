@@ -147,14 +147,14 @@ class APIService {
         return request(endpoint: "/food/logs", method: "POST", body: jsonData)
     }
 
-    func getFoodLogs(date: Date, userId: Int = 1) -> AnyPublisher<DailyMealLogsResponse, APIError> {
+    func getFoodLogs(date: Date, userId: Int) -> AnyPublisher<DailyMealLogsResponse, APIError> {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
         return request(endpoint: "/food/logs?day=\(dateString)&user_id=\(userId)")
     }
 
-    func getDailyIntake(date: Date, userId: Int = 1) -> AnyPublisher<DailyIntakeResponse, APIError> {
+    func getDailyIntake(date: Date, userId: Int) -> AnyPublisher<DailyIntakeResponse, APIError> {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
@@ -189,7 +189,7 @@ class APIService {
 
     // MARK: - Plans
 
-    func getTodayPlan(date: Date = Date(), userId: Int = 1) -> AnyPublisher<PlanDayResponse, APIError> {
+    func getTodayPlan(date: Date = Date(), userId: Int) -> AnyPublisher<PlanDayResponse, APIError> {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
@@ -220,7 +220,7 @@ class APIService {
         return request(endpoint: "/ai/suggestions/\(suggestionId.uuidString)", method: "PATCH", body: jsonData)
     }
     
-    func sendCoachingMessage(_ message: String, userId: Int = 1) -> AnyPublisher<CoachChatResponse, APIError> {
+    func sendCoachingMessage(_ message: String, userId: Int) -> AnyPublisher<CoachChatResponse, APIError> {
         struct ChatRequest: Codable {
             let message: String
             let user_id: Int
@@ -234,7 +234,7 @@ class APIService {
         return request(endpoint: "/coach/chat", method: "POST", body: jsonData)
     }
 
-    func getCoachSuggestion(userId: Int = 1) -> AnyPublisher<CoachSuggestionEnvelope, APIError> {
+    func getCoachSuggestion(userId: Int) -> AnyPublisher<CoachSuggestionEnvelope, APIError> {
         return request(endpoint: "/api/coach-suggestion?user_id=\(userId)")
     }
 
@@ -302,7 +302,7 @@ class APIService {
         cuisine: String? = nil,
         flavor: String? = nil,
         dietary: [String] = [],
-        userId: Int = 1
+        userId: Int
     ) -> AnyPublisher<RecipeSuggestionResponse, APIError> {
         struct RecipeSuggestRequest: Codable {
             let user_id: Int
@@ -355,11 +355,11 @@ class APIService {
         return request(endpoint: "/users/profile")
     }
 
-    func getProfile(userId: Int = 1) -> AnyPublisher<ProfileResponse, APIError> {
+    func getProfile(userId: Int) -> AnyPublisher<ProfileResponse, APIError> {
         return request(endpoint: "/api/profile?user_id=\(userId)")
     }
 
-    func getProgress(userId: Int = 1) -> AnyPublisher<ProgressResponse, APIError> {
+    func getProgress(userId: Int) -> AnyPublisher<ProgressResponse, APIError> {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 

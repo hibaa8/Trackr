@@ -54,7 +54,7 @@ final class FoodScanService {
 
     func logMeal(
         _ payload: FoodScanResponse,
-        userId: Int = 1,
+        userId: Int,
         nameOverride: String?,
         completion: @escaping (Result<Void, Error>) -> Void
     ) {
@@ -104,7 +104,7 @@ final class FoodScanService {
         }.resume()
     }
 
-    func getDailyIntake(date: Date, userId: Int = 1, completion: @escaping (Result<DailyIntakeResponse, Error>) -> Void) {
+    func getDailyIntake(date: Date, userId: Int, completion: @escaping (Result<DailyIntakeResponse, Error>) -> Void) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
@@ -133,7 +133,7 @@ final class FoodScanService {
         }.resume()
     }
 
-    func getDailyMeals(date: Date, userId: Int = 1, completion: @escaping (Result<DailyMealLogsResponse, Error>) -> Void) {
+    func getDailyMeals(date: Date, userId: Int, completion: @escaping (Result<DailyMealLogsResponse, Error>) -> Void) {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)

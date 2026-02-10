@@ -184,6 +184,77 @@ tools = [
 ]
 llm = ChatOpenAI(model="gpt-4o", temperature=0, max_retries=0, request_timeout=30)
 llm_with_tools = llm.bind_tools(tools, parallel_tool_calls=False)
+_tool_node = ToolNode(tools)
+_USER_SCOPED_TOOL_NAMES = {
+    "get_current_plan_summary",
+    "get_plan_day",
+    "generate_plan",
+    "shift_active_plan_end_date",
+    "replace_active_plan_workouts",
+    "get_weight_checkpoint_for_current_week",
+    "compute_plan_status",
+    "apply_plan_patch",
+    "propose_plan_corrections",
+    "propose_plan_patch_with_llm",
+    "get_reminders",
+    "add_reminder",
+    "update_reminder",
+    "delete_reminder",
+    "log_checkin",
+    "delete_checkin",
+    "log_meal",
+    "get_meal_logs",
+    "delete_all_meal_logs",
+    "log_workout_session",
+    "get_workout_sessions",
+    "remove_workout_exercise",
+    "delete_workout_from_draft",
+}
+
+
+def execute_tools(state: AgentState) -> Dict[str, Any]:
+    """Enforce active session user_id on all user-scoped tool calls."""
+    user_id = state.get("user_id")
+    if not user_id:
+        return {"messages": [AIMessage(content="Missing user_id for tool execution.")]}
+
+    messages = list(state.get("messages", []))
+    if not messages or not isinstance(messages[-1], AIMessage):
+        return _tool_node.invoke(state)
+
+    last_ai = messages[-1]
+    tool_calls = last_ai.tool_calls or []
+    if not tool_calls:
+        return _tool_node.invoke(state)
+
+    rewritten = False
+    patched_calls = []
+    for call in tool_calls:
+        if not isinstance(call, dict):
+            patched_calls.append(call)
+            continue
+        name = call.get("name")
+        args = call.get("args")
+        if name in _USER_SCOPED_TOOL_NAMES:
+            if not isinstance(args, dict):
+                args = {}
+            if args.get("user_id") != user_id:
+                args = {**args, "user_id": user_id}
+                rewritten = True
+            call = {**call, "args": args}
+        patched_calls.append(call)
+
+    if rewritten:
+        try:
+            patched_ai = last_ai.model_copy(update={"tool_calls": patched_calls})
+        except Exception:
+            patched_ai = AIMessage(content=last_ai.content, tool_calls=patched_calls)
+        messages[-1] = patched_ai
+        patched_state = dict(state)
+        patched_state["messages"] = messages
+        return _tool_node.invoke(patched_state)
+
+    return _tool_node.invoke(state)
 
 
 def _last_tool_name(state: AgentState) -> Optional[str]:
@@ -325,7 +396,7 @@ def apply_plan(state: AgentState) -> AgentState:
 def build_graph() -> StateGraph:
     builder = StateGraph(AgentState)
     builder.add_node("assistant", assistant)
-    builder.add_node("tools", ToolNode(tools))
+    builder.add_node("tools", execute_tools)
     builder.add_node("human_feedback", human_feedback)
     builder.add_node("apply_plan", apply_plan)
 

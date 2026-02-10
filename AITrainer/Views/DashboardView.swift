@@ -227,6 +227,9 @@ struct MacroEmojiLabel: View {
 
 struct AddMenuView: View {
     @Environment(\.dismiss) var dismiss
+    @EnvironmentObject private var appState: AppState
+    @State private var showVoiceChat = false
+    @State private var voicePrompt = ""
     
     var body: some View {
         NavigationView {
@@ -239,7 +242,8 @@ struct AddMenuView: View {
                 }
                 
                 Button(action: {
-                    // Navigate to workout logger
+                    voicePrompt = "I want to log a workout. Please ask me for the workout type, duration for cardio, RPE, weight, sets, reps, and any other details needed to calculate calories burned, then log it."
+                    showVoiceChat = true
                     dismiss()
                 }) {
                     Label("Log Workout", systemImage: "figure.strengthtraining.traditional")
@@ -268,6 +272,12 @@ struct AddMenuView: View {
                     }
                 }
             }
+        }
+        .sheet(isPresented: $showVoiceChat) {
+            VoiceActiveView(
+                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                initialPrompt: voicePrompt
+            )
         }
     }
 }

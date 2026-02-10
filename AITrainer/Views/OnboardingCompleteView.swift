@@ -155,6 +155,7 @@ struct ConfettiPiece: View {
 struct TrainerMainView: View {
     let coach: Coach
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
     @State private var focusChatOnOpen = false
@@ -237,10 +238,16 @@ struct TrainerMainView: View {
             VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
         }
         .sheet(isPresented: $showMealLogging) {
-            MealLoggingView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .sheet(isPresented: $showManualLogging) {
-            ManualMealEntryView()
+            VoiceActiveView(
+                coach: coach,
+                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+            )
         }
         .fullScreenCover(isPresented: $showPlanDetail) {
             TodayPlanDetailView()
@@ -249,11 +256,8 @@ struct TrainerMainView: View {
             CalorieBalanceDetailView()
         }
         .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
-            Button("Log by Camera") {
+            Button("Log Food") {
                 showMealLogging = true
-            }
-            Button("Log by Type") {
-                showManualLogging = true
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -552,8 +556,11 @@ struct TrainerMainView: View {
     // AppState handles daily intake refresh
 
     private func loadTodayPlan() {
+        guard let userId = authManager.effectiveUserId else {
+            return
+        }
         isLoadingPlan = true
-        APIService.shared.getTodayPlan()
+        APIService.shared.getTodayPlan(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { completion in
@@ -582,15 +589,18 @@ typealias TrainerMainViewContent = TrainerMainView
 struct VoiceActiveView: View {
     let coach: Coach
     var autoFocus: Bool = false
+    var initialPrompt: String? = nil
     @State private var messages: [VoiceMessage] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var messageText = ""
     @State private var isLoading = false
     @State private var threadId: String?
+    @State private var didSendInitialPrompt = false
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
     @State private var recordingURL: URL?
     @State private var audioErrorMessage: String?
+    @EnvironmentObject private var authManager: AuthenticationManager
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
 
@@ -683,6 +693,13 @@ struct VoiceActiveView: View {
             if autoFocus {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                     inputFocused = true
+                }
+            }
+            if let prompt = initialPrompt, !didSendInitialPrompt {
+                didSendInitialPrompt = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                    messageText = prompt
+                    sendMessage()
                 }
             }
         }
@@ -786,7 +803,22 @@ struct VoiceActiveView: View {
         messageText = ""
         isLoading = true
 
-        AICoachService.shared.sendMessage(trimmed, threadId: threadId, agentId: coach.id) { result in
+        guard let userId = authManager.effectiveUserId else {
+            let errorMessage = VoiceMessage(
+                id: UUID(),
+                text: "Missing user ID. Please sign in again to log this.",
+                isFromCoach: true,
+                timestamp: Date()
+            )
+            messages.append(errorMessage)
+            return
+        }
+        AICoachService.shared.sendMessage(
+            trimmed,
+            threadId: threadId,
+            agentId: coach.id,
+            userId: userId
+        ) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -800,6 +832,7 @@ struct VoiceActiveView: View {
                         timestamp: Date()
                     )
                     self.messages.append(coachMessage)
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 case .failure:
                     let errorMessage = VoiceMessage(
                         id: UUID(),
