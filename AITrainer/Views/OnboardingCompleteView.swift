@@ -641,6 +641,9 @@ struct VoiceActiveView: View {
                         ForEach(messages) { message in
                             VoiceMessageBubble(message: message, coach: coach)
                         }
+                        if isLoading {
+                            VoiceTypingDots()
+                        }
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
@@ -962,6 +965,36 @@ struct VoiceMessageBubble: View {
             return nil
         }
         return Image(uiImage: uiImage)
+    }
+}
+
+private struct VoiceTypingDots: View {
+    @State private var phase = 0
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 6) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.white.opacity(0.75))
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(phase == index ? 1.25 : 0.9)
+                        .opacity(phase == index ? 1.0 : 0.45)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.16))
+            .clipShape(Capsule())
+            Spacer()
+        }
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    phase = (phase + 1) % 3
+                }
+            }
+        }
     }
 }
 

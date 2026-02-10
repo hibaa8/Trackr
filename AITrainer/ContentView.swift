@@ -11,7 +11,6 @@ struct ContentView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @EnvironmentObject var appState: AppState
     @StateObject private var backendConnector = FrontendBackendConnector.shared
-    @State private var showOnboarding = false
     
     var body: some View {
         Group {
@@ -46,29 +45,20 @@ struct ContentView: View {
         guard let userId = authManager.effectiveUserId else {
             return
         }
+
         backendConnector.initializeApp(userId: userId)
         appState.refreshDailyData(for: appState.selectedDate, userId: userId)
-        loadSelectedCoach()
-    }
-
-    private func loadSelectedCoach() {
-        guard let userId = authManager.effectiveUserId else {
-            return
-        }
         backendConnector.loadProfile(userId: userId) { result in
-            switch result {
-            case .success(let profile):
-                if let agentName = profile.user?.agent_name {
-                    if let coach = Coach.allCoaches.first(where: { $0.name.lowercased() == agentName.lowercased() }) {
-                        DispatchQueue.main.async {
-                            appState.setSelectedCoach(coach)
-                        }
+            if case .success(let profile) = result {
+                if let agentName = profile.user?.agent_name,
+                   let coach = Coach.allCoaches.first(where: { $0.name.lowercased() == agentName.lowercased() }) {
+                    DispatchQueue.main.async {
+                    appState.setSelectedCoach(coach)
                     }
                 }
-            case .failure:
-                break
             }
         }
+        backendConnector.loadProgress(userId: userId) { _ in }
     }
 }
 
