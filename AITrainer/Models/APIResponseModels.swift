@@ -196,6 +196,18 @@ struct CoachSuggestionEnvelope: Codable {
     let suggestion: CoachSuggestionResponse?
 }
 
+struct GamificationResponse: Codable {
+    let points: Int
+    let level: Int
+    let next_level_points: Int
+    let streak_days: Int
+    let best_streak_days: Int
+    let freeze_streaks: Int
+    let unlocked_freeze_streaks: Int
+    let used_freeze_streaks: Int
+    let share_text: String
+}
+
 enum JSONValue: Codable {
     case string(String)
     case number(Double)

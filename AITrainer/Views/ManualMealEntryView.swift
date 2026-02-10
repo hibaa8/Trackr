@@ -114,6 +114,7 @@ struct ManualMealEntryView: View {
                 switch result {
                 case .success:
                     self.appState.refreshDailyData(for: self.appState.selectedDate, userId: userId)
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                     self.dismiss()
                 case .failure:
                     self.errorMessage = "Could not log your meal. Please try again."
