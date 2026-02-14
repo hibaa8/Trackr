@@ -25,4 +25,3 @@ google-api-python-client
 google-generativeai
 pillow
 python-multipart
-

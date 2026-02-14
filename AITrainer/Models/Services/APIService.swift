@@ -367,6 +367,13 @@ class APIService {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
     }
 
+    func getSessionHydration(userId: Int, date: Date = Date()) -> AnyPublisher<SessionHydrationResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/api/session/hydrate?user_id=\(userId)&day=\(dateString)")
+    }
+
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
         struct UseFreezePayload: Codable {
             let user_id: Int

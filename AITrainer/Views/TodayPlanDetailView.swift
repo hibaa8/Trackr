@@ -51,6 +51,9 @@ struct TodayPlanDetailView: View {
         .onChange(of: selectedDate) { newValue in
             loadSelectedPlan()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            loadSelectedPlan()
+        }
         .sheet(isPresented: $showLogFood) {
             VoiceActiveView(
                 coach: appState.selectedCoach ?? Coach.allCoaches[0],

@@ -5,10 +5,13 @@ AI Trainer unified backend (videos, gyms, coach).
 """
 
 import base64
+import hashlib
 import io
 import os
 import re
-import sqlite3
+import hashlib
+import hmac
+import secrets
 import ssl
 import sys
 import time
@@ -39,9 +42,8 @@ from PIL import Image
 from pydantic import BaseModel
 
 from agent.state import SESSION_CACHE
-from agent.redis.cache import _redis_set_json
+from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 
-from config.constants import DB_PATH
 from agent.db.connection import get_db_conn
 from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
@@ -325,8 +327,40 @@ def _extract_og_image(url: str) -> Optional[str]:
 
 
 def _store_meal_log(payload: FoodLogRequest) -> None:
+    def _idempotency_key() -> str:
+        if payload.idempotency_key and payload.idempotency_key.strip():
+            return payload.idempotency_key.strip()
+        item_payload = [
+            {
+                "name": item.name,
+                "amount": item.amount,
+                "calories": item.calories,
+                "protein_g": item.protein_g,
+                "carbs_g": item.carbs_g,
+                "fat_g": item.fat_g,
+            }
+            for item in payload.items
+        ]
+        normalized = {
+            "food_name": payload.food_name,
+            "total_calories": payload.total_calories,
+            "protein_g": payload.protein_g,
+            "carbs_g": payload.carbs_g,
+            "fat_g": payload.fat_g,
+            "items": item_payload,
+            "logged_at": payload.logged_at or "",
+        }
+        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode("utf-8")).hexdigest()
+        return f"auto:{digest}"
+
     logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
     description = payload.food_name
+    day_key = logged_at[:10]
+    idem_key = _idempotency_key()
+    idem_cache_key = f"idem:api:meal:{payload.user_id}:{idem_key}"
+    cached = _redis_get_json(idem_cache_key)
+    if isinstance(cached, dict) and cached.get("ok"):
+        return
     with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -350,8 +384,82 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             ),
         )
         conn.commit()
+    _redis_delete(f"user:{payload.user_id}:meal_logs")
+    _redis_delete(f"daily_intake:{payload.user_id}:{day_key}")
     _award_points(payload.user_id, 5, f"meal_log:{logged_at}")
     _maybe_award_daily_calorie_target_bonus(payload.user_id, logged_at[:10])
+    _redis_set_json(idem_cache_key, {"ok": True}, ttl_seconds=600)
+
+
+def _ensure_auth_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'password_hash'
+            """
+        )
+        has_password_hash = cur.fetchone() is not None
+        if not has_password_hash:
+            cur.execute("ALTER TABLE users ADD COLUMN password_hash TEXT NULL")
+            conn.commit()
+
+
+def _hash_password(password: str) -> str:
+    salt = secrets.token_hex(16)
+    iterations = 150000
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), bytes.fromhex(salt), iterations).hex()
+    return f"pbkdf2_sha256${iterations}${salt}${digest}"
+
+
+def _verify_password(password: str, stored: Optional[str]) -> bool:
+    if not stored:
+        return False
+    if stored.startswith("seeded$"):
+        expected = "seeded$" + hashlib.sha256(password.encode("utf-8")).hexdigest()
+        return hmac.compare_digest(expected, stored)
+    try:
+        algo, iter_text, salt_hex, digest_hex = stored.split("$", 3)
+        if algo != "pbkdf2_sha256":
+            return False
+        iterations = int(iter_text)
+        actual = hashlib.pbkdf2_hmac(
+            "sha256",
+            password.encode("utf-8"),
+            bytes.fromhex(salt_hex),
+            iterations,
+        ).hex()
+        return hmac.compare_digest(actual, digest_hex)
+    except Exception:
+        return False
+
+
+def _onboarding_completed_from_row(row: tuple) -> bool:
+    # row: id, email, name, password_hash, height_cm, weight_kg, age_years, agent_name
+    return bool(row[4] is not None and row[5] is not None and row[6] is not None and row[7] is not None)
+
+
+def _coerce_to_date(value: Any) -> Optional[date]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value)
+    for fmt in ("%Y-%m-%d", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(text, fmt).date()
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(text).date()
+    except ValueError:
+        return None
 
 
 def _award_points(user_id: int, points: int, reason: str) -> None:
@@ -453,10 +561,7 @@ def _update_login_streak(user_id: int) -> Dict[str, int]:
             return {"current_count": 1, "best_count": 1, "last_date": today_str}
 
         streak_id, current_count, best_count, last_date = row
-        try:
-            last_dt = datetime.strptime(last_date, "%Y-%m-%d").date() if last_date else None
-        except ValueError:
-            last_dt = None
+        last_dt = _coerce_to_date(last_date)
         today_dt = date.today()
 
         if last_dt == today_dt:
@@ -485,9 +590,9 @@ def _maybe_award_biweekly_target_bonus(user_id: int) -> None:
         plan = bundle.get("plan")
         plan_start: Optional[date] = None
         if isinstance(plan, dict) and plan.get("start_date"):
-            plan_start = datetime.strptime(str(plan.get("start_date")), "%Y-%m-%d").date()
+            plan_start = _coerce_to_date(plan.get("start_date"))
         elif isinstance(plan, tuple) and len(plan) >= 2 and plan[1]:
-            plan_start = datetime.strptime(str(plan[1]), "%Y-%m-%d").date()
+            plan_start = _coerce_to_date(plan[1])
         if plan_start is None:
             return
         today_dt = date.today()
@@ -574,7 +679,6 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
         }
 
     try:
-        from db.connection import get_db_conn
         from db import queries
 
         with get_db_conn() as conn:
@@ -583,31 +687,8 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             user_row = cur.fetchone()
             cur.execute(queries.SELECT_USER_PREFS, (user_id,))
             pref_row = cur.fetchone()
-        if user_row or pref_row:
-            return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
-    except Exception:
-        pass
-
-    try:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT id, name, birthdate, height_cm, weight_kg, gender FROM users WHERE id = ?",
-                (user_id,),
-            )
-            user_row = cur.fetchone()
-            cur.execute(
-                """
-                SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
-                       dietary_preferences, workout_preferences, timezone, created_at
-                FROM user_preferences
-                WHERE user_id = ?
-                """,
-                (user_id,),
-            )
-            pref_row = cur.fetchone()
         return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
-    except sqlite3.Error:
+    except Exception:
         return {"user": None, "preferences": None}
 
 
@@ -766,7 +847,7 @@ class FoodScanResponse(BaseModel):
 
 
 class FoodLogRequest(BaseModel):
-    user_id: int = 1
+    user_id: int
     food_name: str
     total_calories: int
     protein_g: float
@@ -774,6 +855,7 @@ class FoodLogRequest(BaseModel):
     fat_g: float
     items: List[FoodScanItem]
     logged_at: Optional[str] = None
+    idempotency_key: Optional[str] = None
 
 
 class DailyIntakeResponse(BaseModel):
@@ -800,6 +882,35 @@ class DailyMealLogsResponse(BaseModel):
     meals: List[MealLogItem]
 
 
+class SessionHydrationResponse(BaseModel):
+    user_id: int
+    date: str
+    profile: Dict[str, Any]
+    progress: Dict[str, Any]
+    today_plan: Optional[PlanDayResponse] = None
+    daily_intake: DailyIntakeResponse
+    gamification: GamificationResponse
+    coach_suggestion: Optional[Dict[str, Any]] = None
+
+
+class AuthSignInRequest(BaseModel):
+    email: str
+    password: str
+
+
+class AuthSignUpRequest(BaseModel):
+    email: str
+    password: str
+    name: Optional[str] = None
+
+
+class AuthResponse(BaseModel):
+    user_id: int
+    email: str
+    name: str
+    onboarding_completed: bool
+
+
 class PlanDayResponse(BaseModel):
     date: str
     workout_plan: str
@@ -811,7 +922,7 @@ class PlanDayResponse(BaseModel):
 
 
 class RecipeSuggestRequest(BaseModel):
-    user_id: int = 1
+    user_id: int
     ingredients: str = ""
     cuisine: Optional[str] = None
     flavor: Optional[str] = None
@@ -1242,6 +1353,69 @@ def coach_health_check():
     return {"status": "healthy", "service": "ai-coach"}
 
 
+@app.post("/auth/signup", response_model=AuthResponse)
+def auth_signup(payload: AuthSignUpRequest):
+    _ensure_auth_schema()
+    email = (payload.email or "").strip().lower()
+    password = payload.password or ""
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+    if len(password) < 6:
+        raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE email = ? LIMIT 1", (email,))
+        if cur.fetchone() is not None:
+            raise HTTPException(status_code=409, detail="Email already exists")
+        name = (payload.name or "New User").strip() or "New User"
+        password_hash = _hash_password(password)
+        created_at = datetime.now().isoformat(timespec="seconds")
+        cur.execute(
+            """
+            INSERT INTO users (email, password_hash, name, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (email, password_hash, name, created_at),
+        )
+        cur.execute("SELECT id FROM users WHERE email = ? LIMIT 1", (email,))
+        row = cur.fetchone()
+        conn.commit()
+    return AuthResponse(user_id=int(row[0]), email=email, name=name, onboarding_completed=False)
+
+
+@app.post("/auth/signin", response_model=AuthResponse)
+def auth_signin(payload: AuthSignInRequest):
+    _ensure_auth_schema()
+    email = (payload.email or "").strip().lower()
+    password = payload.password or ""
+    if not email or not password:
+        raise HTTPException(status_code=400, detail="Email and password are required")
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, email, name, password_hash, height_cm, weight_kg, age_years, agent_name
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (email,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    if not _verify_password(password, row[3]):
+        raise HTTPException(status_code=401, detail="Invalid email or password")
+    return AuthResponse(
+        user_id=int(row[0]),
+        email=str(row[1]),
+        name=str(row[2] or "User"),
+        onboarding_completed=_onboarding_completed_from_row(row),
+    )
+
+
 @app.post("/coach/chat", response_model=CoachChatResponse)
 def coach_chat(payload: CoachChatRequest):
     """Chat with the AI coach using the agent graph."""
@@ -1540,9 +1714,16 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
 
 @app.get("/food/intake", response_model=DailyIntakeResponse)
-def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
+def get_daily_intake(user_id: int, day: Optional[str] = None):
     """Return daily calorie intake totals for a user."""
     target_day = day or date.today().isoformat()
+    cache_key = f"daily_intake:{user_id}:{target_day}"
+    cached = _redis_get_json(cache_key)
+    if isinstance(cached, dict):
+        try:
+            return DailyIntakeResponse(**cached)
+        except Exception:
+            pass
     start = f"{target_day}T00:00:00"
     end = f"{target_day}T23:59:59"
     with get_db_conn() as conn:
@@ -1575,7 +1756,7 @@ def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
             daily_target = plan_day.get("calorie_target")
     except Exception:
         daily_target = None
-    return DailyIntakeResponse(
+    response = DailyIntakeResponse(
         date=target_day,
         total_calories=total_calories,
         total_protein_g=total_protein,
@@ -1584,12 +1765,23 @@ def get_daily_intake(user_id: int = 1, day: Optional[str] = None):
         meals_count=len(rows),
         daily_calorie_target=daily_target,
     )
+    _redis_set_json(cache_key, response.model_dump(), ttl_seconds=180)
+    return response
 
 
 @app.get("/food/logs", response_model=DailyMealLogsResponse)
-def get_food_logs(user_id: int = 1, day: Optional[str] = None):
+def get_food_logs(user_id: int, day: Optional[str] = None):
     """Return logged meals for a specific day."""
     target_day = day or date.today().isoformat()
+    bucket_key = f"user:{user_id}:meal_logs"
+    cached_bucket = _redis_get_json(bucket_key)
+    if isinstance(cached_bucket, dict):
+        cached_day = cached_bucket.get(target_day)
+        if isinstance(cached_day, dict):
+            try:
+                return DailyMealLogsResponse(**cached_day)
+            except Exception:
+                pass
     start = f"{target_day}T00:00:00"
     end = f"{target_day}T23:59:59"
     with get_db_conn() as conn:
@@ -1615,11 +1807,18 @@ def get_food_logs(user_id: int = 1, day: Optional[str] = None):
         )
         for row in rows
     ]
-    return DailyMealLogsResponse(date=target_day, meals=meals)
+    response = DailyMealLogsResponse(date=target_day, meals=meals)
+    bucket = cached_bucket if isinstance(cached_bucket, dict) else {}
+    bucket[target_day] = response.model_dump()
+    if len(bucket) > 14:
+        for key in sorted(bucket.keys())[:-14]:
+            bucket.pop(key, None)
+    _redis_set_json(bucket_key, bucket, ttl_seconds=600)
+    return response
 
 
 @app.get("/plans/today", response_model=PlanDayResponse)
-def get_today_plan(user_id: int = 1, day: Optional[str] = None):
+def get_today_plan(user_id: int, day: Optional[str] = None):
     """Return the active plan day for a specific date (defaults to today)."""
     from agent.tools.plan_tools import _get_active_plan_bundle_data
 
@@ -1647,7 +1846,7 @@ def get_today_plan(user_id: int = 1, day: Optional[str] = None):
 
 
 @app.get("/api/profile")
-def get_profile(user_id: int = 1):
+def get_profile(user_id: int):
     """Return user profile and preferences."""
     return _load_user_profile(user_id)
 
@@ -1674,7 +1873,7 @@ def get_user_id(email: str):
 
 
 @app.get("/api/progress")
-def get_progress(user_id: int = 1):
+def get_progress(user_id: int):
     """Return progress data (checkins, plan, meals, workouts)."""
     try:
         from agent.tools.plan_tools import _get_active_plan_bundle_data
@@ -1695,7 +1894,7 @@ def get_progress(user_id: int = 1):
 
 
 @app.get("/api/gamification", response_model=GamificationResponse)
-def get_gamification(user_id: int = 1):
+def get_gamification(user_id: int):
     return _gamification_summary(user_id)
 
 
@@ -1712,7 +1911,7 @@ def use_freeze_streak(payload: UseFreezeRequest):
 
 
 @app.get("/api/coach-suggestion")
-def get_coach_suggestion(user_id: int = 1):
+def get_coach_suggestion(user_id: int):
     """Return a coach suggestion derived from plan status."""
     suggestion = None
     try:
@@ -1727,6 +1926,31 @@ def get_coach_suggestion(user_id: int = 1):
     return {"suggestion": suggestion}
 
 
+@app.get("/api/session/hydrate", response_model=SessionHydrationResponse)
+def hydrate_session(user_id: int, day: Optional[str] = None):
+    target_day = day or date.today().isoformat()
+    profile = _load_user_profile(user_id)
+    progress = get_progress(user_id)
+    daily_intake = get_daily_intake(user_id, target_day)
+    gamification = _gamification_summary(user_id)
+    coach_suggestion = get_coach_suggestion(user_id)
+    today_plan: Optional[PlanDayResponse] = None
+    try:
+        today_plan = get_today_plan(user_id, target_day)
+    except HTTPException:
+        today_plan = None
+    return SessionHydrationResponse(
+        user_id=user_id,
+        date=target_day,
+        profile=profile,
+        progress=progress,
+        today_plan=today_plan,
+        daily_intake=daily_intake,
+        gamification=GamificationResponse(**gamification),
+        coach_suggestion=coach_suggestion.get("suggestion") if isinstance(coach_suggestion, dict) else None,
+    )
+
+
 @app.get("/api/health")
 def health_check():
     try:
@@ -1734,8 +1958,7 @@ def health_check():
             cur = conn.cursor()
             cur.execute("SELECT 1")
             cur.fetchone()
-            using_sqlite = conn._adapt_query is False
-        return {"ok": True, "db": "sqlite" if using_sqlite else "postgres"}
+        return {"ok": True, "db": "postgres"}
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 

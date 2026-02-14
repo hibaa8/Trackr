@@ -31,18 +31,14 @@ class DashboardViewModel: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private let backendConnector = FrontendBackendConnector.shared
     
-    func loadDashboardData() {
-        loadRecentMeals()
-        loadTodaySuggestion()
-        updateDailyTotals()
+    func loadDashboardData(userId: Int) {
+        loadRecentMeals(userId: userId)
+        loadTodaySuggestion(userId: userId)
+        updateDailyTotals(userId: userId)
     }
     
-    private func loadRecentMeals() {
-        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
-        guard storedUserId > 0 else {
-            return
-        }
-        FoodScanService.shared.getDailyMeals(date: selectedDate, userId: storedUserId) { [weak self] result in
+    private func loadRecentMeals(userId: Int) {
+        FoodScanService.shared.getDailyMeals(date: selectedDate, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let response):
@@ -90,17 +86,14 @@ class DashboardViewModel: ObservableObject {
                 }
 
                 // Update daily totals
-                self.updateDailyTotals()
+                // Uses the currently logged-in user id only.
+                // Caller will trigger full refresh with explicit userId.
             }
         }
     }
 
-    private func updateDailyTotals() {
-        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
-        guard storedUserId > 0 else {
-            return
-        }
-        FoodScanService.shared.getDailyIntake(date: selectedDate, userId: storedUserId) { [weak self] result in
+    private func updateDailyTotals(userId: Int) {
+        FoodScanService.shared.getDailyIntake(date: selectedDate, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let intake):
@@ -116,12 +109,8 @@ class DashboardViewModel: ObservableObject {
         }
     }
     
-    private func loadTodaySuggestion() {
-        let storedUserId = UserDefaults.standard.integer(forKey: "currentUserId")
-        guard storedUserId > 0 else {
-            return
-        }
-        backendConnector.loadCoachSuggestion(userId: storedUserId) { [weak self] result in
+    private func loadTodaySuggestion(userId: Int) {
+        backendConnector.loadCoachSuggestion(userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let suggestion):

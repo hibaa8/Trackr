@@ -1,5 +1,6 @@
 import SwiftUI
 import AVFoundation
+import UIKit
 
 struct CoachView: View {
     @EnvironmentObject var appState: AppState
@@ -11,6 +12,10 @@ struct CoachView: View {
     @State private var audioRecorder: AVAudioRecorder?
     @State private var recordingURL: URL?
     @State private var audioErrorMessage: String?
+    @State private var selectedImage: UIImage?
+    @State private var showImagePicker = false
+    @State private var showImageOptions = false
+    @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
 
     var body: some View {
         NavigationView {
@@ -90,6 +95,22 @@ struct CoachView: View {
             if let userId = authManager.effectiveUserId {
                 backendConnector.loadCoachSuggestion(userId: userId) { _ in }
             }
+        }
+        .sheet(isPresented: $showImagePicker) {
+            CoachImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
+        }
+        .confirmationDialog("Add Image", isPresented: $showImageOptions, titleVisibility: .visible) {
+            if UIImagePickerController.isSourceTypeAvailable(.camera) {
+                Button("Take Picture") {
+                    imagePickerSource = .camera
+                    showImagePicker = true
+                }
+            }
+            Button("Select Picture") {
+                imagePickerSource = .photoLibrary
+                showImagePicker = true
+            }
+            Button("Cancel", role: .cancel) {}
         }
     }
     
@@ -258,9 +279,37 @@ struct CoachView: View {
 
     private var modernInputSection: some View {
         ModernCard {
+            VStack(spacing: 10) {
+                if let selectedImage {
+                    HStack(spacing: 10) {
+                        Image(uiImage: selectedImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 52, height: 52)
+                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .stroke(Color.white.opacity(0.2), lineWidth: 1)
+                            )
+                        Spacer()
+                        Button(action: { self.selectedImage = nil }) {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 20))
+                                .foregroundColor(.white.opacity(0.8))
+                        }
+                    }
+                    .padding(.horizontal, 6)
+                }
+
                 HStack(spacing: 16) {
                 // Message input field
                 HStack(spacing: 12) {
+                    Button(action: { showImageOptions = true }) {
+                        Image(systemName: "plus.circle")
+                            .font(.system(size: 24, weight: .semibold))
+                            .foregroundColor(.textSecondary)
+                    }
+
                     TextField("Ask your Vaylow coach anything...", text: $messageText, axis: .vertical)
                         .font(.bodyMedium)
                         .foregroundColor(.textPrimary)
@@ -326,29 +375,48 @@ struct CoachView: View {
                                 .foregroundColor(messageText.isEmpty ? .textSecondary : .white)
                         }
                     }
-                    .disabled(messageText.isEmpty)
-                    .scaleEffect(messageText.isEmpty ? 0.9 : 1.0)
-                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: messageText.isEmpty)
+                    .disabled(!canSendMessage)
+                    .scaleEffect(canSendMessage ? 1.0 : 0.9)
+                    .animation(.spring(response: 0.3, dampingFraction: 0.7), value: canSendMessage)
                 }
+            }
             }
             .padding(16)
         }
     }
 
     func sendMessage() {
-        guard !messageText.isEmpty else { return }
+        let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasImage = selectedImage != nil
+        guard !trimmed.isEmpty || hasImage else { return }
 
         // Start typing animation
         isTyping = true
 
-        let userId = authManager.effectiveUserId
-        appState.sendMessage(messageText, userId: userId)
+        guard let userId = authManager.effectiveUserId else {
+            isTyping = false
+            return
+        }
+        let outboundText: String
+        if hasImage, trimmed.isEmpty {
+            outboundText = "I attached an image. Please analyze it and help me log or understand it."
+        } else if hasImage {
+            outboundText = "\(trimmed)\n\n[Image attached]"
+        } else {
+            outboundText = trimmed
+        }
+        appState.sendMessage(outboundText, userId: userId)
         messageText = ""
+        selectedImage = nil
 
         // Simulate AI response delay
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
             isTyping = false
         }
+    }
+
+    private var canSendMessage: Bool {
+        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedImage != nil
     }
 
     private func toggleRecording() {
@@ -431,6 +499,43 @@ struct CoachView: View {
 
 private struct TranscriptionResponse: Decodable {
     let text: String
+}
+
+private struct CoachImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    @Binding var selectedImage: UIImage?
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        picker.sourceType = sourceType
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UINavigationControllerDelegate, UIImagePickerControllerDelegate {
+        private let parent: CoachImagePicker
+
+        init(_ parent: CoachImagePicker) {
+            self.parent = parent
+        }
+
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey: Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            picker.dismiss(animated: true)
+        }
+
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            picker.dismiss(animated: true)
+        }
+    }
 }
 
 // MARK: - Enhanced Message Bubble

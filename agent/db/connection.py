@@ -1,14 +1,11 @@
 from __future__ import annotations
 
 import os
-import sqlite3
-from urllib.parse import quote_plus
 from contextlib import contextmanager
 from typing import Any, Iterable, Optional
 
 import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
-from agent.config.constants import DB_PATH
 
 
 def _adapt_query(query: str) -> str:
@@ -46,7 +43,7 @@ class ConnectionAdapter:
     def __init__(
         self,
         conn,
-        pool: Optional[ThreadedConnectionPool] = None,
+        pool: Optional[Any] = None,
         adapt_query: bool = True,
     ):
         self._conn = conn
@@ -82,32 +79,36 @@ class ConnectionAdapter:
 
 @contextmanager
 def get_db_conn():
-    dsn = os.environ.get("SUPABASE_DATABASE_URL") or os.environ.get("DATABASE_URL")
-    if not dsn:
+    global _POOL
+    if _POOL is None:
         host = os.environ.get("SUPABASE_DB_HOST")
         user = os.environ.get("SUPABASE_DB_USER")
         password = os.environ.get("SUPABASE_DB_PASSWORD")
-        dbname = os.environ.get("SUPABASE_DB_NAME", "postgres")
-        port = os.environ.get("SUPABASE_DB_PORT", "5432")
-        if host and user and password:
-            safe_user = quote_plus(user)
-            safe_password = quote_plus(password)
-            dsn = f"postgresql://{safe_user}:{safe_password}@{host}:{port}/{dbname}"
-    if not dsn:
-        conn = sqlite3.connect(DB_PATH, check_same_thread=False)
-        adapter = ConnectionAdapter(conn, pool=None, adapt_query=False)
-        try:
-            yield adapter
-            adapter.commit()
-        except Exception:
-            adapter.rollback()
-            raise
-        finally:
-            adapter.close()
-        return
-    pool = _get_pool(dsn)
-    conn = pool.getconn()
-    adapter = ConnectionAdapter(conn, pool=pool, adapt_query=True)
+        dbname = os.environ.get("SUPABASE_DB_NAME")
+        port = int(os.environ.get("SUPABASE_DB_PORT", "5432"))
+        sslmode = os.environ.get("SUPABASE_DB_SSLMODE", "require")
+        minconn = int(os.environ.get("DB_POOL_MIN", "1"))
+        maxconn = int(os.environ.get("DB_POOL_MAX", "15"))
+
+        if not host or not user or not password or not dbname:
+            raise RuntimeError(
+                "Supabase/Postgres is required. Set SUPABASE_DB_HOST, SUPABASE_DB_USER, "
+                "SUPABASE_DB_PASSWORD, SUPABASE_DB_NAME, SUPABASE_DB_PORT."
+            )
+
+        _POOL = ThreadedConnectionPool(
+            minconn=minconn,
+            maxconn=maxconn,
+            host=host,
+            user=user,
+            password=password,
+            dbname=dbname,
+            port=port,
+            sslmode=sslmode,
+        )
+
+    conn = _POOL.getconn()
+    adapter = ConnectionAdapter(conn, pool=_POOL, adapt_query=True)
     try:
         yield adapter
         adapter.commit()
@@ -119,12 +120,3 @@ def get_db_conn():
 
 
 _POOL: Optional[ThreadedConnectionPool] = None
-_POOL_DSN: Optional[str] = None
-
-
-def _get_pool(dsn: str) -> ThreadedConnectionPool:
-    global _POOL, _POOL_DSN
-    if _POOL is None or _POOL_DSN != dsn:
-        _POOL = ThreadedConnectionPool(minconn=1, maxconn=15, dsn=dsn, sslmode="require")
-        _POOL_DSN = dsn
-    return _POOL

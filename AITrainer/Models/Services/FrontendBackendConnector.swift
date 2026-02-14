@@ -256,6 +256,26 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func hydrateSession(userId: Int, date: Date = Date(), completion: @escaping (Result<SessionHydrationResponse, Error>) -> Void) {
+        APIService.shared.getSessionHydration(userId: userId, date: date)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.profile = response.profile
+                    self?.progress = response.progress
+                    self?.dailyIntake = response.daily_intake
+                    self?.coachSuggestion = response.coach_suggestion
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     // MARK: - Health Check
 
     func checkBackendHealth() {
@@ -278,7 +298,8 @@ class FrontendBackendConnector: ObservableObject {
         print("🚀 Initializing app with backend connection...")
         checkBackendHealth()
         currentUserId = userId
-        loadDailyIntake(userId: userId)
-        loadWeeklyCalories(userId: userId)
+        hydrateSession(userId: userId) { [weak self] _ in
+            self?.loadWeeklyCalories(userId: userId)
+        }
     }
 }

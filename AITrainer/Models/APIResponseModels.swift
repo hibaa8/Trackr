@@ -208,6 +208,17 @@ struct GamificationResponse: Codable {
     let share_text: String
 }
 
+struct SessionHydrationResponse: Codable {
+    let user_id: Int
+    let date: String
+    let profile: ProfileResponse
+    let progress: ProgressResponse
+    let today_plan: PlanDayResponse?
+    let daily_intake: DailyIntakeResponse
+    let gamification: GamificationResponse
+    let coach_suggestion: CoachSuggestionResponse?
+}
+
 enum JSONValue: Codable {
     case string(String)
     case number(Double)

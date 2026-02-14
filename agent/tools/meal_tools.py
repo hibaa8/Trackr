@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import date, datetime
 from typing import List, Optional
 
 from langchain_core.tools import tool
 
 from agent.config.constants import CACHE_TTL_LONG, _draft_meal_logs_key
-from agent.redis.cache import _redis_get_json, _redis_set_json
+from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.db.connection import get_db_conn
 
@@ -67,17 +69,34 @@ def _normalize_meal_time(consumed_at: Optional[str]) -> str:
     value = consumed_at.strip()
     if not value:
         return now.isoformat(timespec="seconds")
+    # Preserve already-valid ISO datetimes.
+    try:
+        return datetime.fromisoformat(value).isoformat(timespec="seconds")
+    except ValueError:
+        pass
     lowered = value.lower()
+    meal_aliases = {
+        "breakfast": "08:00",
+        "lunch": "13:00",
+        "dinner": "19:00",
+        "snack": "16:00",
+    }
+    if lowered in meal_aliases:
+        parsed = datetime.strptime(meal_aliases[lowered], "%H:%M").time()
+        return datetime.combine(now.date(), parsed).isoformat(timespec="seconds")
     if "today" in lowered:
         value = value.replace("today", "").strip()
         lowered = value.lower()
+        if not value:
+            return now.isoformat(timespec="seconds")
     for fmt in ("%I %p", "%I:%M %p", "%H:%M"):
         try:
             parsed = datetime.strptime(value, fmt).time()
             return datetime.combine(now.date(), parsed).isoformat(timespec="seconds")
         except ValueError:
             continue
-    return value
+    # Fallback to a valid timestamp so rows always persist and appear in daily totals.
+    return now.isoformat(timespec="seconds")
 
 
 def _estimate_macros_from_calories(total_calories: int) -> dict[str, int]:
@@ -137,6 +156,7 @@ def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
             description = meal.get("description")
             if not logged_at or not description:
                 continue
+            logged_at = _normalize_meal_time(str(logged_at))
             cur.execute(
                 """
                 INSERT INTO meal_logs (
@@ -159,6 +179,37 @@ def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
         conn.commit()
 
 
+def _invalidate_meal_cache(user_id: int, day: Optional[str]) -> None:
+    _redis_delete(_draft_meal_logs_key(user_id))
+    _redis_delete(f"user:{user_id}:meal_logs")
+    if day:
+        _redis_delete(f"daily_intake:{user_id}:{day}")
+
+
+def _idempotency_key_for_meal(
+    user_id: int,
+    items: List[str],
+    logged_at: str,
+    total_calories: int,
+    protein_g: int,
+    carbs_g: int,
+    fat_g: int,
+    explicit_key: Optional[str],
+) -> str:
+    if explicit_key and explicit_key.strip():
+        return explicit_key.strip()
+    payload = {
+        "items": items,
+        "logged_at": logged_at,
+        "total_calories": total_calories,
+        "protein_g": protein_g,
+        "carbs_g": carbs_g,
+        "fat_g": fat_g,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return f"auto:{digest}"
+
+
 @tool("log_meal")
 def log_meal(
     user_id: int,
@@ -169,6 +220,7 @@ def log_meal(
     carbs_g: Optional[int] = None,
     fat_g: Optional[int] = None,
     notes: Optional[str] = None,
+    idempotency_key: Optional[str] = None,
 ) -> str:
     """Log a meal entry into the cache and database."""
     if not items:
@@ -186,6 +238,20 @@ def log_meal(
     if not all(isinstance(value, int) and value >= 0 for value in macros.values()):
         macros = _estimate_macros_from_calories(total_calories)
     logged_at = _normalize_meal_time(consumed_at)
+    idem_key = _idempotency_key_for_meal(
+        user_id=user_id,
+        items=meal_items,
+        logged_at=logged_at,
+        total_calories=total_calories,
+        protein_g=macros["protein_g"],
+        carbs_g=macros["carbs_g"],
+        fat_g=macros["fat_g"],
+        explicit_key=idempotency_key,
+    )
+    idem_cache_key = f"idem:tool:meal:{user_id}:{idem_key}"
+    cached = _redis_get_json(idem_cache_key)
+    if isinstance(cached, dict) and cached.get("message"):
+        return str(cached["message"])
     description = ", ".join(meal_items)
     if notes:
         description = f"{description}. Notes: {notes}"
@@ -206,8 +272,11 @@ def log_meal(
     _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
     _sync_meal_logs_to_db(user_id, draft.get("meals", []))
+    _invalidate_meal_cache(user_id, logged_at[:10])
     _award_points(user_id, 5, f"meal_log:{logged_at}")
-    return "Meal logged."
+    message = "Meal logged."
+    _redis_set_json(idem_cache_key, {"message": message}, ttl_seconds=600)
+    return message
 
 
 @tool("get_meal_logs")

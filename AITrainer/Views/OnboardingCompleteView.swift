@@ -238,9 +238,11 @@ struct TrainerMainView: View {
             } else {
                 todayPlan = appState.todayPlan
             }
+            refreshDashboardData()
             loadGamification(trackGain: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            refreshDashboardData()
             loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
@@ -604,6 +606,12 @@ struct TrainerMainView: View {
     }
 
     // AppState handles daily intake refresh
+
+    private func refreshDashboardData() {
+        guard let userId = authManager.effectiveUserId else { return }
+        appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+        loadTodayPlan()
+    }
 
     private func loadTodayPlan() {
         guard let userId = authManager.effectiveUserId else {

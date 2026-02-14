@@ -48,6 +48,13 @@ class AuthenticationManager: ObservableObject {
         let created_at: String
     }
 
+    private struct BackendAuthResponse: Decodable {
+        let user_id: Int
+        let email: String
+        let name: String
+        let onboarding_completed: Bool
+    }
+
     init() {
         if let url = SupabaseConfig.supabaseURL, let anonKey = SupabaseConfig.anonKey {
             supabase = SupabaseClient(supabaseURL: url, supabaseKey: anonKey)
@@ -83,28 +90,13 @@ class AuthenticationManager: ObservableObject {
         demoUserId = nil
         currentUserId = nil
         forceLoginOnLaunch = false
-        guard let supabase else {
-            authErrorMessage = "Supabase is not configured."
-            return
-        }
-
         isLoading = true
         Task {
             do {
-                _ = try await supabase.auth.signIn(email: email, password: password)
-                guard let record = try await fetchUserRecord(email: email) else {
-                    authErrorMessage = "No user profile found. Please sign up first."
-                    try? await supabase.auth.signOut()
-                    isAuthenticated = false
-                    currentUser = nil
-                    isLoading = false
-                    return
-                }
-                setAuthenticated(email: record.email, onboardingCompleted: true)
-                setCurrentUserId(record.id)
-                if currentUserId == nil {
-                    resolveAndStoreUserId(email: record.email)
-                }
+                let response = try await backendSignIn(email: email, password: password)
+                setAuthenticated(email: response.email, onboardingCompleted: response.onboarding_completed)
+                setCurrentUserId(response.user_id)
+                userDefaults.set(response.name, forKey: "currentUserName")
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -130,31 +122,13 @@ class AuthenticationManager: ObservableObject {
         demoUserId = nil
         currentUserId = nil
         forceLoginOnLaunch = false
-        guard let supabase else {
-            authErrorMessage = "Supabase is not configured."
-            return
-        }
-
         isLoading = true
         Task {
             do {
-                _ = try await supabase.auth.signUp(email: email, password: password)
-                let insert = UserInsert(
-                    email: email,
-                    name: "New User",
-                    gender: nil,
-                    birthdate: nil,
-                    height_cm: nil,
-                    weight_kg: nil,
-                    created_at: isoFormatter.string(from: Date())
-                )
-                _ = try await supabase.from("users").insert(insert).execute()
-                setAuthenticated(email: email, onboardingCompleted: false)
-                if let record = try await fetchUserRecord(email: email) {
-                    setCurrentUserId(record.id)
-                } else {
-                    resolveAndStoreUserId(email: email)
-                }
+                let response = try await backendSignUp(email: email, password: password, name: "New User")
+                setAuthenticated(email: response.email, onboardingCompleted: response.onboarding_completed)
+                setCurrentUserId(response.user_id)
+                userDefaults.set(response.name, forKey: "currentUserName")
                 isLoading = false
             } catch {
                 authErrorMessage = error.localizedDescription
@@ -289,6 +263,46 @@ class AuthenticationManager: ObservableObject {
         guard let id else { return }
         currentUserId = id
         userDefaults.set(id, forKey: "currentUserId")
+    }
+
+    private func backendSignIn(email: String, password: String) async throws -> BackendAuthResponse {
+        guard let url = URL(string: "\(BackendConfig.baseURL)/auth/signin") else {
+            throw URLError(.badURL)
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["email": email, "password": password])
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
+            throw NSError(domain: "Auth", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail ?? "Sign in failed"])
+        }
+        return try JSONDecoder().decode(BackendAuthResponse.self, from: data)
+    }
+
+    private func backendSignUp(email: String, password: String, name: String) async throws -> BackendAuthResponse {
+        guard let url = URL(string: "\(BackendConfig.baseURL)/auth/signup") else {
+            throw URLError(.badURL)
+        }
+        let body = try JSONSerialization.data(withJSONObject: ["email": email, "password": password, "name": name])
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
+            throw NSError(domain: "Auth", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail ?? "Sign up failed"])
+        }
+        return try JSONDecoder().decode(BackendAuthResponse.self, from: data)
     }
 
     private func clearSupabaseSessionIfNeeded() async {
