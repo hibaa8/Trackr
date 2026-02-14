@@ -204,6 +204,26 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _strip_data_url_prefix(encoded: str) -> str:
+    if not encoded:
+        return encoded
+    if encoded.startswith("data:") and "base64," in encoded:
+        return encoded.split("base64,", 1)[1]
+    return encoded
+
+
+def _summarize_image(image_bytes: bytes, user_message: str) -> str:
+    prompt = (
+        "You are a fitness coach. Analyze the image and describe what you see in concise "
+        "plain text. If it is a meal, mention foods and estimated portions. If it is a workout "
+        "image, identify the activity, equipment, form cues, and any visible risks. If unsure, "
+        "say so. No markdown."
+    )
+    if user_message:
+        prompt += f"\nUser note: {user_message}"
+    return _gemini_generate_content(prompt, image_bytes=image_bytes, temperature=0.2).strip()
+
+
 def _extract_ingredients_from_image(image_bytes: bytes) -> List[str]:
     prompt = (
         "Identify the ingredients in the photo and return JSON only with this schema: "
@@ -544,6 +564,7 @@ class CoachChatRequest(BaseModel):
     user_id: int
     thread_id: Optional[str] = None
     agent_id: Optional[str] = None
+    image_base64: Optional[str] = None
 
 
 class CoachChatResponse(BaseModel):
@@ -1060,9 +1081,23 @@ def coach_chat(payload: CoachChatRequest):
         _AGENT_PRELOADED.add(thread_id)
 
     try:
+        message = payload.message
+        if payload.image_base64:
+            try:
+                encoded = _strip_data_url_prefix(payload.image_base64)
+                image_bytes = base64.b64decode(encoded)
+                analysis = _summarize_image(image_bytes, payload.message)
+                if analysis:
+                    if message:
+                        message = f"{message}\n\nImage analysis: {analysis}"
+                    else:
+                        message = f"Image analysis: {analysis}"
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}") from exc
+
         state = graph.invoke(
             {
-                "messages": [HumanMessage(content=payload.message)],
+                "messages": [HumanMessage(content=message)],
                 "user_id": payload.user_id,
             },
             config,

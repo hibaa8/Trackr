@@ -175,53 +175,28 @@ struct TrainerMainView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // Realistic gym background with person
-                AsyncImage(url: URL(string: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1000&q=80")) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                } placeholder: {
-                    // Fallback gym-style background
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.2, green: 0.25, blue: 0.3),
-                            Color(red: 0.15, green: 0.2, blue: 0.25),
-                            Color(red: 0.1, green: 0.15, blue: 0.2)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                }
-                .ignoresSafeArea()
+                trainerBackground
 
-                // Dark overlay for text readability
-                Color.black.opacity(0.3)
+                Color.black.opacity(0.4)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Header
                     headerView
+                        .padding(.bottom, 30)
 
-                    Spacer()
+                    greetingSection
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 30)
 
-                    // Main content positioned to match mockup
-                    VStack(spacing: 32) {
-                        // Greeting text
-                        greetingSection
-
-                        // Cards positioned lower on screen
-                        HStack(spacing: 16) {
-                            todaysPlanCard
-                            calorieBalanceCard
-                        }
-                        .padding(.horizontal, 20)
+                    VStack(spacing: 15) {
+                        todaysPlanCard
+                        calorieBalanceCard
                     }
-                    .padding(.bottom, 120) // Space for bottom toolbar
+                    .padding(.horizontal, 20)
 
                     Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .onReceive(timer) { _ in
@@ -268,7 +243,7 @@ struct TrainerMainView: View {
     }
 
     private var headerView: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -289,18 +264,19 @@ struct TrainerMainView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Trainer")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
                     Text(coach.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
                 }
             }
 
             Spacer()
         }
         .padding(.horizontal, 20)
-        .padding(.top, 40) // Moved higher as requested
+        .padding(.top, 12)
+        .frame(maxWidth: .infinity)
     }
 
     private func coachAvatar() -> Image? {
@@ -312,80 +288,64 @@ struct TrainerMainView: View {
     }
 
     private var greetingSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Text(getGreeting())
-                .font(.system(size: 36, weight: .bold))
+                .font(.system(size: 48, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
 
             Text("Ready to crush your goals today?")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(.white.opacity(0.8))
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 20)
     }
 
     private var todaysPlanCard: some View {
-        let workoutTitle = activePlan?.workout_plan ?? "Leg Day - 45 min"
-        let workoutDetails: String
-        if activePlan?.rest_day == true {
-            workoutDetails = "Rest, recover, and stretch today."
-        } else if let plan = activePlan?.workout_plan, !plan.isEmpty {
-            workoutDetails = plan
-        } else {
-            workoutDetails = "Warm-up, Squats, Lunges, Cool-down"
-        }
+        let workoutTitle = planSummaryTitle()
         let progressText = isLoadingPlan ? "Loading..." : "Tap for details"
+        let progressRatio: Double = 0.4
 
         return Button(action: {
             showPlanDetail = true
         }) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("Today's Plan")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundColor(.white)
 
+                Text(workoutTitle)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(2)
+
+                Spacer()
+
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(workoutTitle)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-
-                    Text(workoutDetails)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
-                        .lineLimit(2)
-
-                    Spacer()
-
-                    VStack(alignment: .leading, spacing: 6) {
+                    GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.white.opacity(0.3))
-                                .frame(height: 4)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.25))
+                                .frame(height: 8)
 
-                            RoundedRectangle(cornerRadius: 2)
+                            RoundedRectangle(cornerRadius: 4)
                                 .fill(Color.blue)
-                                .frame(width: 80, height: 4) // 75% progress
+                                .frame(width: geo.size.width * progressRatio, height: 8)
                         }
-
-                        Text(progressText)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
                     }
+                    .frame(height: 8)
+
+                    Text(progressText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 160)
             .padding(20)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.ultraThinMaterial.opacity(0.8))
-                    .background(Color.black.opacity(0.3))
-            )
+            .background(glassCardBackground)
         }
         .buttonStyle(PlainButtonStyle())
-        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .contentShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var calorieBalanceCard: some View {
@@ -394,94 +354,137 @@ struct TrainerMainView: View {
         let progress = min(1.0, max(0.0, Double(caloriesConsumed) / Double(max(caloriesGoal, 1))))
         let remaining = max(0, caloriesGoal - caloriesConsumed)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Calorie Balance")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white)
+        return Button(action: {
+            showCalorieDetail = true
+        }) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Calorie Balance")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white)
 
-            HStack(spacing: 16) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.12), lineWidth: 10)
-                        .frame(width: 86, height: 86)
+                HStack(spacing: 20) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.12), lineWidth: 8)
+                            .frame(width: 80, height: 80)
 
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(
-                            AngularGradient(
-                                gradient: Gradient(colors: [Color.cyan, Color.blue, Color.purple]),
-                                center: .center
-                            ),
-                            style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                        )
-                        .frame(width: 86, height: 86)
-                        .rotationEffect(.degrees(-90))
-                        .shadow(color: Color.blue.opacity(0.35), radius: 5, x: 0, y: 2)
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                AngularGradient(
+                                    gradient: Gradient(colors: [Color.cyan, Color.blue]),
+                                    center: .center
+                                ),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(-90))
 
-                    VStack(spacing: 2) {
-                        Text("\(caloriesConsumed)")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(.white)
-                        Text("of \(caloriesGoal)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                        VStack(spacing: 2) {
+                            Text("\(caloriesConsumed)")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                            Text("of \(caloriesGoal)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
                     }
-                }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
-                        Text("\(remaining)")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(remaining) kcal")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.white)
-                        Text("kcal remaining")
+
+                        Text("remaining")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+
+                        Spacer()
+
+                        Text("Tap for details")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.7))
                     }
-
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(0.12))
-                            .frame(height: 6)
-
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.cyan, Color.blue],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: CGFloat(progress) * 110, height: 6)
-                    }
-                    .frame(width: 110)
-
-                    Text("Tap for details")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.6))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(glassCardBackground)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 160)
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(.ultraThinMaterial.opacity(0.9))
-                .background(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.08), Color.black.opacity(0.35)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
-        .onTapGesture {
-            showCalorieDetail = true
+        .buttonStyle(PlainButtonStyle())
+        .contentShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var glassCardBackground: some View {
+        RoundedRectangle(cornerRadius: 20)
+            .fill(.ultraThinMaterial.opacity(0.9))
+            .background(Color.black.opacity(0.25))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private var trainerBackground: some View {
+        Group {
+            if let image = coachBackgroundImage() {
+                GeometryReader { geometry in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                        .scaleEffect(1.1)
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
+            } else if let image = coachAvatar() {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .scaleEffect(1.1)
+            } else {
+                Color.black
+            }
         }
+        .ignoresSafeArea()
+    }
+
+    private func planSummaryTitle() -> String {
+        if activePlan?.rest_day == true {
+            return "Rest Day"
+        }
+        let plan = (activePlan?.workout_plan ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if plan.isEmpty {
+            return "Full Body Strength"
+        }
+        if let colon = plan.firstIndex(of: ":") {
+            let prefix = String(plan[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return prefix.isEmpty ? "Full Body Strength" : prefix
+        }
+        if let period = plan.firstIndex(of: ".") {
+            let prefix = String(plan[..<period]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return prefix.isEmpty ? "Full Body Strength" : prefix
+        }
+        let words = plan.split(separator: " ")
+        if words.count > 5 {
+            return words.prefix(5).joined(separator: " ")
+        }
+        return plan
+    }
+
+    private func coachBackgroundImage() -> Image? {
+        let candidates = [
+            Bundle.main.url(forResource: "\(coach.imageFilename)_bg", withExtension: "png", subdirectory: "CoachImages"),
+            Bundle.main.url(forResource: "\(coach.imageFilename)_BG", withExtension: "png", subdirectory: "CoachImages"),
+            Bundle.main.url(forResource: coach.imageFilename, withExtension: "png", subdirectory: "CoachBackgrounds")
+        ]
+        for url in candidates {
+            if let url,
+               let uiImage = UIImage(contentsOfFile: url.path) {
+                return Image(uiImage: uiImage)
+            }
+        }
+        return nil
     }
 
     private var bottomInputBar: some View {
@@ -598,6 +601,7 @@ struct VoiceActiveView: View {
     @State private var audioRecorder: AVAudioRecorder?
     @State private var didSendInitialPrompt = false
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authManager: AuthenticationManager
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -799,10 +803,24 @@ struct VoiceActiveView: View {
         isLoading = true
 
         if let imageToUpload {
-            uploadImage(imageToUpload, message: outgoingText) { _ in }
+            uploadImage(imageToUpload, message: outgoingText) { result in
+                let imageBase64: String?
+                switch result {
+                case .success(let encoded):
+                    imageBase64 = encoded
+                case .failure:
+                    imageBase64 = nil
+                }
+                sendChat(outgoingText, imageBase64: imageBase64)
+            }
+        } else {
+            sendChat(outgoingText, imageBase64: nil)
         }
+    }
 
-        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id) { result in
+    private func sendChat(_ outgoingText: String, imageBase64: String?) {
+        let userId = authManager.effectiveUserId
+        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id, imageBase64: imageBase64, userId: userId) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -905,7 +923,7 @@ struct VoiceActiveView: View {
         }.resume()
     }
 
-    private func uploadImage(_ image: UIImage, message: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    private func uploadImage(_ image: UIImage, message: String?, completion: @escaping (Result<String, Error>) -> Void) {
         guard let requestUrl = URL(string: "\(BackendConfig.baseURL)/api/upload-image") else {
             completion(.failure(URLError(.badURL)))
             return
@@ -934,12 +952,18 @@ struct VoiceActiveView: View {
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
-        URLSession.shared.uploadTask(with: request, from: body) { _, _, error in
+        URLSession.shared.uploadTask(with: request, from: body) { data, _, error in
             if let error {
                 completion(.failure(error))
-            } else {
-                completion(.success(()))
+                return
             }
+            guard let data,
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let encoded = payload["image_base64"] as? String else {
+                completion(.failure(URLError(.cannotParseResponse)))
+                return
+            }
+            completion(.success(encoded))
         }.resume()
     }
 

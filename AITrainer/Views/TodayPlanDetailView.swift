@@ -11,6 +11,7 @@ struct TodayPlanDetailView: View {
     @State private var cancellables = Set<AnyCancellable>()
     @State private var plansByDate: [String: PlanDayResponse] = [:]
     @State private var showFullDetails = false
+    @State private var showLogWorkout = false
 
     var body: some View {
         ZStack {
@@ -44,6 +45,12 @@ struct TodayPlanDetailView: View {
         }
         .onChange(of: selectedDate) { newValue in
             loadSelectedPlan()
+        }
+        .sheet(isPresented: $showLogWorkout) {
+            VoiceActiveView(
+                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                initialPrompt: "I want to log a workout. Please ask me for the exercises, sets/reps, time, and any details needed, then log it."
+            )
         }
     }
 
@@ -157,9 +164,7 @@ struct TodayPlanDetailView: View {
             }
 
             if let primaryButton = primaryButton {
-                Button(action: {
-                    showVoiceChat = true
-                }) {
+                Button(action: { showLogWorkout = true }) {
                     Text(primaryButton)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)
