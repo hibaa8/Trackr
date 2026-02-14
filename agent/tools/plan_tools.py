@@ -50,6 +50,40 @@ def _coerce_to_date(value: Any) -> date:
     return datetime.strptime(str(value), "%Y-%m-%d").date()
 
 
+def _normalize_checkin_date(value: Optional[str]) -> str:
+    if not value:
+        return date.today().isoformat()
+    raw = str(value).strip()
+    if not raw:
+        return date.today().isoformat()
+    lowered = raw.lower()
+    today = date.today()
+
+    if lowered in {"today", "now"}:
+        return today.isoformat()
+    if lowered == "yesterday":
+        return (today - timedelta(days=1)).isoformat()
+
+    week_match = re.match(r"^(\d+)\s*week(?:s)?\s*ago$", lowered)
+    if week_match:
+        weeks = int(week_match.group(1))
+        return (today - timedelta(days=weeks * 7)).isoformat()
+
+    day_match = re.match(r"^(\d+)\s*day(?:s)?\s*ago$", lowered)
+    if day_match:
+        days = int(day_match.group(1))
+        return (today - timedelta(days=days)).isoformat()
+
+    try:
+        return datetime.fromisoformat(raw).date().isoformat()
+    except Exception:
+        pass
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        return today.isoformat()
+
+
 def _render_plan_days(
     start_date: Any,
     end_date: Any,
@@ -1870,7 +1904,7 @@ def log_checkin(
     """Log or update a weight check-in."""
     if weight_kg is None:
         return "What was your weight in kg?"
-    checkin_date = checkin_date or date.today().isoformat()
+    checkin_date = _normalize_checkin_date(checkin_date)
     draft = _load_checkins_draft(user_id)
     checkins = draft.get("checkins", [])
     updated = False
@@ -1918,6 +1952,7 @@ def delete_checkin(user_id: int, checkin_date: str) -> str:
     """Delete a weight check-in for a specific date."""
     if not checkin_date:
         return "Which date should I delete?"
+    checkin_date = _normalize_checkin_date(checkin_date)
     draft = _load_checkins_draft(user_id)
     checkins = [c for c in draft.get("checkins", []) if c.get("checkin_date") != checkin_date]
     draft["checkins"] = checkins

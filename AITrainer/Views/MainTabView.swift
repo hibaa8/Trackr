@@ -11,9 +11,6 @@ struct MainTabView: View {
         TabView(selection: $selectedTab) {
             // Progress Page
             ProgressPageView()
-                .safeAreaInset(edge: .bottom) {
-                    globalBottomToolbar(showVoice: false)
-                }
             .tag(0)
 
             // Trainer Page (default)
@@ -25,9 +22,6 @@ struct MainTabView: View {
 
             // Settings Page
             SettingsPageView(coach: coach)
-                .safeAreaInset(edge: .bottom) {
-                    globalBottomToolbar(showVoice: false)
-                }
             .tag(2)
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
@@ -42,24 +36,6 @@ struct MainTabView: View {
 
     private func globalBottomToolbar(showVoice: Bool) -> some View {
         HStack(spacing: 0) {
-            // Keyboard icon
-            Button(action: {}) {
-                Image(systemName: "keyboard")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
-            }
-            .onTapGesture {
-                focusChatOnOpen = true
-                showVoiceChat = true
-            }
-
-            Spacer()
-
             // Voice microphone (main action)
             if showVoice {
                 Button(action: {
@@ -78,20 +54,6 @@ struct MainTabView: View {
                 }
             } else {
                 Color.clear.frame(width: 64, height: 64)
-            }
-
-            Spacer()
-
-            // Camera icon
-            Button(action: {}) {
-                Image(systemName: "camera.fill")
-                    .font(.system(size: 22))
-                    .foregroundColor(.white)
-                    .frame(width: 44, height: 44)
-                    .background(
-                        RoundedRectangle(cornerRadius: 12)
-                            .fill(.ultraThinMaterial.opacity(0.6))
-                    )
             }
         }
         .frame(height: 100)
@@ -285,24 +247,28 @@ struct ProgressPageView: View {
                         }
                         .frame(width: 30)
 
-                        // Bar chart
-                        HStack(alignment: .bottom, spacing: 6) {
-                            let maxValue = max(weeklyCalories.max() ?? 0, 1)
-                            ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
-                                let height = CGFloat(value) / CGFloat(maxValue) * 90
-                                VStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
-                                        .frame(width: 12, height: max(6, height))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            // Keep card width fixed; only chart content scrolls on Month/Year.
+                            HStack(alignment: .bottom, spacing: 6) {
+                                let maxValue = max(weeklyCalories.max() ?? 0, 1)
+                                ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
+                                    let height = CGFloat(value) / CGFloat(maxValue) * 90
+                                    VStack(spacing: 4) {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
+                                            .frame(width: 12, height: max(6, height))
 
-                                    if index % 3 == 0 {
-                                        Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.white.opacity(0.6))
+                                        if index % 3 == 0 {
+                                            Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.white.opacity(0.6))
+                                        }
                                     }
                                 }
                             }
+                            .frame(minWidth: max(120, CGFloat(weeklyCalories.count) * 18), alignment: .leading)
                         }
+                        .frame(maxWidth: .infinity)
 
                         VStack(alignment: .trailing, spacing: 20) {
                             Text("120").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
@@ -469,6 +435,28 @@ struct ProgressPageView: View {
     private func workoutDate(from value: String?) -> Date? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
+        }
+        let lowered = value.lowercased()
+        let calendar = Calendar.current
+        if lowered == "today" || lowered == "now" {
+            return Date()
+        }
+        if lowered == "yesterday" {
+            return calendar.date(byAdding: .day, value: -1, to: Date())
+        }
+        if let weekMatch = lowered.range(of: #"^(\d+)\s*week(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[weekMatch])
+            let digits = token.filter(\.isNumber)
+            if let weeks = Int(digits) {
+                return calendar.date(byAdding: .day, value: -(weeks * 7), to: Date())
+            }
+        }
+        if let dayMatch = lowered.range(of: #"^(\d+)\s*day(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[dayMatch])
+            let digits = token.filter(\.isNumber)
+            if let days = Int(digits) {
+                return calendar.date(byAdding: .day, value: -days, to: Date())
+            }
         }
         let isoFormatter = ISO8601DateFormatter()
         if let isoDate = isoFormatter.date(from: value) {
@@ -1035,7 +1023,7 @@ struct SettingsPageView: View {
             Divider()
                 .background(Color.white.opacity(0.2))
 
-            SettingsRow(title: "Help & Feedback")
+            SettingsRow(title: "Help")
             SettingsRow(title: "Privacy Policy")
             SettingsRow(title: "Log Out", isDestructive: true) {
                 authManager.signOut()
