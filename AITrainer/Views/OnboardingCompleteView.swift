@@ -165,7 +165,12 @@ struct TrainerMainView: View {
     @State private var showManualLogging = false
     @State private var showPlanDetail = false
     @State private var showCalorieDetail = false
+    @State private var showGamificationSheet = false
     @State private var todayPlan: PlanDayResponse?
+    @State private var gamification: GamificationResponse?
+    @State private var lastKnownPoints: Int?
+    @State private var xpGainToastText: String?
+    @State private var showXPGainToast = false
     @State private var isLoadingPlan = false
     @State private var cancellables = Set<AnyCancellable>()
 
@@ -208,6 +213,10 @@ struct TrainerMainView: View {
             } else {
                 todayPlan = appState.todayPlan
             }
+            loadGamification(trackGain: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen, startRecording: !focusChatOnOpen)
@@ -239,6 +248,19 @@ struct TrainerMainView: View {
                 showMealLogging = true
             }
             Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showGamificationSheet) {
+            if let gamification {
+                GamificationSheetView(
+                    summary: gamification,
+                    onUseFreeze: { useFreezeStreak() }
+                )
+            }
+        }
+        .onChange(of: showGamificationSheet) { _, isShown in
+            if isShown {
+                loadGamification(trackGain: false)
+            }
         }
     }
 
@@ -273,6 +295,34 @@ struct TrainerMainView: View {
             }
 
             Spacer()
+
+            VStack(alignment: .trailing, spacing: 6) {
+                if showXPGainToast, let xpGainToastText {
+                    Text(xpGainToastText)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.85))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                Button(action: { showGamificationSheet = true }) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Lv \(gamification?.level ?? 1)")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("\(gamification?.points ?? 0) XP")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            }
         }
         .padding(.horizontal, 20)
         .padding(.top, 12)
@@ -577,6 +627,49 @@ struct TrainerMainView: View {
             )
             .store(in: &cancellables)
     }
+
+    private func loadGamification(trackGain: Bool) {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.getGamification(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { summary in
+                    let previousPoints = self.lastKnownPoints
+                    self.gamification = summary
+                    self.lastKnownPoints = summary.points
+                    guard trackGain, let previousPoints, summary.points > previousPoints else { return }
+                    let gained = summary.points - previousPoints
+                    showXPGainToast(message: "Coach: +\(gained) XP")
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func useFreezeStreak() {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.useFreezeStreak(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { summary in
+                    self.gamification = summary
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func showXPGainToast(message: String) {
+        xpGainToastText = message
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showXPGainToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showXPGainToast = false
+            }
+        }
+    }
 }
 
 // Alias for the trainer content without bottom toolbar
@@ -649,6 +742,9 @@ struct VoiceActiveView: View {
                     VStack(spacing: 16) {
                         ForEach(messages) { message in
                             VoiceMessageBubble(message: message, coach: coach)
+                        }
+                        if isLoading {
+                            VoiceTypingDots()
                         }
                     }
                     .padding(.horizontal, 20)
@@ -1019,6 +1115,71 @@ struct VoiceMessage: Identifiable {
 }
 
 
+private struct GamificationSheetView: View {
+    let summary: GamificationResponse
+    let onUseFreeze: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 18) {
+                VStack(spacing: 6) {
+                    Text("Level \(summary.level)")
+                        .font(.system(size: 28, weight: .bold))
+                    Text("\(summary.points) XP")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.blue)
+                    Text("\(summary.next_level_points) XP to next level")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 4)
+
+                HStack(spacing: 12) {
+                    statCard(title: "Streak", value: "\(summary.streak_days) days")
+                    statCard(title: "Best", value: "\(summary.best_streak_days) days")
+                }
+                HStack(spacing: 12) {
+                    statCard(title: "Freeze", value: "\(summary.freeze_streaks)")
+                    statCard(title: "Unlocked", value: "\(summary.unlocked_freeze_streaks)")
+                }
+
+                ShareLink(item: summary.share_text) {
+                    Text("Share streak with friends")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.green.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("XP & Streaks")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func statCard(title: String, value: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(Color.primary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
+
 struct VoiceMessageBubble: View {
     let message: VoiceMessage
     let coach: Coach
@@ -1135,6 +1296,36 @@ struct ImagePicker: UIViewControllerRepresentable {
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             picker.dismiss(animated: true)
+        }
+    }
+}
+
+private struct VoiceTypingDots: View {
+    @State private var phase = 0
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 6) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.white.opacity(0.75))
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(phase == index ? 1.25 : 0.9)
+                        .opacity(phase == index ? 1.0 : 0.45)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.16))
+            .clipShape(Capsule())
+            Spacer()
+        }
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    phase = (phase + 1) % 3
+                }
+            }
         }
     }
 }

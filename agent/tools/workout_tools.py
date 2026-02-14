@@ -14,6 +14,19 @@ from agent.tools.plan_tools import _load_user_context_data
 from agent.db.connection import get_db_conn
 
 
+def _award_points(user_id: int, points: int, reason: str) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO points (user_id, points, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, points, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
 
 
 def _append_workout_session_op(user_id: int, op: Dict[str, Any]) -> None:
@@ -266,6 +279,7 @@ def log_workout_session(
             },
         )
         _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+        _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
         return "Workout session updated for this session."
     new_entry = {
         "id": None,
@@ -292,6 +306,7 @@ def log_workout_session(
         },
     )
     _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+    _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
     return "Workout session logged for this session."
 
 

@@ -445,6 +445,7 @@ struct MealLoggingView: View {
         FoodScanService.shared.logMeal(payload, userId: userId, nameOverride: mealName.isEmpty ? nil : mealName) { _ in
             DispatchQueue.main.async {
                 appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+                NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
             }
         }
         dismiss()

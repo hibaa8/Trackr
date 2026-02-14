@@ -12,6 +12,19 @@ from agent.state import SESSION_CACHE
 from agent.db.connection import get_db_conn
 
 
+def _award_points(user_id: int, points: int, reason: str) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO points (user_id, points, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, points, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
 def _estimate_meal_item_calories(item: str) -> int:
     lookup = {
         "egg": 78,
@@ -221,6 +234,7 @@ def log_meal(
     _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
     _sync_meal_logs_to_db(user_id, draft.get("meals", []))
+    _award_points(user_id, 5, f"meal_log:{logged_at}")
     return "Meal logged."
 
 

@@ -310,10 +310,10 @@ class AuthenticationManager: ObservableObject {
     private func setAuthenticated(email: String, onboardingCompleted: Bool) {
         userDefaults.set(UUID().uuidString, forKey: "authToken")
         userDefaults.set(email, forKey: "currentUserEmail")
-        currentUser = email
-        isAuthenticated = true
-        hasCompletedOnboarding = onboardingCompleted
         userDefaults.set(onboardingCompleted, forKey: "hasCompletedOnboarding")
+        currentUser = email
+        hasCompletedOnboarding = onboardingCompleted
+        isAuthenticated = true
     }
 
     func handleAuthCallback(url: URL) {
