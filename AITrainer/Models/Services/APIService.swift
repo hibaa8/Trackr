@@ -363,6 +363,10 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getReminders(userId: Int) -> AnyPublisher<[ReminderItemResponse], APIError> {
+        return request(endpoint: "/api/reminders?user_id=\(userId)")
+    }
+
     func getGamification(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
     }

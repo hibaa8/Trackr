@@ -806,6 +806,7 @@ class CoachChatRequest(BaseModel):
     user_id: int
     thread_id: Optional[str] = None
     agent_id: Optional[str] = None
+    image_base64: Optional[str] = None
 
 
 class CoachChatResponse(BaseModel):
@@ -880,6 +881,15 @@ class MealLogItem(BaseModel):
 class DailyMealLogsResponse(BaseModel):
     date: str
     meals: List[MealLogItem]
+
+
+class ReminderItemResponse(BaseModel):
+    id: int
+    reminder_type: str
+    scheduled_at: str
+    status: str
+    channel: str
+    related_plan_override_id: Optional[int] = None
 
 
 class SessionHydrationResponse(BaseModel):
@@ -1419,6 +1429,40 @@ def auth_signin(payload: AuthSignInRequest):
 @app.post("/coach/chat", response_model=CoachChatResponse)
 def coach_chat(payload: CoachChatRequest):
     """Chat with the AI coach using the agent graph."""
+    if payload.image_base64:
+        try:
+            image_bytes = base64.b64decode(payload.image_base64)
+            analyzed = _analyze_food_image(image_bytes)
+            idem = f"img:{hashlib.sha256(image_bytes).hexdigest()}"
+            _store_meal_log(
+                FoodLogRequest(
+                    user_id=payload.user_id,
+                    food_name=analyzed.food_name,
+                    total_calories=analyzed.total_calories,
+                    protein_g=analyzed.protein_g,
+                    carbs_g=analyzed.carbs_g,
+                    fat_g=analyzed.fat_g,
+                    items=analyzed.items,
+                    logged_at=datetime.now().isoformat(timespec="seconds"),
+                    idempotency_key=idem,
+                )
+            )
+            item_lines = []
+            for item in analyzed.items[:6]:
+                qty = item.amount or "estimated portion"
+                item_lines.append(f"- {item.name}: {qty} (~{item.calories} kcal)")
+            details = "\n".join(item_lines) if item_lines else "- Meal items detected."
+            reply = (
+                "I analyzed your photo and logged your meal.\n"
+                f"Detected: {analyzed.food_name}\n"
+                f"Totals: {analyzed.total_calories} kcal, P {int(analyzed.protein_g)}g, "
+                f"C {int(analyzed.carbs_g)}g, F {int(analyzed.fat_g)}g\n"
+                f"{details}"
+            )
+            return CoachChatResponse(reply=reply, thread_id=payload.thread_id or f"user:{payload.user_id}")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Image meal analysis failed: {exc}") from exc
+
     graph, preload_fn = _get_agent_graph()
     thread_id = payload.thread_id or f"user:{payload.user_id}"
     config = {"configurable": {"thread_id": thread_id}}
@@ -1477,13 +1521,7 @@ def coach_feedback(payload: CoachFeedbackRequest):
     return CoachFeedbackResponse(reply=reply, thread_id=payload.thread_id)
 
 
-@app.post("/food/scan", response_model=FoodScanResponse)
-async def scan_food(file: UploadFile = File(...)):
-    """Analyze a meal photo and return detected foods and macros."""
-    if file is None:
-        raise HTTPException(status_code=400, detail="Missing image file")
-    image = await file.read()
-    encoded = base64.b64encode(image).decode("utf-8")
+def _analyze_food_image(image: bytes) -> FoodScanResponse:
     prompt = (
         "You are a nutrition assistant. Analyze the meal photo and return JSON only. "
         "Include a short food_name, overall totals, and line items with amounts. "
@@ -1512,15 +1550,27 @@ async def scan_food(file: UploadFile = File(...)):
     content = _gemini_generate_content(prompt, image_bytes=image, temperature=0.2)
     payload = _safe_parse_json(content)
     if not payload:
-        raise HTTPException(status_code=502, detail="Failed to parse AI response")
+        raise RuntimeError("Failed to parse AI response")
     items = payload.get("items", []) or []
     if isinstance(items, list):
         for item in items:
             if isinstance(item, dict) and not item.get("category"):
                 item["category"] = _categorize_food_name(item.get("name", ""))
     if not payload.get("total_calories"):
-        payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items)
+        payload["total_calories"] = sum(int(item.get("calories", 0)) for item in items if isinstance(item, dict))
     return FoodScanResponse(**payload)
+
+
+@app.post("/food/scan", response_model=FoodScanResponse)
+async def scan_food(file: UploadFile = File(...)):
+    """Analyze a meal photo and return detected foods and macros."""
+    if file is None:
+        raise HTTPException(status_code=400, detail="Missing image file")
+    image = await file.read()
+    try:
+        return _analyze_food_image(image)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Failed to analyze image: {exc}") from exc
 
 
 @app.post("/recipes/suggest", response_model=RecipeSuggestResponse)
@@ -1924,6 +1974,33 @@ def get_coach_suggestion(user_id: int):
     except Exception:
         suggestion = None
     return {"suggestion": suggestion}
+
+
+@app.get("/api/reminders", response_model=List[ReminderItemResponse])
+def get_reminders_api(user_id: int):
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE user_id = ?
+            ORDER BY scheduled_at ASC
+            """,
+            (user_id,),
+        )
+        rows = cur.fetchall()
+    return [
+        ReminderItemResponse(
+            id=int(row[0]),
+            reminder_type=str(row[1]),
+            scheduled_at=str(row[2]),
+            status=str(row[3]),
+            channel=str(row[4]),
+            related_plan_override_id=int(row[5]) if row[5] is not None else None,
+        )
+        for row in rows
+    ]
 
 
 @app.get("/api/session/hydrate", response_model=SessionHydrationResponse)

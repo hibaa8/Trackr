@@ -253,7 +253,8 @@ struct ProfileEditView: View {
                         value: $viewModel.weightPounds,
                         icon: "scalemass.fill",
                         unit: "kg",
-                        placeholder: "Enter weight"
+                        placeholder: "Enter weight",
+                        useWheelPicker: true
                     )
 
                     ModernMeasurementField(
@@ -261,7 +262,8 @@ struct ProfileEditView: View {
                         value: $viewModel.goalWeightPounds,
                         icon: "target",
                         unit: "kg",
-                        placeholder: "Enter goal weight"
+                        placeholder: "Enter goal weight",
+                        useWheelPicker: true
                     )
                 }
                 .padding(24)
@@ -302,18 +304,12 @@ struct ProfileEditView: View {
                                 .foregroundColor(.textPrimary)
                         }
 
-                        TextField("Enter calorie target", value: $viewModel.dailyCalorieTarget, format: .number)
-                            .font(.bodyLarge)
-                            .keyboardType(.numberPad)
-                            .padding(16)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(Color.backgroundGradientStart)
-                            )
-                            .overlay(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
-                            )
+                        ModernWheelIntField(
+                            value: $viewModel.dailyCalorieTarget,
+                            range: 1000...5000,
+                            unit: "kcal",
+                            step: 25
+                        )
                     }
                 }
                 .padding(24)
@@ -511,6 +507,7 @@ struct ModernMeasurementField: View {
     let icon: String
     let unit: String
     let placeholder: String
+    var useWheelPicker: Bool = false
 
     @State private var textValue = ""
 
@@ -526,33 +523,102 @@ struct ModernMeasurementField: View {
                     .foregroundColor(.textPrimary)
             }
 
-            HStack {
-                TextField(placeholder, text: $textValue)
-                    .font(.bodyLarge)
-                    .keyboardType(.decimalPad)
+            if useWheelPicker {
+                let currentValue = value ?? 70.0
+                let index = Int((currentValue * 10.0).rounded())
+                let normalizedIndex = min(max(((index + 2) / 5) * 5, 300), 3000)
+                HStack(spacing: 12) {
+                    Picker("", selection: Binding(
+                        get: { normalizedIndex },
+                        set: { newValue in
+                            value = Double(newValue) / 10.0
+                        }
+                    )) {
+                        ForEach(300...3000, id: \.self) { raw in
+                            if raw % 5 == 0 {
+                                Text(String(format: "%.1f", Double(raw) / 10.0)).tag(raw)
+                            }
+                        }
+                    }
+                    .pickerStyle(.wheel)
+                    .frame(height: 120)
+                    .clipped()
 
-                Text(unit)
-                    .font(.bodyMedium)
-                    .foregroundColor(.textSecondary)
-            }
-            .padding(16)
-            .background(
-                RoundedRectangle(cornerRadius: 12)
-                    .fill(Color.backgroundGradientStart)
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 12)
-                    .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
-            )
-            .onChange(of: textValue) { _, newValue in
-                value = Double(newValue)
-            }
-            .onAppear {
-                if let value = value {
-                    textValue = String(format: "%.1f", value)
+                    Text(unit)
+                        .font(.bodyMedium)
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(.horizontal, 12)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.backgroundGradientStart)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
+                )
+            } else {
+                HStack {
+                    TextField(placeholder, text: $textValue)
+                        .font(.bodyLarge)
+                        .keyboardType(.decimalPad)
+
+                    Text(unit)
+                        .font(.bodyMedium)
+                        .foregroundColor(.textSecondary)
+                }
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 12)
+                        .fill(Color.backgroundGradientStart)
+                )
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
+                )
+                .onChange(of: textValue) { _, newValue in
+                    value = Double(newValue)
+                }
+                .onAppear {
+                    if let value = value {
+                        textValue = String(format: "%.1f", value)
+                    }
                 }
             }
         }
+    }
+}
+
+struct ModernWheelIntField: View {
+    @Binding var value: Int
+    let range: ClosedRange<Int>
+    let unit: String
+    var step: Int = 1
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Picker("", selection: $value) {
+                ForEach(Array(stride(from: range.lowerBound, through: range.upperBound, by: step)), id: \.self) { item in
+                    Text("\(item)").tag(item)
+                }
+            }
+            .pickerStyle(.wheel)
+            .frame(height: 120)
+            .clipped()
+
+            Text(unit)
+                .font(.bodyMedium)
+                .foregroundColor(.textSecondary)
+        }
+        .padding(.horizontal, 12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.backgroundGradientStart)
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .stroke(Color.fitnessGradientStart.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 

@@ -256,6 +256,22 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func loadReminders(userId: Int, completion: @escaping (Result<[ReminderItemResponse], Error>) -> Void) {
+        APIService.shared.getReminders(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { reminders in
+                    completion(.success(reminders))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func hydrateSession(userId: Int, date: Date = Date(), completion: @escaping (Result<SessionHydrationResponse, Error>) -> Void) {
         APIService.shared.getSessionHydration(userId: userId, date: date)
             .receive(on: DispatchQueue.main)

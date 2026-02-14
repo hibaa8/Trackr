@@ -30,6 +30,7 @@ final class AICoachService {
         threadId: String?,
         agentId: String? = nil,
         userId: Int,
+        imageBase64: String? = nil,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
     ) {
         guard let url = URL(string: "\(baseURL)/coach/chat") else {
@@ -44,6 +45,9 @@ final class AICoachService {
         ]
         if let agentId {
             payload["agent_id"] = agentId
+        }
+        if let imageBase64, !imageBase64.isEmpty {
+            payload["image_base64"] = imageBase64
         }
 
         var request = URLRequest(url: url)

@@ -196,6 +196,15 @@ struct CoachSuggestionEnvelope: Codable {
     let suggestion: CoachSuggestionResponse?
 }
 
+struct ReminderItemResponse: Codable {
+    let id: Int
+    let reminder_type: String
+    let scheduled_at: String
+    let status: String
+    let channel: String
+    let related_plan_override_id: Int?
+}
+
 struct GamificationResponse: Codable {
     let points: Int
     let level: Int

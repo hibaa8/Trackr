@@ -701,6 +701,10 @@ struct VoiceActiveView: View {
     @State private var audioRecorder: AVAudioRecorder?
     @State private var recordingURL: URL?
     @State private var audioErrorMessage: String?
+    @State private var selectedImage: UIImage?
+    @State private var showImagePicker = false
+    @State private var showImageOptions = false
+    @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
     @EnvironmentObject private var authManager: AuthenticationManager
     @Environment(\.dismiss) private var dismiss
     @FocusState private var inputFocused: Bool
@@ -753,7 +757,36 @@ struct VoiceActiveView: View {
                 Spacer()
 
                 // Text input for agent chat
-                HStack(spacing: 12) {
+                VStack(spacing: 10) {
+                    if let selectedImage {
+                        HStack {
+                            Image(uiImage: selectedImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 64, height: 64)
+                                .clipShape(RoundedRectangle(cornerRadius: 10))
+                            Text("Image attached")
+                                .font(.system(size: 13, weight: .medium))
+                                .foregroundColor(.white.opacity(0.8))
+                            Spacer()
+                            Button(action: { self.selectedImage = nil }) {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                    }
+                    HStack(spacing: 12) {
+                    Button(action: { showImageOptions = true }) {
+                        Image(systemName: "plus")
+                            .font(.system(size: 16, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(
+                                Circle()
+                                    .fill(Color.white.opacity(0.2))
+                            )
+                    }
+
                     TextField("Type to ask your coach...", text: $messageText)
                         .font(.system(size: 15))
                         .foregroundColor(.white)
@@ -783,10 +816,11 @@ struct VoiceActiveView: View {
                             .padding(10)
                             .background(
                                 Circle()
-                                    .fill(messageText.isEmpty ? Color.gray.opacity(0.4) : Color.blue)
+                                    .fill(canSendMessage ? Color.blue : Color.gray.opacity(0.4))
                             )
                     }
-                    .disabled(messageText.isEmpty || isLoading)
+                    .disabled(!canSendMessage || isLoading)
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.bottom, 40)
@@ -806,6 +840,20 @@ struct VoiceActiveView: View {
                     sendMessage()
                 }
             }
+        }
+        .confirmationDialog("Add Image", isPresented: $showImageOptions, titleVisibility: .visible) {
+            Button("Take Picture") {
+                imagePickerSource = .camera
+                showImagePicker = true
+            }
+            Button("Select Picture") {
+                imagePickerSource = .photoLibrary
+                showImagePicker = true
+            }
+            Button("Cancel", role: .cancel) {}
+        }
+        .sheet(isPresented: $showImagePicker) {
+            VoiceImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
         }
     }
 
@@ -900,9 +948,19 @@ struct VoiceActiveView: View {
 
     private func sendMessage() {
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
+        let hasImage = selectedImage != nil
+        guard !trimmed.isEmpty || hasImage else { return }
 
-        let userMessage = VoiceMessage(id: UUID(), text: trimmed, isFromCoach: false, timestamp: Date())
+        let outboundText: String
+        if hasImage, trimmed.isEmpty {
+            outboundText = "Please analyze this meal image and log it."
+        } else if hasImage {
+            outboundText = trimmed
+        } else {
+            outboundText = trimmed
+        }
+        let previewText = hasImage ? "\(outboundText)\n[Image attached]" : outboundText
+        let userMessage = VoiceMessage(id: UUID(), text: previewText, isFromCoach: false, timestamp: Date())
         messages.append(userMessage)
         messageText = ""
         isLoading = true
@@ -917,11 +975,14 @@ struct VoiceActiveView: View {
             messages.append(errorMessage)
             return
         }
+        let imageBase64 = selectedImage?.jpegData(compressionQuality: 0.8)?.base64EncodedString()
+        selectedImage = nil
         AICoachService.shared.sendMessage(
-            trimmed,
+            outboundText,
             threadId: threadId,
             agentId: coach.id,
-            userId: userId
+            userId: userId,
+            imageBase64: imageBase64
         ) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
@@ -948,6 +1009,10 @@ struct VoiceActiveView: View {
                 }
             }
         }
+    }
+
+    private var canSendMessage: Bool {
+        !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedImage != nil
     }
 
     private var coachProfileHeader: some View {
@@ -1002,6 +1067,47 @@ struct VoiceMessage: Identifiable {
 
 private struct TranscriptionResponse: Decodable {
     let text: String
+}
+
+private struct VoiceImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    @Binding var selectedImage: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        let resolvedSource: UIImagePickerController.SourceType
+        if sourceType == .camera, UIImagePickerController.isSourceTypeAvailable(.camera) {
+            resolvedSource = .camera
+        } else {
+            resolvedSource = .photoLibrary
+        }
+        picker.sourceType = resolvedSource
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: VoiceImagePicker
+        init(_ parent: VoiceImagePicker) {
+            self.parent = parent
+        }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            parent.dismiss()
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
 }
 
 private struct GamificationSheetView: View {

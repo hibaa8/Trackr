@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var authManager: AuthenticationManager
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject var notificationManager: NotificationManager
     @StateObject private var backendConnector = FrontendBackendConnector.shared
     @State private var isPreparingDashboard = false
     @State private var preparingUserId: Int?
@@ -47,6 +48,10 @@ struct ContentView: View {
         .onChange(of: authManager.hasCompletedOnboarding) { _, _ in
             prepareDashboardIfNeeded()
         }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            guard authManager.isAuthenticated, let userId = authManager.effectiveUserId else { return }
+            syncReminderNotifications(userId: userId)
+        }
         .environmentObject(backendConnector)
     }
 
@@ -70,6 +75,7 @@ struct ContentView: View {
     private func refreshForUser(userId: Int, completion: @escaping () -> Void) {
         backendConnector.initializeApp(userId: userId)
         appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+        syncReminderNotifications(userId: userId)
         backendConnector.hydrateSession(userId: userId) { result in
             switch result {
             case .success(let hydration):
@@ -94,6 +100,18 @@ struct ContentView: View {
                 group.notify(queue: .main) {
                     completion()
                 }
+            }
+        }
+    }
+
+    private func syncReminderNotifications(userId: Int) {
+        let notificationsEnabled = UserDefaults.standard.object(forKey: "enableNotifications") as? Bool ?? true
+        backendConnector.loadReminders(userId: userId) { result in
+            switch result {
+            case .success(let reminders):
+                notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
+            case .failure(let error):
+                print("Failed to sync reminders: \(error)")
             }
         }
     }
