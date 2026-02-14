@@ -29,6 +29,7 @@ import certifi
 import json
 import urllib.parse
 import urllib.request
+import stripe
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
@@ -921,6 +922,16 @@ class AuthResponse(BaseModel):
     onboarding_completed: bool
 
 
+class BillingCheckoutRequest(BaseModel):
+    user_id: int
+    plan_tier: str = "premium"
+
+
+class BillingCheckoutResponse(BaseModel):
+    checkout_url: str
+    session_id: str
+
+
 class PlanDayResponse(BaseModel):
     date: str
     workout_plan: str
@@ -1424,6 +1435,70 @@ def auth_signin(payload: AuthSignInRequest):
         name=str(row[2] or "User"),
         onboarding_completed=_onboarding_completed_from_row(row),
     )
+
+
+@app.post("/api/billing/checkout-session", response_model=BillingCheckoutResponse)
+def create_checkout_session(payload: BillingCheckoutRequest):
+    if payload.plan_tier.lower() != "premium":
+        raise HTTPException(status_code=400, detail="Only premium checkout is supported.")
+
+    stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
+    stripe_price_id = os.getenv("STRIPE_PREMIUM_PRICE_ID", "").strip()
+    if not stripe_secret_key:
+        raise HTTPException(status_code=500, detail="Missing STRIPE_SECRET_KEY env var.")
+
+    stripe.api_key = stripe_secret_key
+    success_url = os.getenv("STRIPE_SUCCESS_URL", "https://example.com/billing/success")
+    cancel_url = os.getenv("STRIPE_CANCEL_URL", "https://example.com/billing/cancel")
+
+    user_email = None
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT email FROM users WHERE id = ? LIMIT 1", (payload.user_id,))
+        row = cur.fetchone()
+        if row and row[0]:
+            user_email = str(row[0]).strip()
+
+    line_items: List[Dict[str, Any]]
+    if stripe_price_id:
+        line_items = [{"price": stripe_price_id, "quantity": 1}]
+    else:
+        # Fallback inline pricing for local testing when no Stripe Price ID is configured.
+        line_items = [
+            {
+                "price_data": {
+                    "currency": "usd",
+                    "product_data": {"name": "Vaylo Fitness Premium Plan"},
+                    "unit_amount": 1499,
+                },
+                "quantity": 1,
+            }
+        ]
+
+    base_params: Dict[str, Any] = {
+        "mode": "payment",
+        "line_items": line_items,
+        "billing_address_collection": "required",
+        "customer_creation": "always",
+        "success_url": success_url,
+        "cancel_url": cancel_url,
+        "customer_email": user_email or None,
+        "metadata": {
+            "user_id": str(payload.user_id),
+            "plan_tier": "premium",
+        },
+    }
+
+    try:
+        session = stripe.checkout.Session.create(**base_params)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create checkout session: {exc}") from exc
+
+    checkout_url = getattr(session, "url", None)
+    session_id = getattr(session, "id", "")
+    if not checkout_url or not session_id:
+        raise HTTPException(status_code=500, detail="Stripe checkout session missing url or id.")
+    return BillingCheckoutResponse(checkout_url=checkout_url, session_id=session_id)
 
 
 @app.post("/coach/chat", response_model=CoachChatResponse)

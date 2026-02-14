@@ -35,6 +35,9 @@ struct MainTabView: View {
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen)
         }
+        .onReceive(NotificationCenter.default.publisher(for: .openDashboardTab)) { _ in
+            selectedTab = 1
+        }
     }
 
     private func globalBottomToolbar(showVoice: Bool) -> some View {
@@ -834,9 +837,14 @@ struct SettingsPageView: View {
     @EnvironmentObject private var authManager: AuthenticationManager
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var notificationManager: NotificationManager
+    @Environment(\.openURL) private var openURL
     @AppStorage("enableNotifications") private var notificationsEnabled = true
+    @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
     @State private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
+    @State private var showManagePlan = false
+    @State private var isCreatingCheckout = false
+    @State private var billingErrorMessage: String?
 
     var body: some View {
         NavigationView {
@@ -883,6 +891,34 @@ struct SettingsPageView: View {
                 notificationManager.cancelReminderNotifications()
             }
         }
+        .sheet(isPresented: $showManagePlan) {
+            NavigationView {
+                ManagePlanView(
+                    selectedPlanTier: selectedPlanTier,
+                    isLoadingPremiumCheckout: isCreatingCheckout,
+                    onChooseFree: {
+                        selectedPlanTier = "free"
+                        showManagePlan = false
+                    },
+                    onChoosePremium: {
+                        startPremiumCheckout()
+                    }
+                )
+            }
+        }
+        .alert(
+            "Billing Error",
+            isPresented: Binding(
+                get: { billingErrorMessage != nil },
+                set: { if !$0 { billingErrorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { billingErrorMessage = nil }
+            },
+            message: {
+                Text(billingErrorMessage ?? "Unable to open checkout.")
+            }
+        )
     }
 
     private var headerView: some View {
@@ -988,7 +1024,13 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
-            SettingsRow(title: "Subscription", value: "Premium", highlight: true)
+            SettingsRow(
+                title: "Manage Plan",
+                value: selectedPlanTier == "premium" ? "$14.99 Premium" : "Free",
+                highlight: selectedPlanTier == "premium"
+            ) {
+                showManagePlan = true
+            }
 
             Divider()
                 .background(Color.white.opacity(0.2))
@@ -1008,6 +1050,35 @@ struct SettingsPageView: View {
                 notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
             case .failure(let error):
                 print("Failed to load reminders for settings sync: \(error)")
+            }
+        }
+    }
+
+    private func startPremiumCheckout() {
+        guard let userId = authManager.effectiveUserId else { return }
+        isCreatingCheckout = true
+        backendConnector.createBillingCheckoutSession(userId: userId, planTier: "premium") { result in
+            isCreatingCheckout = false
+            switch result {
+            case .success(let session):
+                guard let url = URL(string: session.checkout_url) else {
+                    billingErrorMessage = "Invalid checkout URL."
+                    return
+                }
+                openURL(url)
+            case .failure(let error):
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .serverErrorWithMessage(_, let message):
+                        billingErrorMessage = message
+                    case .serverError(let code):
+                        billingErrorMessage = "Checkout failed (HTTP \(code))."
+                    default:
+                        billingErrorMessage = "\(apiError)"
+                    }
+                } else {
+                    billingErrorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -1096,6 +1167,104 @@ struct SettingsRow: View {
         } else {
             content
         }
+    }
+}
+
+struct ManagePlanView: View {
+    let selectedPlanTier: String
+    let isLoadingPremiumCheckout: Bool
+    let onChooseFree: () -> Void
+    let onChoosePremium: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 18) {
+                Text("Manage Plan")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(.white)
+
+                planCard(
+                    title: "Free Plan",
+                    subtitle: "Core coaching and tracking features.",
+                    price: "$0",
+                    isSelected: selectedPlanTier == "free",
+                    buttonTitle: selectedPlanTier == "free" ? "Current Plan" : "Choose Free",
+                    buttonAction: onChooseFree
+                )
+
+                planCard(
+                    title: "Premium Plan",
+                    subtitle: "Advanced coaching tools and premium features.",
+                    price: "$14.99 / month + tax",
+                    isSelected: selectedPlanTier == "premium",
+                    buttonTitle: isLoadingPremiumCheckout ? "Opening Checkout..." : "Choose Premium",
+                    buttonAction: onChoosePremium,
+                    buttonDisabled: isLoadingPremiumCheckout
+                )
+
+                Spacer()
+            }
+            .padding(20)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
+            }
+        }
+    }
+
+    private func planCard(
+        title: String,
+        subtitle: String,
+        price: String,
+        isSelected: Bool,
+        buttonTitle: String,
+        buttonAction: @escaping () -> Void,
+        buttonDisabled: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.15)))
+                }
+            }
+            Text(price)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.7))
+            Button(action: buttonAction) {
+                Text(buttonTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue))
+            }
+            .disabled(buttonDisabled)
+            .opacity(buttonDisabled ? 0.7 : 1.0)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(isSelected ? Color.blue : Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
     }
 }
 

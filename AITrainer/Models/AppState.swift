@@ -4,6 +4,7 @@ import Combine
 
 extension Notification.Name {
     static let dataDidUpdate = Notification.Name("DataDidUpdate")
+    static let openDashboardTab = Notification.Name("OpenDashboardTab")
 }
 
 class AppState: ObservableObject {

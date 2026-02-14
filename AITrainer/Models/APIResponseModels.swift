@@ -228,6 +228,11 @@ struct SessionHydrationResponse: Codable {
     let coach_suggestion: CoachSuggestionResponse?
 }
 
+struct BillingCheckoutSessionResponse: Codable {
+    let checkout_url: String
+    let session_id: String
+}
+
 enum JSONValue: Codable {
     case string(String)
     case number(Double)

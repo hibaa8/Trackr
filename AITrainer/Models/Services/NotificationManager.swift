@@ -301,7 +301,7 @@ class NotificationManager: NSObject, ObservableObject {
             content.categoryIdentifier = "MEAL_REMINDER"
         } else {
             content.title = "Fitness Reminder"
-            content.body = "You have a scheduled reminder in Trackr."
+            content.body = "You have a scheduled reminder in Vaylo Fitness."
             content.categoryIdentifier = "GENERAL_REMINDER"
         }
 

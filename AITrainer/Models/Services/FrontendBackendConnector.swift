@@ -272,6 +272,22 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func createBillingCheckoutSession(userId: Int, planTier: String = "premium", completion: @escaping (Result<BillingCheckoutSessionResponse, Error>) -> Void) {
+        APIService.shared.createBillingCheckoutSession(userId: userId, planTier: planTier)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { response in
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func hydrateSession(userId: Int, date: Date = Date(), completion: @escaping (Result<SessionHydrationResponse, Error>) -> Void) {
         APIService.shared.getSessionHydration(userId: userId, date: date)
             .receive(on: DispatchQueue.main)
