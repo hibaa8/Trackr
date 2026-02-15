@@ -7,9 +7,9 @@ from typing import Any
 from vercel_runtime import Response
 
 ROOT = Path(__file__).resolve().parents[1]
-TRACKR_DIR = ROOT
-if str(TRACKR_DIR) not in sys.path:
-    sys.path.insert(0, str(TRACKR_DIR))
+VAYLO_FITNESS_DIR = ROOT
+if str(VAYLO_FITNESS_DIR) not in sys.path:
+    sys.path.insert(0, str(VAYLO_FITNESS_DIR))
 
 from agent.tools.plan_tools import _estimate_cardio_minutes  # noqa: E402
 from agent.tools.activity_utils import _estimate_workout_calories  # noqa: E402

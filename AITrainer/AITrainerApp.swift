@@ -35,6 +35,10 @@ struct AITrainerApp: App {
                 }
                 .onOpenURL { url in
                     authManager.handleAuthCallback(url: url)
+                    if let host = url.host?.lowercased(),
+                       host == "billing-success" || host == "billing-cancel" {
+                        NotificationCenter.default.post(name: .openDashboardTab, object: nil)
+                    }
                 }
         }
     }

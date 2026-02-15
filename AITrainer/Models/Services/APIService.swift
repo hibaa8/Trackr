@@ -14,11 +14,18 @@ enum APIError: Error {
     case invalidResponse
     case decodingFailed(Error)
     case serverError(Int)
+    case serverErrorWithMessage(Int, String)
     case unauthorized
 }
 
 class APIService {
     static let shared = APIService()
+    
+    private struct APIErrorEnvelope: Decodable {
+        let detail: String?
+        let error: String?
+        let message: String?
+    }
     
     private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
@@ -70,6 +77,11 @@ class APIService {
                 guard (200...299).contains(httpResponse.statusCode) else {
                     if httpResponse.statusCode == 401 {
                         throw APIError.unauthorized
+                    }
+                    let decoded = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
+                    let message = decoded?.detail ?? decoded?.error ?? decoded?.message
+                    if let message, !message.isEmpty {
+                        throw APIError.serverErrorWithMessage(httpResponse.statusCode, message)
                     }
                     throw APIError.serverError(httpResponse.statusCode)
                 }
@@ -363,8 +375,30 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getReminders(userId: Int) -> AnyPublisher<[ReminderItemResponse], APIError> {
+        return request(endpoint: "/api/reminders?user_id=\(userId)")
+    }
+
+    func createBillingCheckoutSession(userId: Int, planTier: String = "premium") -> AnyPublisher<BillingCheckoutSessionResponse, APIError> {
+        struct CheckoutRequest: Codable {
+            let user_id: Int
+            let plan_tier: String
+        }
+        guard let jsonData = try? JSONEncoder().encode(CheckoutRequest(user_id: userId, plan_tier: planTier)) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/billing/checkout-session", method: "POST", body: jsonData)
+    }
+
     func getGamification(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
+    }
+
+    func getSessionHydration(userId: Int, date: Date = Date()) -> AnyPublisher<SessionHydrationResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/api/session/hydrate?user_id=\(userId)&day=\(dateString)")
     }
 
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {

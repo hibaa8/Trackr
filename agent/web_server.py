@@ -1084,8 +1084,7 @@ def create_handler(agent_service: AgentService):
                         cur = conn.cursor()
                         cur.execute("SELECT 1")
                         cur.fetchone()
-                        using_sqlite = conn._adapt_query is False
-                    _send_json(self, 200, {"ok": True, "db": "sqlite" if using_sqlite else "postgres"})
+                    _send_json(self, 200, {"ok": True, "db": "postgres"})
                 except Exception as exc:
                     _send_json(self, 500, {"ok": False, "error": str(exc)})
                 return

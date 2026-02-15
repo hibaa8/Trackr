@@ -21,6 +21,9 @@ struct MainTabView: View {
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
         .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .openDashboardTab)) { _ in
+            selectedTab = 1
+        }
     }
 }
 
@@ -72,6 +75,9 @@ struct ProgressPageView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
             loadProgressData()
+        }
+        .onChange(of: selectedPeriod) { _, _ in
+            weeklyCalories = buildPeriodCalories(from: progress?.meals ?? [])
         }
     }
 
@@ -207,24 +213,28 @@ struct ProgressPageView: View {
                         }
                         .frame(width: 30)
 
-                        // Bar chart
-                        HStack(alignment: .bottom, spacing: 6) {
-                            let maxValue = max(weeklyCalories.max() ?? 0, 1)
-                            ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
-                                let height = CGFloat(value) / CGFloat(maxValue) * 90
-                                VStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
-                                        .frame(width: 12, height: max(6, height))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            // Keep card width fixed; only chart content scrolls on Month/Year.
+                            HStack(alignment: .bottom, spacing: 6) {
+                                let maxValue = max(weeklyCalories.max() ?? 0, 1)
+                                ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
+                                    let height = CGFloat(value) / CGFloat(maxValue) * 90
+                                    VStack(spacing: 4) {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
+                                            .frame(width: 12, height: max(6, height))
 
-                                    if index % 3 == 0 {
-                                        Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.white.opacity(0.6))
+                                        if index % 3 == 0 {
+                                            Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.white.opacity(0.6))
+                                        }
                                     }
                                 }
                             }
+                            .frame(minWidth: max(120, CGFloat(weeklyCalories.count) * 18), alignment: .leading)
                         }
+                        .frame(maxWidth: .infinity)
 
                         VStack(alignment: .trailing, spacing: 20) {
                             Text("120").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
@@ -355,7 +365,7 @@ struct ProgressPageView: View {
         switch selectedPeriod {
         case 0: return 7
         case 1: return 30
-        default: return 365
+        default: return 256
         }
     }
 
@@ -380,6 +390,28 @@ struct ProgressPageView: View {
     private func workoutDate(from value: String?) -> Date? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
+        }
+        let lowered = value.lowercased()
+        let calendar = Calendar.current
+        if lowered == "today" || lowered == "now" {
+            return Date()
+        }
+        if lowered == "yesterday" {
+            return calendar.date(byAdding: .day, value: -1, to: Date())
+        }
+        if let weekMatch = lowered.range(of: #"^(\d+)\s*week(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[weekMatch])
+            let digits = token.filter(\.isNumber)
+            if let weeks = Int(digits) {
+                return calendar.date(byAdding: .day, value: -(weeks * 7), to: Date())
+            }
+        }
+        if let dayMatch = lowered.range(of: #"^(\d+)\s*day(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[dayMatch])
+            let digits = token.filter(\.isNumber)
+            if let days = Int(digits) {
+                return calendar.date(byAdding: .day, value: -days, to: Date())
+            }
         }
         let isoFormatter = ISO8601DateFormatter()
         if let isoDate = isoFormatter.date(from: value) {
@@ -441,7 +473,7 @@ struct ProgressPageView: View {
                 switch result {
                 case .success(let response):
                     progress = response
-                    weeklyCalories = buildWeeklyCalories(from: response.meals)
+                    weeklyCalories = buildPeriodCalories(from: response.meals)
                 case .failure:
                     break
                 }
@@ -454,8 +486,11 @@ struct ProgressPageView: View {
         }
     }
 
-    private func buildWeeklyCalories(from meals: [ProgressMealResponse]) -> [Int] {
-        let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+    private func buildPeriodCalories(from meals: [ProgressMealResponse]) -> [Int] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let days = (0..<selectedPeriodDayWindow).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
         var totals = Array(repeating: 0, count: days.count)
         for meal in meals {
             guard let loggedAt = meal.logged_at else { continue }
@@ -470,13 +505,25 @@ struct ProgressPageView: View {
         return totals
     }
 
+    private var periodCheckins: [ProgressCheckinResponse] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return sortedCheckins
+        }
+        return sortedCheckins.filter {
+            guard let checkinDate = workoutDate(from: $0.date) else { return false }
+            let day = calendar.startOfDay(for: checkinDate)
+            return day >= earliest && day <= today
+        }
+    }
+
     private var sortedCheckins: [ProgressCheckinResponse] {
         (progress?.checkins ?? []).sorted { $0.date < $1.date }
     }
 
     private var weightSeries: [Double] {
-        let values = sortedCheckins.compactMap { $0.weight_kg }
-        return Array(values.suffix(7))
+        periodCheckins.compactMap { $0.weight_kg }
     }
 
     private func weightLinePath(in rect: CGRect) -> Path {
@@ -527,9 +574,9 @@ struct ProgressPageView: View {
     }
 
     private var weightDeltaText: String {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return "No recent change" }
         let delta = last - prev
         let sign = delta >= 0 ? "+" : ""
@@ -537,17 +584,17 @@ struct ProgressPageView: View {
     }
 
     private var weightDeltaIcon: String {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return "minus" }
         return last <= prev ? "arrow.down" : "arrow.up"
     }
 
     private var weightDeltaColor: Color {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return .white.opacity(0.6) }
         return last <= prev ? .green : .red
     }
@@ -569,20 +616,33 @@ struct ProgressPageView: View {
 
     private var workoutCompletionRatio: Double {
         let workouts = progress?.workouts ?? []
-        let recent = workouts.filter { workout in
-            guard let dateStr = workout.date,
-                  let date = dayKeyFormatter.date(from: dateStr)
-            else { return false }
-            let days = calendar.dateComponents([.day], from: date, to: Date()).day ?? 0
-            return days <= 6 && (workout.completed ?? false)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return 0
         }
-        return min(1.0, Double(recent.count) / 7.0)
+        let recent = workouts.filter { workout in
+            guard let date = workoutDate(from: workout.date)
+            else { return false }
+            let day = calendar.startOfDay(for: date)
+            return day >= earliest && day <= today && (workout.completed ?? false)
+        }
+        return min(1.0, Double(recent.count) / Double(selectedPeriodDayWindow))
     }
 
     private var workoutDateKeys: Set<String> {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return []
+        }
         return Set((progress?.workouts ?? []).compactMap { workout in
-            guard workout.completed == true, let date = workout.date else { return nil }
-            return date
+            guard workout.completed == true, let date = workoutDate(from: workout.date) else { return nil }
+            let day = calendar.startOfDay(for: date)
+            guard day >= earliest && day <= today else { return nil }
+            return formatter.string(from: day)
         })
     }
 
@@ -718,9 +778,15 @@ struct SettingsPageView: View {
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
-    @State private var notificationsEnabled = true
+    @EnvironmentObject private var notificationManager: NotificationManager
+    @Environment(\.openURL) private var openURL
+    @AppStorage("enableNotifications") private var notificationsEnabled = true
+    @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
     @State private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
+    @State private var showManagePlan = false
+    @State private var isCreatingCheckout = false
+    @State private var billingErrorMessage: String?
 
     var body: some View {
         NavigationView {
@@ -749,13 +815,52 @@ struct SettingsPageView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
+            notificationManager.checkAuthorizationStatus()
             guard let userId = authManager.effectiveUserId else { return }
             backendConnector.loadProfile(userId: userId) { result in
                 if case .success(let response) = result {
                     profileUser = response.user
                 }
             }
+            syncReminderNotifications(userId: userId)
         }
+        .onChange(of: notificationsEnabled) { _, isEnabled in
+            guard let userId = authManager.effectiveUserId else { return }
+            if isEnabled {
+                notificationManager.sendToggleOnTestNotification()
+                syncReminderNotifications(userId: userId)
+            } else {
+                notificationManager.cancelReminderNotifications()
+            }
+        }
+        .sheet(isPresented: $showManagePlan) {
+            NavigationView {
+                ManagePlanView(
+                    selectedPlanTier: selectedPlanTier,
+                    isLoadingPremiumCheckout: isCreatingCheckout,
+                    onChooseFree: {
+                        selectedPlanTier = "free"
+                        showManagePlan = false
+                    },
+                    onChoosePremium: {
+                        startPremiumCheckout()
+                    }
+                )
+            }
+        }
+        .alert(
+            "Billing Error",
+            isPresented: Binding(
+                get: { billingErrorMessage != nil },
+                set: { if !$0 { billingErrorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { billingErrorMessage = nil }
+            },
+            message: {
+                Text(billingErrorMessage ?? "Unable to open checkout.")
+            }
+        )
     }
 
     private var headerView: some View {
@@ -845,18 +950,6 @@ struct SettingsPageView: View {
                 }
 
                 Spacer()
-
-                Button("Change Coach") {
-                    // Handle coach change
-                }
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.blue)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.blue, lineWidth: 1)
-                )
             }
         }
         .padding(20)
@@ -873,15 +966,61 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
-            SettingsRow(title: "Subscription", value: "Premium", highlight: true)
+            SettingsRow(
+                title: "Manage Plan",
+                value: selectedPlanTier == "premium" ? "$14.99 Premium" : "Free",
+                highlight: selectedPlanTier == "premium"
+            ) {
+                showManagePlan = true
+            }
 
             Divider()
                 .background(Color.white.opacity(0.2))
 
-            SettingsRow(title: "Help & Feedback")
+            SettingsRow(title: "Help")
             SettingsRow(title: "Privacy Policy")
             SettingsRow(title: "Log Out", isDestructive: true) {
                 authManager.signOut()
+            }
+        }
+    }
+
+    private func syncReminderNotifications(userId: Int) {
+        backendConnector.loadReminders(userId: userId) { result in
+            switch result {
+            case .success(let reminders):
+                notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
+            case .failure(let error):
+                print("Failed to load reminders for settings sync: \(error)")
+            }
+        }
+    }
+
+    private func startPremiumCheckout() {
+        guard let userId = authManager.effectiveUserId else { return }
+        isCreatingCheckout = true
+        backendConnector.createBillingCheckoutSession(userId: userId, planTier: "premium") { result in
+            isCreatingCheckout = false
+            switch result {
+            case .success(let session):
+                guard let url = URL(string: session.checkout_url) else {
+                    billingErrorMessage = "Invalid checkout URL."
+                    return
+                }
+                openURL(url)
+            case .failure(let error):
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .serverErrorWithMessage(_, let message):
+                        billingErrorMessage = message
+                    case .serverError(let code):
+                        billingErrorMessage = "Checkout failed (HTTP \(code))."
+                    default:
+                        billingErrorMessage = "\(apiError)"
+                    }
+                } else {
+                    billingErrorMessage = error.localizedDescription
+                }
             }
         }
     }
@@ -970,6 +1109,104 @@ struct SettingsRow: View {
         } else {
             content
         }
+    }
+}
+
+struct ManagePlanView: View {
+    let selectedPlanTier: String
+    let isLoadingPremiumCheckout: Bool
+    let onChooseFree: () -> Void
+    let onChoosePremium: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 18) {
+                Text("Manage Plan")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(.white)
+
+                planCard(
+                    title: "Free Plan",
+                    subtitle: "Core coaching and tracking features.",
+                    price: "$0",
+                    isSelected: selectedPlanTier == "free",
+                    buttonTitle: selectedPlanTier == "free" ? "Current Plan" : "Choose Free",
+                    buttonAction: onChooseFree
+                )
+
+                planCard(
+                    title: "Premium Plan",
+                    subtitle: "Advanced coaching tools and premium features.",
+                    price: "$14.99 / month + tax",
+                    isSelected: selectedPlanTier == "premium",
+                    buttonTitle: isLoadingPremiumCheckout ? "Opening Checkout..." : "Choose Premium",
+                    buttonAction: onChoosePremium,
+                    buttonDisabled: isLoadingPremiumCheckout
+                )
+
+                Spacer()
+            }
+            .padding(20)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
+            }
+        }
+    }
+
+    private func planCard(
+        title: String,
+        subtitle: String,
+        price: String,
+        isSelected: Bool,
+        buttonTitle: String,
+        buttonAction: @escaping () -> Void,
+        buttonDisabled: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.15)))
+                }
+            }
+            Text(price)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.7))
+            Button(action: buttonAction) {
+                Text(buttonTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue))
+            }
+            .disabled(buttonDisabled)
+            .opacity(buttonDisabled ? 0.7 : 1.0)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(isSelected ? Color.blue : Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
     }
 }
 

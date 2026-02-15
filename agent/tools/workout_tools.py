@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -7,7 +8,7 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import tool
 
 from agent.config.constants import CACHE_TTL_LONG, _draft_workout_sessions_key, _draft_workout_sessions_ops_key
-from agent.redis.cache import _redis_get_json, _redis_set_json
+from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
 from agent.tools.plan_tools import _load_user_context_data
@@ -103,6 +104,33 @@ def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -
         conn.commit()
 
 
+def _invalidate_workout_cache(user_id: int) -> None:
+    _redis_delete(_draft_workout_sessions_key(user_id))
+    _redis_delete("workout:latest")
+
+
+def _idempotency_key_for_workout(
+    user_id: int,
+    session_date: str,
+    workout_type: str,
+    duration_min: int,
+    calories_burned: int,
+    exercises: List[Dict[str, Any]],
+    explicit_key: Optional[str],
+) -> str:
+    if explicit_key and explicit_key.strip():
+        return explicit_key.strip()
+    payload = {
+        "date": session_date,
+        "workout_type": workout_type,
+        "duration_min": duration_min,
+        "calories_burned": calories_burned,
+        "exercises": exercises,
+    }
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
+    return f"auto:{digest}"
+
+
 @tool("get_workout_sessions")
 def get_workout_sessions(user_id: int) -> str:
     """Return logged workout sessions from the draft cache."""
@@ -185,6 +213,7 @@ def log_workout_session(
     notes: Optional[str] = None,
     completed: bool = True,
     exercises: Optional[List[Dict[str, Any]]] = None,
+    idempotency_key: Optional[str] = None,
 ) -> str:
     """Log a workout session (with detailed exercises) into the draft."""
     print(f"[log_workout_session] user_id={user_id} date={date} workout_type={workout_type} duration_min={duration_min} calories_burned={calories_burned}")
@@ -231,6 +260,19 @@ def log_workout_session(
         user = context.get("user") if isinstance(context, dict) else None
         weight_kg = user[4] if user and len(user) > 4 else 0
         calories_burned = _estimate_workout_calories(weight_kg, exercise_list, duration_min)
+    idem_key = _idempotency_key_for_workout(
+        user_id=user_id,
+        session_date=session_date,
+        workout_type=workout_type or "Workout",
+        duration_min=duration_min or 0,
+        calories_burned=calories_burned or 0,
+        exercises=exercise_list,
+        explicit_key=idempotency_key,
+    )
+    idem_cache_key = f"idem:tool:workout:{user_id}:{idem_key}"
+    cached = _redis_get_json(idem_cache_key)
+    if isinstance(cached, dict) and cached.get("message"):
+        return str(cached["message"])
     detail_payload = {"exercises": exercise_list}
     if notes:
         detail_payload["notes"] = notes
@@ -279,8 +321,11 @@ def log_workout_session(
             },
         )
         _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+        _invalidate_workout_cache(user_id)
         _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
-        return "Workout session updated for this session."
+        message = "Workout session updated for this session."
+        _redis_set_json(idem_cache_key, {"message": message}, ttl_seconds=600)
+        return message
     new_entry = {
         "id": None,
         "user_id": user_id,
@@ -306,8 +351,11 @@ def log_workout_session(
         },
     )
     _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+    _invalidate_workout_cache(user_id)
     _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
-    return "Workout session logged for this session."
+    message = "Workout session logged for this session."
+    _redis_set_json(idem_cache_key, {"message": message}, ttl_seconds=600)
+    return message
 
 
 @tool("remove_workout_exercise")

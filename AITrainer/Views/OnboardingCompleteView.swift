@@ -213,9 +213,11 @@ struct TrainerMainView: View {
             } else {
                 todayPlan = appState.todayPlan
             }
+            refreshDashboardData()
             loadGamification(trackGain: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            refreshDashboardData()
             loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
@@ -602,6 +604,12 @@ struct TrainerMainView: View {
 
     // AppState handles daily intake refresh
 
+    private func refreshDashboardData() {
+        guard let userId = authManager.effectiveUserId else { return }
+        appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+        loadTodayPlan()
+    }
+
     private func loadTodayPlan() {
         guard let userId = authManager.effectiveUserId else {
             return
@@ -897,6 +905,10 @@ struct VoiceActiveView: View {
         let imageToUpload = selectedImage
         selectedImage = nil
         isLoading = true
+        guard let userId = authManager.effectiveUserId else {
+            isLoading = false
+            return
+        }
 
         if let imageToUpload {
             uploadImage(imageToUpload, message: outgoingText) { result in
@@ -907,16 +919,23 @@ struct VoiceActiveView: View {
                 case .failure:
                     imageBase64 = nil
                 }
-                sendChat(outgoingText, imageBase64: imageBase64)
+                sendChat(outgoingText, imageBase64: imageBase64, userId: userId)
             }
         } else {
-            sendChat(outgoingText, imageBase64: nil)
+            sendChat(outgoingText, imageBase64: nil, userId: userId)
         }
     }
 
-    private func sendChat(_ outgoingText: String, imageBase64: String?) {
-        let userId = authManager.effectiveUserId
-        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id, imageBase64: imageBase64, userId: userId) { result in
+    }
+
+    private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
+        AICoachService.shared.sendMessage(
+            outgoingText,
+            threadId: threadId,
+            agentId: coach.id,
+            userId: userId,
+            imageBase64: imageBase64
+        ) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -1114,6 +1133,47 @@ struct VoiceMessage: Identifiable {
     let image: UIImage?
 }
 
+
+private struct VoiceImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    @Binding var selectedImage: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        let resolvedSource: UIImagePickerController.SourceType
+        if sourceType == .camera, UIImagePickerController.isSourceTypeAvailable(.camera) {
+            resolvedSource = .camera
+        } else {
+            resolvedSource = .photoLibrary
+        }
+        picker.sourceType = resolvedSource
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: VoiceImagePicker
+        init(_ parent: VoiceImagePicker) {
+            self.parent = parent
+        }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            parent.dismiss()
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
 
 private struct GamificationSheetView: View {
     let summary: GamificationResponse

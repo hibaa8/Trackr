@@ -196,6 +196,15 @@ struct CoachSuggestionEnvelope: Codable {
     let suggestion: CoachSuggestionResponse?
 }
 
+struct ReminderItemResponse: Codable {
+    let id: Int
+    let reminder_type: String
+    let scheduled_at: String
+    let status: String
+    let channel: String
+    let related_plan_override_id: Int?
+}
+
 struct GamificationResponse: Codable {
     let points: Int
     let level: Int
@@ -206,6 +215,22 @@ struct GamificationResponse: Codable {
     let unlocked_freeze_streaks: Int
     let used_freeze_streaks: Int
     let share_text: String
+}
+
+struct SessionHydrationResponse: Codable {
+    let user_id: Int
+    let date: String
+    let profile: ProfileResponse
+    let progress: ProgressResponse
+    let today_plan: PlanDayResponse?
+    let daily_intake: DailyIntakeResponse
+    let gamification: GamificationResponse
+    let coach_suggestion: CoachSuggestionResponse?
+}
+
+struct BillingCheckoutSessionResponse: Codable {
+    let checkout_url: String
+    let session_id: String
 }
 
 enum JSONValue: Codable {
