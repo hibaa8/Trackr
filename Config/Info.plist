@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>BackendBaseURL</key>
-	<string>http://localhost:8000</string>
+	<string>https://vaylo-fitness.onrender.com</string>
 	<key>SupabaseURL</key>
 	<string>https://fubkjshjbnlaqybvpnqy.supabase.co</string>
 	<key>SupabaseAnonKey</key>
