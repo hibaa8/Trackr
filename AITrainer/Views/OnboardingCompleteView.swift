@@ -186,7 +186,7 @@ struct TrainerMainView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    headerView
+                    headerView(topInset: geometry.safeAreaInsets.top)
                         .padding(.bottom, 30)
 
                     greetingSection
@@ -266,7 +266,7 @@ struct TrainerMainView: View {
         }
     }
 
-    private var headerView: some View {
+    private func headerView(topInset: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
@@ -327,7 +327,7 @@ struct TrainerMainView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 12)
+        .padding(.top, topInset + 12)
         .frame(maxWidth: .infinity)
     }
 
@@ -926,8 +926,6 @@ struct VoiceActiveView: View {
         }
     }
 
-    }
-
     private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
         AICoachService.shared.sendMessage(
             outgoingText,
@@ -1195,6 +1193,8 @@ private struct GamificationSheetView: View {
                 }
                 .padding(.top, 4)
 
+                xpProgressBar
+
                 HStack(spacing: 12) {
                     statCard(title: "Streak", value: "\(summary.streak_days) days")
                     statCard(title: "Best", value: "\(summary.best_streak_days) days")
@@ -1203,6 +1203,17 @@ private struct GamificationSheetView: View {
                     statCard(title: "Freeze", value: "\(summary.freeze_streaks)")
                     statCard(title: "Unlocked", value: "\(summary.unlocked_freeze_streaks)")
                 }
+
+                Button(action: { onUseFreeze() }) {
+                    Text("Use freeze to save your streak")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.blue.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(summary.freeze_streaks <= 0)
+                .opacity(summary.freeze_streaks <= 0 ? 0.5 : 1)
 
                 ShareLink(item: summary.share_text) {
                     Text("Share streak with friends")
@@ -1223,6 +1234,37 @@ private struct GamificationSheetView: View {
                 }
             }
         }
+    }
+
+    private var xpProgressBar: some View {
+        let total = max(1, summary.next_level_points)
+        let progress = min(1.0, max(0.0, Double(summary.points) / Double(total)))
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Progress to next level")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(summary.points)/\(summary.next_level_points)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 10)
+
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.blue)
+                        .frame(width: geo.size.width * progress, height: 10)
+                }
+            }
+            .frame(height: 10)
+        }
+        .padding(.horizontal, 2)
     }
 
     private func statCard(title: String, value: String) -> some View {
