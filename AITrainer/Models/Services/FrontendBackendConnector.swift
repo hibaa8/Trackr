@@ -239,6 +239,23 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func updateProfile(payload: ProfileUpdateRequest, completion: @escaping (Result<ProfileResponse, Error>) -> Void) {
+        APIService.shared.updateProfile(payload)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.profile = response
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func loadProgress(userId: Int, completion: @escaping (Result<ProgressResponse, Error>) -> Void) {
         APIService.shared.getProgress(userId: userId)
             .receive(on: DispatchQueue.main)
@@ -322,6 +339,27 @@ class FrontendBackendConnector: ObservableObject {
                 }
             }
         }.resume()
+    }
+
+    // MARK: - Coach Management
+
+    func changeCoach(userId: Int, newCoachId: Int, completion: @escaping (Result<Void, Error>) -> Void) {
+        APIService.shared.changeUserCoach(userId: userId, newCoachId: newCoachId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] _ in
+                    // Refresh session data after successful coach change
+                    self?.hydrateSession(userId: userId) { _ in
+                        completion(.success(()))
+                    }
+                }
+            )
+            .store(in: &cancellables)
     }
 
     // MARK: - Initialize

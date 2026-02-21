@@ -2,8 +2,12 @@ import SwiftUI
 import Combine
 
 struct MainTabView: View {
-    let coach: Coach
+    @EnvironmentObject var appState: AppState
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
+
+    private var coach: Coach {
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -777,6 +781,7 @@ private struct WorkoutLogSmallCard: View {
 struct SettingsPageView: View {
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var notificationManager: NotificationManager
     @Environment(\.openURL) private var openURL
@@ -785,8 +790,13 @@ struct SettingsPageView: View {
     @State private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
     @State private var showManagePlan = false
+    @State private var showHelp = false
+    @State private var showPrivacyPolicy = false
+    @State private var showEditProfile = false
+    @State private var showCoachSelection = false
     @State private var isCreatingCheckout = false
     @State private var billingErrorMessage: String?
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         NavigationView {
@@ -816,13 +826,12 @@ struct SettingsPageView: View {
         .navigationBarHidden(true)
         .onAppear {
             notificationManager.checkAuthorizationStatus()
-            guard let userId = authManager.effectiveUserId else { return }
-            backendConnector.loadProfile(userId: userId) { result in
-                if case .success(let response) = result {
-                    profileUser = response.user
-                }
+            loadProfileData()
+        }
+        .onReceive(backendConnector.$profile) { response in
+            if let response {
+                profileUser = response.user
             }
-            syncReminderNotifications(userId: userId)
         }
         .onChange(of: notificationsEnabled) { _, isEnabled in
             guard let userId = authManager.effectiveUserId else { return }
@@ -846,6 +855,40 @@ struct SettingsPageView: View {
                         startPremiumCheckout()
                     }
                 )
+            }
+        }
+        .sheet(isPresented: $showEditProfile) {
+            if let userId = authManager.effectiveUserId {
+                ProfileEditView(userId: userId, profile: backendConnector.profile) { updated in
+                    profileUser = updated.user
+                    backendConnector.profile = updated
+                }
+                .environmentObject(appState)
+                .environmentObject(backendConnector)
+            }
+        }
+        .sheet(isPresented: $showCoachSelection) {
+            if let userId = authManager.effectiveUserId {
+                CoachChangeView(
+                    currentCoach: coach,
+                    userId: userId,
+                    onCoachChanged: { newCoach in
+                        appState.selectedCoach = newCoach
+                        showCoachSelection = false
+                    }
+                )
+                .environmentObject(appState)
+                .environmentObject(backendConnector)
+            }
+        }
+        .sheet(isPresented: $showHelp) {
+            NavigationView {
+                helpView
+            }
+        }
+        .sheet(isPresented: $showPrivacyPolicy) {
+            NavigationView {
+                privacyPolicyView
             }
         }
         .alert(
@@ -875,41 +918,111 @@ struct SettingsPageView: View {
     }
 
     private var userProfileCard: some View {
-        HStack(spacing: 16) {
-            // Profile image placeholder
-            Circle()
-                .fill(Color.gray)
-                .frame(width: 60, height: 60)
-                .overlay(
-                    Image(systemName: "person.fill")
+        Button(action: { showEditProfile = true }) {
+            HStack(spacing: 16) {
+                if let image = profileImage {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 60, height: 60)
+                        .clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 60, height: 60)
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 24))
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(displayName)
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white)
-                        .font(.system(size: 24))
-                )
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(profileUser?.name?.isEmpty == false ? profileUser?.name ?? "" : "Your Profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
+                    Text(profileStatsText)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.7))
+                }
 
-                Text(profileStatsText)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
             }
-
-            Spacer()
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.blue, lineWidth: 1)
+                    .background(Color.clear)
+            )
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.1))
-        )
+        .buttonStyle(.plain)
     }
 
     private var profileStatsText: String {
-        let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) } ?? "--"
-        let weightText = profileUser?.weight_kg.map { String(format: "%.1f kg", $0) } ?? "--"
+        let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) }
+            ?? appState.userData?.height
+            ?? "--"
+        let weightText = profileUser?.weight_kg.map { String(format: "%.1f kg", $0) }
+            ?? appState.userData?.weight
+            ?? "--"
         let ageText = profileAgeText
         return "Height: \(heightText) | Weight: \(weightText) | Age: \(ageText)"
+    }
+
+    private var profileImage: Image? {
+        guard let base64 = profileUser?.profile_image_base64,
+              let data = Data(base64Encoded: base64),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return Image(uiImage: image)
+    }
+
+    private var displayName: String {
+        if let name = profileUser?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        if let stored = UserDefaults.standard.string(forKey: "currentUserName"),
+           !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return stored
+        }
+        if let email = authManager.currentUser, !email.isEmpty {
+            return email
+        }
+        if let displayName = appState.userData?.displayName, !displayName.isEmpty {
+            return displayName
+        }
+        return "Your Profile"
+    }
+
+    private func loadProfileData() {
+        if let userId = authManager.effectiveUserId {
+            backendConnector.loadProfile(userId: userId) { result in
+                if case .success(let response) = result {
+                    profileUser = response.user
+                }
+            }
+            syncReminderNotifications(userId: userId)
+            return
+        }
+
+        guard let email = authManager.currentUser, !email.isEmpty else { return }
+        APIService.shared.getUserId(email: email)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    let userId = response.user_id
+                    backendConnector.loadProfile(userId: userId) { result in
+                        if case .success(let response) = result {
+                            profileUser = response.user
+                        }
+                    }
+                    syncReminderNotifications(userId: userId)
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private var profileAgeText: String {
@@ -920,44 +1033,92 @@ struct SettingsPageView: View {
     }
 
     private var currentCoachCard: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Current Coach")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-
-                Spacer()
-            }
-
-            HStack(spacing: 16) {
-                Circle()
-                    .fill(Color.blue)
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Image(systemName: "person.fill")
-                            .foregroundColor(.white)
-                            .font(.system(size: 20))
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(coach.name)
-                        .font(.system(size: 16, weight: .medium))
+        Button(action: {
+            showCoachSelection = true
+        }) {
+            VStack(spacing: 16) {
+                HStack {
+                    Text("Current Coach")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
 
-                    Text(coach.title)
-                        .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Text("Change")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.blue)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
                 }
 
-                Spacer()
+                HStack(spacing: 16) {
+                    // Coach avatar with real image or color
+                    ZStack {
+                        Circle()
+                            .fill(Color(coach.primaryColor))
+                            .frame(width: 60, height: 60)
+
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .foregroundColor(.white)
+                                    .font(.system(size: 24))
+                            }
+                        }
+                        .frame(width: 56, height: 56)
+                        .clipShape(Circle())
+                    } else {
+                        Image(systemName: "person.fill")
+                            .foregroundColor(.white)
+                            .font(.system(size: 24))
+                    }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(coach.name)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+
+                        Text(coach.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+
+                        // Coach specialty tags
+                        HStack(spacing: 6) {
+                            ForEach(Array(coach.expertise.prefix(2)), id: \.self) { specialty in
+                                Text(specialty)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Color(coach.primaryColor))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        Capsule()
+                                            .fill(Color(coach.primaryColor).opacity(0.2))
+                                    )
+                            }
+                        }
+                    }
+
+                    Spacer()
+                }
             }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.blue, lineWidth: 1)
+                    .background(Color.clear)
+            )
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.blue, lineWidth: 1)
-                .background(Color.clear)
-        )
+        .buttonStyle(PlainButtonStyle())
     }
 
     private var settingsList: some View {
@@ -978,7 +1139,10 @@ struct SettingsPageView: View {
                 .background(Color.white.opacity(0.2))
 
             SettingsRow(title: "Help")
-            SettingsRow(title: "Privacy Policy")
+                { showHelp = true }
+            SettingsRow(title: "Privacy Policy") {
+                showPrivacyPolicy = true
+            }
             SettingsRow(title: "Log Out", isDestructive: true) {
                 authManager.signOut()
             }
@@ -1023,6 +1187,99 @@ struct SettingsPageView: View {
                 }
             }
         }
+    }
+
+    private var helpView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Help")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.white)
+
+                Text("Common topics")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    helpItem(title: "Account access", detail: "If you can’t sign in, make sure you’re using the same email you signed up with. If needed, try signing up again to create a new account.")
+                    helpItem(title: "Backend connection", detail: "If the app can’t reach the server, confirm the backend URL is correct and the server is running.")
+                    helpItem(title: "Logging meals & workouts", detail: "Use the Trainer chat or the Today’s Plan detail page to log workouts. Logged meals appear in Calorie Balance after sync.")
+                    helpItem(title: "Notifications", detail: "Enable notifications in Settings and allow permissions in iOS Settings > Notifications.")
+                }
+
+                Text("Contact")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Email support at support@vaylo.ai")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+            }
+            .padding(20)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { showHelp = false }
+            }
+        }
+    }
+
+    private var privacyPolicyView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Privacy Policy")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.white)
+
+                Text("We respect your privacy. This app only collects the data needed to provide coaching features, including profile details, workout logs, and nutrition logs.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+
+                Text("Data usage")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    helpItem(title: "Profile data", detail: "Used to personalize plans and recommendations.")
+                    helpItem(title: "Health data", detail: "Only accessed with your permission and used to enhance insights.")
+                    helpItem(title: "Account data", detail: "Stored securely to enable sign in and sync across devices.")
+                }
+
+                Text("Questions?")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Email privacy@vaylo.ai for more details.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+            }
+            .padding(20)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { showPrivacyPolicy = false }
+            }
+        }
+    }
+
+    private func helpItem(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.white)
+            Text(detail)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.7))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+        )
     }
 
     private var bottomToolbar: some View {
@@ -1210,6 +1467,310 @@ struct ManagePlanView: View {
     }
 }
 
+// MARK: - Coach Change View
+
+struct CoachChangeView: View {
+    let currentCoach: Coach
+    let userId: Int
+    let onCoachChanged: (Coach) -> Void
+
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var appState: AppState
+    @EnvironmentObject var backendConnector: FrontendBackendConnector
+    @State private var selectedCoach: Coach?
+    @State private var isUpdating = false
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                VStack(spacing: 24) {
+                    // Header
+                    VStack(spacing: 12) {
+                        Text("Choose Your Coach")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+
+                        Text("Your coach will guide your fitness journey with personalized advice")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 20)
+
+                    // Coach Grid
+                    ScrollView(showsIndicators: false) {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(appState.coaches) { coach in
+                                CoachChangeCard(
+                                    coach: coach,
+                                    isSelected: selectedCoach?.id == coach.id,
+                                    isCurrent: currentCoach.id == coach.id
+                                ) {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                        selectedCoach = coach
+                                    }
+
+                                    // Haptic feedback
+                                    let selectionFeedback = UISelectionFeedbackGenerator()
+                                    selectionFeedback.selectionChanged()
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 100)
+                    }
+                }
+
+                // Floating action button
+                if let selectedCoach = selectedCoach, selectedCoach.id != currentCoach.id {
+                    VStack {
+                        Spacer()
+                        changeCoachButton(selectedCoach)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 40)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .navigationTitle("")
+            .navigationBarHidden(true)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .foregroundColor(.white)
+                }
+            }
+        }
+        .onAppear {
+            selectedCoach = currentCoach
+        }
+    }
+
+    private func changeCoachButton(_ coach: Coach) -> some View {
+        Button(action: {
+            changeCoach(to: coach)
+        }) {
+            HStack(spacing: 12) {
+                if isUpdating {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "person.2.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+
+                Text(isUpdating ? "Switching Coach..." : "Switch to \(coach.name)")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(coach.primaryColor), Color(coach.secondaryColor)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
+            )
+            .shadow(color: Color(coach.primaryColor).opacity(0.4), radius: 8, x: 0, y: 4)
+            .scaleEffect(isUpdating ? 0.98 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isUpdating)
+        }
+        .disabled(isUpdating)
+    }
+
+    private func changeCoach(to newCoach: Coach) {
+        guard !isUpdating else { return }
+
+        isUpdating = true
+
+        // Update UI immediately for better UX
+        onCoachChanged(newCoach)
+
+        // Success haptic
+        let successFeedback = UINotificationFeedbackGenerator()
+        successFeedback.notificationOccurred(.success)
+
+        dismiss()
+
+        // Call backend API to sync the change
+        backendConnector.changeCoach(userId: userId, newCoachId: newCoach.id) { result in
+            switch result {
+            case .success:
+                print("✅ Coach change synced with backend")
+            case .failure(let error):
+                print("❌ Failed to sync coach change with backend: \(error)")
+                // Note: UI already updated, so user sees the change even if backend fails
+            }
+        }
+    }
+}
+
+struct CoachChangeCard: View {
+    let coach: Coach
+    let isSelected: Bool
+    let isCurrent: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 0) {
+                // Coach Image
+                ZStack {
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(coach.primaryColor).opacity(0.8),
+                                                Color(coach.secondaryColor).opacity(0.6)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            }
+                        }
+                        .frame(height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(coach.primaryColor).opacity(0.8),
+                                        Color(coach.secondaryColor).opacity(0.6)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(height: 140)
+
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+
+                    // Current coach indicator
+                    if isCurrent {
+                        VStack {
+                            HStack {
+                                Text("CURRENT")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.green)
+                                    )
+                                Spacer()
+                            }
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
+
+                    // Selection indicator
+                    if isSelected && !isCurrent {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 24, height: 24)
+                                    .overlay(
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.white)
+                                    )
+                            }
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
+                }
+
+                // Coach Info
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(coach.name)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+
+                        Text(coach.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                            .lineLimit(2)
+                    }
+
+                    // Philosophy snippet
+                    Text(coach.philosophy)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(2)
+
+                    // Expertise tags
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
+                        ForEach(Array(coach.expertise.prefix(2)), id: \.self) { specialty in
+                            Text(specialty)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(Color(coach.primaryColor))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(Color(coach.primaryColor).opacity(0.2))
+                                )
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.black.opacity(0.6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(
+                                isSelected ? Color(coach.primaryColor) : Color.white.opacity(0.2),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    )
+            )
+            .scaleEffect(isSelected ? 1.02 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+}
+
 // Extension for backdrop blur
 extension View {
     func backdrop(blur radius: CGFloat) -> some View {
@@ -1222,6 +1783,7 @@ extension View {
 }
 
 #Preview {
-    MainTabView(coach: Coach.allCoaches[0])
+    MainTabView()
+        .environmentObject(AppState())
         .environmentObject(FrontendBackendConnector.shared)
 }

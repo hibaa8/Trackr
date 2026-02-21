@@ -355,16 +355,11 @@ class APIService {
     
     // MARK: - User Profile
     
-    func updateUserProfile(_ user: User) -> AnyPublisher<User, APIError> {
-        guard let jsonData = try? JSONEncoder().encode(user) else {
+    func updateProfile(_ payload: ProfileUpdateRequest) -> AnyPublisher<ProfileResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
-        return request(endpoint: "/users/profile", method: "PUT", body: jsonData)
-    }
-    
-    func getUserProfile() -> AnyPublisher<User, APIError> {
-        return request(endpoint: "/users/profile")
+        return request(endpoint: "/api/profile", method: "PUT", body: jsonData)
     }
 
     func getProfile(userId: Int) -> AnyPublisher<ProfileResponse, APIError> {
@@ -411,6 +406,20 @@ class APIService {
         return request(endpoint: "/api/gamification/use-freeze", method: "POST", body: jsonData)
     }
 
+    func changeUserCoach(userId: Int, newCoachId: Int) -> AnyPublisher<CoachChangeResponse, APIError> {
+        struct CoachChangeRequest: Codable {
+            let user_id: Int
+            let new_coach_id: Int
+        }
+
+        let body = CoachChangeRequest(user_id: userId, new_coach_id: newCoachId)
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+
+        return request(endpoint: "/api/change-coach", method: "POST", body: jsonData)
+    }
+
     // MARK: - Onboarding
 
     func completeOnboarding(payload: OnboardingCompletePayload) -> AnyPublisher<OnboardingCompleteResponse, APIError> {
@@ -444,7 +453,7 @@ struct OnboardingCompletePayload: Codable {
     let weekly_weight_change_kg: Double?
     let activity_level: String?
     let storyline: String?
-    let trainer: String?
+    let trainer_id: Int?
     let personality: String?
     let voice: String?
     let timeframe_weeks: Int?
@@ -458,4 +467,9 @@ struct OnboardingCompletePayload: Codable {
 struct OnboardingCompleteResponse: Decodable {
     let ok: Bool?
     let error: String?
+}
+
+struct CoachChangeResponse: Decodable {
+    let success: Bool
+    let message: String?
 }

@@ -1,7 +1,8 @@
 import Foundation
 
 struct Coach: Identifiable, Codable, Hashable {
-    let id: String
+    let id: Int
+    let slug: String
     let name: String
     let nickname: String?
     let title: String
@@ -18,15 +19,39 @@ struct Coach: Identifiable, Codable, Hashable {
     let tags: [String]
     let primaryColor: String
     let secondaryColor: String
-    let imageFilename: String
-    let videoFilename: String
+    let imageURLString: String?
+    let videoURLString: String?
+
+    enum CodingKeys: String, CodingKey {
+        case id
+        case slug
+        case name
+        case nickname
+        case title
+        case age
+        case ethnicity
+        case gender
+        case pronouns
+        case philosophy
+        case backgroundStory = "background_story"
+        case personality
+        case speakingStyle = "speaking_style"
+        case expertise
+        case commonPhrases = "common_phrases"
+        case tags
+        case primaryColor = "primary_color"
+        case secondaryColor = "secondary_color"
+        case imageURLString = "image_url"
+        case videoURLString = "video_url"
+    }
 }
 
 // Coach data based on the detailed profiles provided
 extension Coach {
     static let allCoaches: [Coach] = [
         Coach(
-            id: "marcus_hayes",
+            id: 1,
+            slug: "marcus_hayes",
             name: "Marcus Hayes",
             nickname: "The Sergeant",
             title: "Former Marine Corps Force Recon Operator",
@@ -43,12 +68,13 @@ extension Coach {
             tags: ["discipline", "grit", "intensity", "mission"],
             primaryColor: "blue",
             secondaryColor: "navy",
-            imageFilename: "Marcus",
-            videoFilename: "Marcus's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Marcus.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Marcus-Intro.mp4"
         ),
 
         Coach(
-            id: "hana_kim",
+            id: 2,
+            slug: "hana_kim",
             name: "Hana Kim",
             nickname: "The Core",
             title: "Pilates instructor and core specialist",
@@ -65,12 +91,13 @@ extension Coach {
             tags: ["precision", "core", "control", "mindful"],
             primaryColor: "cyan",
             secondaryColor: "blue",
-            imageFilename: "Hana",
-            videoFilename: "Hana's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Hana.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Hana-Intro.mp4"
         ),
 
         Coach(
-            id: "alex_rivera",
+            id: 3,
+            slug: "alex_rivera",
             name: "Alex Rivera",
             nickname: nil,
             title: "Inclusive strength coach",
@@ -87,12 +114,13 @@ extension Coach {
             tags: ["inclusive", "community", "strength", "affirming"],
             primaryColor: "purple",
             secondaryColor: "pink",
-            imageFilename: "Alex",
-            videoFilename: "Alex's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Alex.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Alex-Intro.mp4"
         ),
 
         Coach(
-            id: "maria_santos",
+            id: 4,
+            slug: "maria_santos",
             name: "Maria Santos",
             nickname: nil,
             title: "Dance fitness instructor",
@@ -109,12 +137,13 @@ extension Coach {
             tags: ["energy", "dance", "cardio", "joy"],
             primaryColor: "orange",
             secondaryColor: "red",
-            imageFilename: "Maria",
-            videoFilename: "Maria's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Maria.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Maria-Intro.mp4"
         ),
 
         Coach(
-            id: "jake_foster",
+            id: 5,
+            slug: "jake_foster",
             name: "Jake Foster",
             nickname: "The Nomad",
             title: "Parkour and urban movement coach",
@@ -131,12 +160,13 @@ extension Coach {
             tags: ["agility", "parkour", "freedom", "flow"],
             primaryColor: "green",
             secondaryColor: "teal",
-            imageFilename: "Jake",
-            videoFilename: "Jake's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Jake.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Jake-Intro.mp4"
         ),
 
         Coach(
-            id: "david_thompson",
+            id: 6,
+            slug: "david_thompson",
             name: "David Thompson",
             nickname: nil,
             title: "Sports performance coach",
@@ -153,12 +183,13 @@ extension Coach {
             tags: ["performance", "injury prevention", "foundation", "precision"],
             primaryColor: "navy",
             secondaryColor: "blue",
-            imageFilename: "David",
-            videoFilename: "David's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/David.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/David-Intro.mp4"
         ),
 
         Coach(
-            id: "zara_khan",
+            id: 7,
+            slug: "zara_khan",
             name: "Zara Khan",
             nickname: nil,
             title: "Combat sports coach",
@@ -175,12 +206,13 @@ extension Coach {
             tags: ["combat", "confidence", "resilience", "power"],
             primaryColor: "red",
             secondaryColor: "orange",
-            imageFilename: "Zara",
-            videoFilename: "Zara's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Zara.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Zara-Intro.mp4"
         ),
 
         Coach(
-            id: "kenji_tanaka",
+            id: 8,
+            slug: "kenji_tanaka",
             name: "Kenji Tanaka",
             nickname: "Urban Monk",
             title: "Calisthenics and mindfulness coach",
@@ -197,12 +229,13 @@ extension Coach {
             tags: ["mindfulness", "balance", "calm", "flow"],
             primaryColor: "indigo",
             secondaryColor: "purple",
-            imageFilename: "Kenji",
-            videoFilename: "Kenji's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Kenji.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Kenji-Intro.mp4"
         ),
 
         Coach(
-            id: "chloe_evans",
+            id: 9,
+            slug: "chloe_evans",
             name: "Chloe Evans",
             nickname: "The Yogi",
             title: "Yoga and mindfulness instructor",
@@ -219,12 +252,13 @@ extension Coach {
             tags: ["yoga", "mindfulness", "calm", "recovery"],
             primaryColor: "cyan",
             secondaryColor: "blue",
-            imageFilename: "Chloe",
-            videoFilename: "Chloe's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Chloe.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Chloe-Intro.mp4"
         ),
 
         Coach(
-            id: "simone_adebayo",
+            id: 10,
+            slug: "simone_adebayo",
             name: "Simone Adebayo",
             nickname: "The Powerhouse",
             title: "Strength and powerlifting coach",
@@ -241,12 +275,13 @@ extension Coach {
             tags: ["strength", "power", "confidence", "energy"],
             primaryColor: "red",
             secondaryColor: "orange",
-            imageFilename: "Simone",
-            videoFilename: "Simone's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Simone.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Simone-Intro.mp4"
         ),
 
         Coach(
-            id: "liam_carter",
+            id: 11,
+            slug: "liam_carter",
             name: "Liam O'Connell",
             nickname: "The Captain",
             title: "Strength and conditioning coach",
@@ -263,16 +298,22 @@ extension Coach {
             tags: ["teamwork", "motivation", "strength", "optimism"],
             primaryColor: "navy",
             secondaryColor: "blue",
-            imageFilename: "Liam",
-            videoFilename: "Liam's Intro.mp4"
+            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Liam.png",
+            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Liam-Intro.mp4"
         )
     ]
 
     var imageURL: URL? {
-        Bundle.main.url(forResource: imageFilename, withExtension: "png", subdirectory: "CoachImages")
+        guard let imageURLString, let url = URL(string: imageURLString) else {
+            return nil
+        }
+        return url
     }
 
     var videoURL: URL? {
-        Bundle.main.url(forResource: videoFilename, withExtension: nil, subdirectory: "CoachVideos")
+        guard let videoURLString, let url = URL(string: videoURLString) else {
+            return nil
+        }
+        return url
     }
 }

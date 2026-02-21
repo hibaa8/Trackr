@@ -277,7 +277,7 @@ struct AddMenuView: View {
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(
-                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                coach: appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0],
                 initialPrompt: voicePrompt
             )
         }

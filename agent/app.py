@@ -17,6 +17,11 @@ import sys
 import time
 import uuid
 import tempfile
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+load_dotenv(dotenv_path=dotenv_path, override=True)
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -441,6 +446,86 @@ def _ensure_auth_schema() -> None:
             conn.commit()
 
 
+def _ensure_profile_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        # Check if profile_image_base64 column exists (PostgreSQL compatible)
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'profile_image_base64'
+            """
+        )
+        has_profile_image = cur.fetchone() is not None
+        if not has_profile_image:
+            cur.execute("ALTER TABLE users ADD COLUMN profile_image_base64 TEXT NULL")
+            conn.commit()
+
+
+def _supabase_url() -> Optional[str]:
+    url = os.environ.get("SUPABASE_URL")
+    return url.rstrip("/") if url else None
+
+
+def _supabase_headers() -> dict[str, str]:
+    service_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY") or ""
+    if not service_key:
+        return {}
+    return {"Authorization": f"Bearer {service_key}", "apikey": service_key}
+
+
+def _extract_storage_path(url: str) -> Optional[str]:
+    marker = "/storage/v1/object/"
+    if marker not in url:
+        return None
+    return url.split(marker, 1)[1]
+
+
+def _sign_storage_url(url: str, expires_in: int = 3600) -> Optional[str]:
+    base = _supabase_url()
+    if not base or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        return None
+    path = _extract_storage_path(url)
+    if not path:
+        return None
+    endpoint = f"{base}/storage/v1/object/sign/{path}"
+    payload = json.dumps({"expiresIn": expires_in}).encode("utf-8")
+    headers = {"Content-Type": "application/json", **_supabase_headers()}
+    request = urllib.request.Request(endpoint, data=payload, headers=headers, method="POST")
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    with urllib.request.urlopen(request, timeout=20, context=ssl_context) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    signed = data.get("signedURL")
+    if not signed:
+        return None
+    return f"{base}{signed}"
+
+
+def _ensure_coach_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        # Check if agent_id column exists (PostgreSQL compatible)
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'agent_id'
+            """
+        )
+        has_agent_id = cur.fetchone() is not None
+        if not has_agent_id:
+            cur.execute("ALTER TABLE users ADD COLUMN agent_id BIGINT NULL")
+
+        # Default to Marcus (id=1) when missing.
+        cur.execute("UPDATE users SET agent_id = 1 WHERE agent_id IS NULL")
+        conn.commit()
+
+
 def _hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
     iterations = 150000
@@ -471,7 +556,7 @@ def _verify_password(password: str, stored: Optional[str]) -> bool:
 
 
 def _onboarding_completed_from_row(row: tuple) -> bool:
-    # row: id, email, name, password_hash, height_cm, weight_kg, age_years, agent_name
+    # row: id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id
     return bool(row[4] is not None and row[5] is not None and row[6] is not None and row[7] is not None)
 
 
@@ -682,6 +767,8 @@ def _gamification_summary(user_id: int) -> Dict[str, Any]:
 
 
 def _load_user_profile(user_id: int) -> Dict[str, Any]:
+    _ensure_profile_schema()
+    _ensure_coach_schema()
     def _map_user(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
         if not row:
             return None
@@ -693,7 +780,8 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "weight_kg": row[4],
             "gender": row[5],
             "age_years": row[6],
-            "agent_name": row[7],
+            "agent_id": row[7],
+            "profile_image_base64": row[8],
         }
 
     def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
@@ -837,7 +925,7 @@ class CoachChatRequest(BaseModel):
     message: str
     user_id: int
     thread_id: Optional[str] = None
-    agent_id: Optional[str] = None
+    agent_id: Optional[int] = None
     image_base64: Optional[str] = None
 
 
@@ -953,6 +1041,33 @@ class AuthResponse(BaseModel):
     onboarding_completed: bool
 
 
+class CoachChangeRequest(BaseModel):
+    user_id: int
+    new_coach_id: int
+
+
+class CoachChangeResponse(BaseModel):
+    success: bool
+    message: Optional[str] = None
+
+
+class ProfileUpdateRequest(BaseModel):
+    user_id: int
+    name: Optional[str] = None
+    birthdate: Optional[str] = None
+    height_cm: Optional[float] = None
+    weight_kg: Optional[float] = None
+    gender: Optional[str] = None
+    age_years: Optional[int] = None
+    agent_id: Optional[int] = None
+    profile_image_base64: Optional[str] = None
+    activity_level: Optional[str] = None
+    goal_type: Optional[str] = None
+    target_weight_kg: Optional[float] = None
+    dietary_preferences: Optional[str] = None
+    workout_preferences: Optional[str] = None
+
+
 class BillingCheckoutRequest(BaseModel):
     user_id: int
     plan_tier: str = "premium"
@@ -1008,6 +1123,7 @@ class OnboardingCompletePayload(BaseModel):
     goal_type: Optional[str] = None
     timeframe_weeks: Optional[float] = None
     weekly_weight_change_kg: Optional[float] = None
+    trainer_id: Optional[int] = None
     trainer: Optional[str] = None
     full_name: Optional[str] = None
 
@@ -1448,7 +1564,7 @@ def auth_signin(payload: AuthSignInRequest):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT id, email, name, password_hash, height_cm, weight_kg, age_years, agent_name
+            SELECT id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id, profile_image_base64
             FROM users
             WHERE email = ?
             LIMIT 1
@@ -1473,6 +1589,9 @@ def create_checkout_session(payload: BillingCheckoutRequest):
     if payload.plan_tier.lower() != "premium":
         raise HTTPException(status_code=400, detail="Only premium checkout is supported.")
 
+    # Re-load environment variables to ensure we have the latest values
+    load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"), override=True)
+
     stripe_secret_key = os.getenv("STRIPE_SECRET_KEY", "").strip()
     stripe_price_id = os.getenv("STRIPE_PREMIUM_PRICE_ID", "").strip()
     if not stripe_secret_key:
@@ -1494,23 +1613,23 @@ def create_checkout_session(payload: BillingCheckoutRequest):
     if stripe_price_id:
         line_items = [{"price": stripe_price_id, "quantity": 1}]
     else:
-        # Fallback inline pricing for local testing when no Stripe Price ID is configured.
+        # Fallback inline subscription pricing for local testing.
         line_items = [
             {
                 "price_data": {
                     "currency": "usd",
                     "product_data": {"name": "Vaylo Fitness Premium Plan"},
                     "unit_amount": 1499,
+                    "recurring": {"interval": "month"},
                 },
                 "quantity": 1,
             }
         ]
 
     base_params: Dict[str, Any] = {
-        "mode": "payment",
+        "mode": "subscription",
         "line_items": line_items,
         "billing_address_collection": "required",
-        "customer_creation": "always",
         "success_url": success_url,
         "cancel_url": cancel_url,
         "customer_email": user_email or None,
@@ -2018,7 +2137,126 @@ def get_today_plan(user_id: int, day: Optional[str] = None):
 @app.get("/api/profile")
 def get_profile(user_id: int):
     """Return user profile and preferences."""
+    _ensure_profile_schema()
     return _load_user_profile(user_id)
+
+
+@app.put("/api/profile")
+def update_profile(payload: ProfileUpdateRequest):
+    _ensure_profile_schema()
+    user_fields: Dict[str, Any] = {}
+    if payload.name is not None:
+        user_fields["name"] = payload.name
+    if payload.birthdate is not None:
+        user_fields["birthdate"] = payload.birthdate
+    if payload.height_cm is not None:
+        user_fields["height_cm"] = payload.height_cm
+    if payload.weight_kg is not None:
+        user_fields["weight_kg"] = payload.weight_kg
+    if payload.gender is not None:
+        user_fields["gender"] = payload.gender
+    if payload.age_years is not None:
+        user_fields["age_years"] = payload.age_years
+    if payload.agent_id is not None:
+        user_fields["agent_id"] = payload.agent_id
+    if payload.profile_image_base64 is not None:
+        user_fields["profile_image_base64"] = payload.profile_image_base64
+
+    pref_fields: Dict[str, Any] = {}
+    if payload.activity_level is not None:
+        pref_fields["activity_level"] = payload.activity_level
+    if payload.goal_type is not None:
+        pref_fields["goal_type"] = payload.goal_type
+    if payload.target_weight_kg is not None:
+        pref_fields["target_weight_kg"] = payload.target_weight_kg
+    if payload.dietary_preferences is not None:
+        pref_fields["dietary_preferences"] = payload.dietary_preferences
+    if payload.workout_preferences is not None:
+        pref_fields["workout_preferences"] = payload.workout_preferences
+    if payload.dietary_preferences is not None:
+        pref_fields["dietary_preferences"] = payload.dietary_preferences
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        if user_fields:
+            set_clause = ", ".join(f"{key} = ?" for key in user_fields.keys())
+            params = list(user_fields.values()) + [payload.user_id]
+            cur.execute(f"UPDATE users SET {set_clause} WHERE id = ?", params)
+
+        if pref_fields:
+            cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (payload.user_id,))
+            has_row = cur.fetchone() is not None
+            if not has_row:
+                created_at = datetime.now().isoformat(timespec="seconds")
+                cur.execute(
+                    """
+                    INSERT INTO user_preferences (
+                        user_id, weekly_weight_change_kg, activity_level, goal_type,
+                        target_weight_kg, dietary_preferences, workout_preferences, timezone, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        payload.user_id,
+                        None,
+                        pref_fields.get("activity_level"),
+                        pref_fields.get("goal_type"),
+                        pref_fields.get("target_weight_kg"),
+                        pref_fields.get("dietary_preferences"),
+                        None,
+                        None,
+                        created_at,
+                    ),
+                )
+            else:
+                set_clause = ", ".join(f"{key} = ?" for key in pref_fields.keys())
+                params = list(pref_fields.values()) + [payload.user_id]
+                cur.execute(f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?", params)
+        conn.commit()
+
+    _refresh_profile_cache(payload.user_id)
+    return _load_user_profile(payload.user_id)
+
+
+@app.post("/api/test-coach")
+def test_coach_endpoint():
+    return {"status": "coach endpoint works"}
+
+@app.post("/api/change-coach", response_model=CoachChangeResponse)
+def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
+    """
+    Change the user's assigned coach
+    """
+    _ensure_profile_schema()
+    _ensure_coach_schema()
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+
+        # Check if user exists
+        cur.execute("SELECT id FROM users WHERE id = ?", (payload.user_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="User not found")
+
+        # Validate coach exists
+        cur.execute("SELECT id FROM coaches WHERE id = ? LIMIT 1", (payload.new_coach_id,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=400, detail=f"Invalid coach ID: {payload.new_coach_id}")
+
+        # Update the user's coach assignment
+        cur.execute(
+            "UPDATE users SET agent_id = ? WHERE id = ?",
+            (payload.new_coach_id, payload.user_id)
+        )
+
+        # user_preferences does not store coach_id; agent_name lives on users
+
+        conn.commit()
+
+    # Refresh caches
+    _refresh_profile_cache(payload.user_id)
+    _redis_delete(f"session_hydration:{payload.user_id}")
+
+    return CoachChangeResponse(success=True, message=f"Coach successfully changed to {payload.new_coach_id}")
 
 
 @app.get("/api/voice")
@@ -2351,6 +2589,7 @@ def _generate_plan_for_user(
 
 @app.post("/api/onboarding/complete")
 def complete_onboarding(payload: OnboardingCompletePayload):
+    _ensure_coach_schema()
     user_id = payload.user_id or 1
     fields = []
     values: list[Any] = []
@@ -2363,9 +2602,18 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.age is not None:
         fields.append("age_years = ?")
         values.append(payload.age)
-    if payload.trainer:
-        fields.append("agent_name = ?")
-        values.append(payload.trainer)
+    if payload.trainer_id is not None:
+        fields.append("agent_id = ?")
+        values.append(payload.trainer_id)
+    elif payload.trainer:
+        # Fallback for legacy payloads using trainer slug
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM coaches WHERE slug = ? LIMIT 1", (payload.trainer,))
+            row = cur.fetchone()
+        if row and row[0]:
+            fields.append("agent_id = ?")
+            values.append(int(row[0]))
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
@@ -2383,6 +2631,49 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         weekly_change_kg=payload.weekly_weight_change_kg,
     )
     return {"ok": True}
+
+
+@app.get("/api/coach-media/{media_type}/{filename}")
+def get_coach_media(media_type: str, filename: str):
+    """Serve coach media files securely from Supabase with signed URLs."""
+    # Validate media type
+    if media_type not in ["images", "videos"]:
+        raise HTTPException(status_code=404, detail="Invalid media type")
+
+    # Validate filename format (basic security check)
+    import re
+    if not re.match(r'^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|mp4|mov)$', filename):
+        raise HTTPException(status_code=404, detail="Invalid filename")
+
+    base = _supabase_url()
+    if not base or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
+        raise HTTPException(status_code=500, detail="Supabase not configured")
+
+    # Generate signed URL for the coach media
+    path = f"coach-media/{media_type}/{filename}"
+    url = f"{base}/storage/v1/object/sign/coach-media/{media_type}/{filename}"
+
+    headers = {
+        "Content-Type": "application/json",
+        **_supabase_headers()
+    }
+
+    try:
+        import requests
+        # Request a signed URL that expires in 1 hour
+        response = requests.post(url, json={"expiresIn": 3600}, headers=headers)
+        response.raise_for_status()
+        signed_data = response.json()
+
+        if "signedURL" in signed_data:
+            # Return the signed URL for the client to fetch directly
+            from fastapi.responses import RedirectResponse
+            return RedirectResponse(url=signed_data["signedURL"])
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate signed URL")
+
+    except requests.exceptions.RequestException as e:
+        raise HTTPException(status_code=500, detail=f"Failed to access media: {str(e)}")
 
 
 if __name__ == "__main__":

@@ -51,7 +51,7 @@ struct TodayPlanDetailView: View {
         }
         .sheet(isPresented: $showLogWorkout) {
             VoiceActiveView(
-                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                coach: appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0],
                 initialPrompt: "I want to log a workout. Please ask me for the exercises, sets/reps, time, and any details needed, then log it."
             )
         }

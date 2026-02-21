@@ -56,7 +56,7 @@ from agent.tools.meal_tools import _load_meal_logs_draft
 from agent.tools.workout_tools import _load_workout_sessions_draft
 
 
-def _system_message(agent_id: str | None) -> SystemMessage:
+def _system_message(agent_id: str | int | None) -> SystemMessage:
     return SystemMessage(content=get_system_prompt(agent_id))
 
 

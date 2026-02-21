@@ -57,12 +57,20 @@ struct CoachDetailView: View {
                             )
                             .frame(width: 200, height: 200)
 
-                        if let image = coachImage() {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 180, height: 180)
-                                .clipShape(Circle())
+                        if let url = coach.imageURL {
+                            AsyncImage(url: url) { phase in
+                                if let image = phase.image {
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 80))
+                                        .foregroundColor(.white.opacity(0.8))
+                                }
+                            }
+                            .frame(width: 180, height: 180)
+                            .clipShape(Circle())
                         } else {
                             Image(systemName: "person.fill")
                                 .font(.system(size: 80))
@@ -167,13 +175,6 @@ struct CoachDetailView: View {
         }
     }
 
-    private func coachImage() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
-    }
 }
 
 #Preview {

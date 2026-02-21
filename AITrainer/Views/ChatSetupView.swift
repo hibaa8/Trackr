@@ -50,12 +50,20 @@ struct ChatSetupView: View {
                                 )
                                 .frame(width: 120, height: 120)
 
-                            if let image = coachImage() {
-                                image
-                                    .resizable()
-                                    .scaledToFill()
-                                    .frame(width: 110, height: 110)
-                                    .clipShape(Circle())
+                            if let url = coach.imageURL {
+                                AsyncImage(url: url) { phase in
+                                    if let image = phase.image {
+                                        image
+                                            .resizable()
+                                            .scaledToFill()
+                                    } else {
+                                        Image(systemName: "person.fill")
+                                            .font(.system(size: 50))
+                                            .foregroundColor(.white.opacity(0.8))
+                                    }
+                                }
+                                .frame(width: 110, height: 110)
+                                .clipShape(Circle())
                             } else {
                                 Image(systemName: "person.fill")
                                     .font(.system(size: 50))
@@ -136,7 +144,7 @@ struct ChatSetupView: View {
     }
 
     private func getWelcomeMessage(for coach: Coach) -> String {
-        switch coach.id {
+        switch coach.slug {
         case "marcus_hayes":
             return "Hey! I'm Marcus, your new coach. Let's get you set up!"
         case "alex_rivera":
@@ -164,13 +172,6 @@ struct ChatSetupView: View {
         }
     }
 
-    private func coachImage() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
-    }
 }
 
 struct ChatBubble: View {

@@ -437,7 +437,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
                 fields.append("age_years = ?")
                 values.append(age)
             if trainer:
-                fields.append("agent_name = ?")
+                fields.append("agent_id = ?")
                 values.append(trainer)
             if full_name:
                 fields.append("name = ?")
@@ -638,7 +638,7 @@ def _load_user_profile(user_id: int) -> dict[str, Any]:
             "weight_kg": user_row[4],
             "gender": user_row[5],
             "age_years": user_row[6],
-            "agent_name": user_row[7],
+            "agent_id": user_row[7],
         }
     prefs = None
     if pref_row:

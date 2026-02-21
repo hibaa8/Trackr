@@ -24,7 +24,7 @@ struct ContentView: View {
                     if isPreparingDashboard {
                         DashboardLoadingView(coachName: appState.selectedCoach?.name)
                     } else {
-                        MainTabView(coach: appState.selectedCoach ?? Coach.allCoaches[0])
+                        MainTabView()
                     }
                 } else {
                     WelcomeOnboardingView()
@@ -84,8 +84,8 @@ struct ContentView: View {
                         appState.todayPlan = plan
                     }
                 }
-                if let agentName = hydration.profile.user?.agent_name,
-                   let coach = Coach.allCoaches.first(where: { $0.name.lowercased() == agentName.lowercased() }) {
+                if let agentId = hydration.profile.user?.agent_id,
+                   let coach = appState.coaches.first(where: { $0.id == agentId }) {
                     DispatchQueue.main.async {
                         appState.setSelectedCoach(coach)
                     }

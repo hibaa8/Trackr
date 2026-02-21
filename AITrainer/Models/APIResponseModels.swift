@@ -109,7 +109,8 @@ struct ProfileUserResponse: Codable {
     let weight_kg: Double?
     let gender: String?
     let age_years: Int?
-    let agent_name: String?
+    let agent_id: Int?
+    let profile_image_base64: String?
 }
 
 struct ProfilePreferencesResponse: Codable {
@@ -126,6 +127,23 @@ struct ProfilePreferencesResponse: Codable {
 struct ProfileResponse: Codable {
     let user: ProfileUserResponse?
     let preferences: ProfilePreferencesResponse?
+}
+
+struct ProfileUpdateRequest: Codable {
+    let user_id: Int
+    let name: String?
+    let birthdate: String?
+    let height_cm: Double?
+    let weight_kg: Double?
+    let gender: String?
+    let age_years: Int?
+    let agent_id: Int?
+    let profile_image_base64: String?
+    let activity_level: String?
+    let goal_type: String?
+    let target_weight_kg: Double?
+    let dietary_preferences: String?
+    let workout_preferences: String?
 }
 
 struct ProgressCheckinResponse: Codable {

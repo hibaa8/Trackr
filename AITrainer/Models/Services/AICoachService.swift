@@ -28,7 +28,7 @@ final class AICoachService {
     func sendMessage(
         _ message: String,
         threadId: String?,
-        agentId: String? = nil,
+        agentId: Int? = nil,
         userId: Int,
         imageBase64: String? = nil,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
