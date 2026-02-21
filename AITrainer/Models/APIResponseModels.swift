@@ -109,7 +109,8 @@ struct ProfileUserResponse: Codable {
     let weight_kg: Double?
     let gender: String?
     let age_years: Int?
-    let agent_name: String?
+    let agent_id: Int?
+    let profile_image_base64: String?
 }
 
 struct ProfilePreferencesResponse: Codable {
@@ -126,6 +127,23 @@ struct ProfilePreferencesResponse: Codable {
 struct ProfileResponse: Codable {
     let user: ProfileUserResponse?
     let preferences: ProfilePreferencesResponse?
+}
+
+struct ProfileUpdateRequest: Codable {
+    let user_id: Int
+    let name: String?
+    let birthdate: String?
+    let height_cm: Double?
+    let weight_kg: Double?
+    let gender: String?
+    let age_years: Int?
+    let agent_id: Int?
+    let profile_image_base64: String?
+    let activity_level: String?
+    let goal_type: String?
+    let target_weight_kg: Double?
+    let dietary_preferences: String?
+    let workout_preferences: String?
 }
 
 struct ProgressCheckinResponse: Codable {
@@ -196,6 +214,15 @@ struct CoachSuggestionEnvelope: Codable {
     let suggestion: CoachSuggestionResponse?
 }
 
+struct ReminderItemResponse: Codable {
+    let id: Int
+    let reminder_type: String
+    let scheduled_at: String
+    let status: String
+    let channel: String
+    let related_plan_override_id: Int?
+}
+
 struct GamificationResponse: Codable {
     let points: Int
     let level: Int
@@ -206,6 +233,22 @@ struct GamificationResponse: Codable {
     let unlocked_freeze_streaks: Int
     let used_freeze_streaks: Int
     let share_text: String
+}
+
+struct SessionHydrationResponse: Codable {
+    let user_id: Int
+    let date: String
+    let profile: ProfileResponse
+    let progress: ProgressResponse
+    let today_plan: PlanDayResponse?
+    let daily_intake: DailyIntakeResponse
+    let gamification: GamificationResponse
+    let coach_suggestion: CoachSuggestionResponse?
+}
+
+struct BillingCheckoutSessionResponse: Codable {
+    let checkout_url: String
+    let session_id: String
 }
 
 enum JSONValue: Codable {

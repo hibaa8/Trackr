@@ -2,8 +2,12 @@ import SwiftUI
 import Combine
 
 struct MainTabView: View {
-    let coach: Coach
+    @EnvironmentObject var appState: AppState
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
+
+    private var coach: Coach {
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+    }
 
     var body: some View {
         TabView(selection: $selectedTab) {
@@ -21,6 +25,9 @@ struct MainTabView: View {
         }
         .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
         .preferredColorScheme(.dark)
+        .onReceive(NotificationCenter.default.publisher(for: .openDashboardTab)) { _ in
+            selectedTab = 1
+        }
     }
 }
 
@@ -72,6 +79,9 @@ struct ProgressPageView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
             loadProgressData()
+        }
+        .onChange(of: selectedPeriod) { _, _ in
+            weeklyCalories = buildPeriodCalories(from: progress?.meals ?? [])
         }
     }
 
@@ -207,24 +217,28 @@ struct ProgressPageView: View {
                         }
                         .frame(width: 30)
 
-                        // Bar chart
-                        HStack(alignment: .bottom, spacing: 6) {
-                            let maxValue = max(weeklyCalories.max() ?? 0, 1)
-                            ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
-                                let height = CGFloat(value) / CGFloat(maxValue) * 90
-                                VStack(spacing: 4) {
-                                    RoundedRectangle(cornerRadius: 2)
-                                        .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
-                                        .frame(width: 12, height: max(6, height))
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            // Keep card width fixed; only chart content scrolls on Month/Year.
+                            HStack(alignment: .bottom, spacing: 6) {
+                                let maxValue = max(weeklyCalories.max() ?? 0, 1)
+                                ForEach(Array(weeklyCalories.enumerated()), id: \.offset) { index, value in
+                                    let height = CGFloat(value) / CGFloat(maxValue) * 90
+                                    VStack(spacing: 4) {
+                                        RoundedRectangle(cornerRadius: 2)
+                                            .fill(index == weeklyCalories.count - 1 ? Color.blue : Color.blue.opacity(0.7))
+                                            .frame(width: 12, height: max(6, height))
 
-                                    if index % 3 == 0 {
-                                        Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
-                                            .font(.system(size: 10))
-                                            .foregroundColor(.white.opacity(0.6))
+                                        if index % 3 == 0 {
+                                            Text(shortDayLabel(offsetFromToday: weeklyCalories.count - 1 - index))
+                                                .font(.system(size: 10))
+                                                .foregroundColor(.white.opacity(0.6))
+                                        }
                                     }
                                 }
                             }
+                            .frame(minWidth: max(120, CGFloat(weeklyCalories.count) * 18), alignment: .leading)
                         }
+                        .frame(maxWidth: .infinity)
 
                         VStack(alignment: .trailing, spacing: 20) {
                             Text("120").font(.system(size: 10)).foregroundColor(.white.opacity(0.6))
@@ -355,7 +369,7 @@ struct ProgressPageView: View {
         switch selectedPeriod {
         case 0: return 7
         case 1: return 30
-        default: return 365
+        default: return 256
         }
     }
 
@@ -380,6 +394,28 @@ struct ProgressPageView: View {
     private func workoutDate(from value: String?) -> Date? {
         guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
             return nil
+        }
+        let lowered = value.lowercased()
+        let calendar = Calendar.current
+        if lowered == "today" || lowered == "now" {
+            return Date()
+        }
+        if lowered == "yesterday" {
+            return calendar.date(byAdding: .day, value: -1, to: Date())
+        }
+        if let weekMatch = lowered.range(of: #"^(\d+)\s*week(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[weekMatch])
+            let digits = token.filter(\.isNumber)
+            if let weeks = Int(digits) {
+                return calendar.date(byAdding: .day, value: -(weeks * 7), to: Date())
+            }
+        }
+        if let dayMatch = lowered.range(of: #"^(\d+)\s*day(s)?\s*ago$"#, options: .regularExpression) {
+            let token = String(lowered[dayMatch])
+            let digits = token.filter(\.isNumber)
+            if let days = Int(digits) {
+                return calendar.date(byAdding: .day, value: -days, to: Date())
+            }
         }
         let isoFormatter = ISO8601DateFormatter()
         if let isoDate = isoFormatter.date(from: value) {
@@ -441,7 +477,7 @@ struct ProgressPageView: View {
                 switch result {
                 case .success(let response):
                     progress = response
-                    weeklyCalories = buildWeeklyCalories(from: response.meals)
+                    weeklyCalories = buildPeriodCalories(from: response.meals)
                 case .failure:
                     break
                 }
@@ -454,8 +490,11 @@ struct ProgressPageView: View {
         }
     }
 
-    private func buildWeeklyCalories(from meals: [ProgressMealResponse]) -> [Int] {
-        let days = (0..<7).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+    private func buildPeriodCalories(from meals: [ProgressMealResponse]) -> [Int] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let days = (0..<selectedPeriodDayWindow).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
         var totals = Array(repeating: 0, count: days.count)
         for meal in meals {
             guard let loggedAt = meal.logged_at else { continue }
@@ -470,13 +509,25 @@ struct ProgressPageView: View {
         return totals
     }
 
+    private var periodCheckins: [ProgressCheckinResponse] {
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return sortedCheckins
+        }
+        return sortedCheckins.filter {
+            guard let checkinDate = workoutDate(from: $0.date) else { return false }
+            let day = calendar.startOfDay(for: checkinDate)
+            return day >= earliest && day <= today
+        }
+    }
+
     private var sortedCheckins: [ProgressCheckinResponse] {
         (progress?.checkins ?? []).sorted { $0.date < $1.date }
     }
 
     private var weightSeries: [Double] {
-        let values = sortedCheckins.compactMap { $0.weight_kg }
-        return Array(values.suffix(7))
+        periodCheckins.compactMap { $0.weight_kg }
     }
 
     private func weightLinePath(in rect: CGRect) -> Path {
@@ -527,9 +578,9 @@ struct ProgressPageView: View {
     }
 
     private var weightDeltaText: String {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return "No recent change" }
         let delta = last - prev
         let sign = delta >= 0 ? "+" : ""
@@ -537,17 +588,17 @@ struct ProgressPageView: View {
     }
 
     private var weightDeltaIcon: String {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return "minus" }
         return last <= prev ? "arrow.down" : "arrow.up"
     }
 
     private var weightDeltaColor: Color {
-        guard sortedCheckins.count >= 2,
-              let last = sortedCheckins.last?.weight_kg,
-              let prev = sortedCheckins.dropLast().last?.weight_kg
+        guard periodCheckins.count >= 2,
+              let last = periodCheckins.last?.weight_kg,
+              let prev = periodCheckins.dropLast().last?.weight_kg
         else { return .white.opacity(0.6) }
         return last <= prev ? .green : .red
     }
@@ -569,20 +620,33 @@ struct ProgressPageView: View {
 
     private var workoutCompletionRatio: Double {
         let workouts = progress?.workouts ?? []
-        let recent = workouts.filter { workout in
-            guard let dateStr = workout.date,
-                  let date = dayKeyFormatter.date(from: dateStr)
-            else { return false }
-            let days = calendar.dateComponents([.day], from: date, to: Date()).day ?? 0
-            return days <= 6 && (workout.completed ?? false)
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return 0
         }
-        return min(1.0, Double(recent.count) / 7.0)
+        let recent = workouts.filter { workout in
+            guard let date = workoutDate(from: workout.date)
+            else { return false }
+            let day = calendar.startOfDay(for: date)
+            return day >= earliest && day <= today && (workout.completed ?? false)
+        }
+        return min(1.0, Double(recent.count) / Double(selectedPeriodDayWindow))
     }
 
     private var workoutDateKeys: Set<String> {
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return []
+        }
         return Set((progress?.workouts ?? []).compactMap { workout in
-            guard workout.completed == true, let date = workout.date else { return nil }
-            return date
+            guard workout.completed == true, let date = workoutDate(from: workout.date) else { return nil }
+            let day = calendar.startOfDay(for: date)
+            guard day >= earliest && day <= today else { return nil }
+            return formatter.string(from: day)
         })
     }
 
@@ -717,10 +781,22 @@ private struct WorkoutLogSmallCard: View {
 struct SettingsPageView: View {
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
-    @State private var notificationsEnabled = true
+    @EnvironmentObject private var notificationManager: NotificationManager
+    @Environment(\.openURL) private var openURL
+    @AppStorage("enableNotifications") private var notificationsEnabled = true
+    @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
     @State private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
+    @State private var showManagePlan = false
+    @State private var showHelp = false
+    @State private var showPrivacyPolicy = false
+    @State private var showEditProfile = false
+    @State private var showCoachSelection = false
+    @State private var isCreatingCheckout = false
+    @State private var billingErrorMessage: String?
+    @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
         NavigationView {
@@ -749,13 +825,85 @@ struct SettingsPageView: View {
         }
         .navigationBarHidden(true)
         .onAppear {
-            guard let userId = authManager.effectiveUserId else { return }
-            backendConnector.loadProfile(userId: userId) { result in
-                if case .success(let response) = result {
-                    profileUser = response.user
-                }
+            notificationManager.checkAuthorizationStatus()
+            loadProfileData()
+        }
+        .onReceive(backendConnector.$profile) { response in
+            if let response {
+                profileUser = response.user
             }
         }
+        .onChange(of: notificationsEnabled) { _, isEnabled in
+            guard let userId = authManager.effectiveUserId else { return }
+            if isEnabled {
+                notificationManager.sendToggleOnTestNotification()
+                syncReminderNotifications(userId: userId)
+            } else {
+                notificationManager.cancelReminderNotifications()
+            }
+        }
+        .sheet(isPresented: $showManagePlan) {
+            NavigationView {
+                ManagePlanView(
+                    selectedPlanTier: selectedPlanTier,
+                    isLoadingPremiumCheckout: isCreatingCheckout,
+                    onChooseFree: {
+                        selectedPlanTier = "free"
+                        showManagePlan = false
+                    },
+                    onChoosePremium: {
+                        startPremiumCheckout()
+                    }
+                )
+            }
+        }
+        .sheet(isPresented: $showEditProfile) {
+            if let userId = authManager.effectiveUserId {
+                ProfileEditView(userId: userId, profile: backendConnector.profile) { updated in
+                    profileUser = updated.user
+                    backendConnector.profile = updated
+                }
+                .environmentObject(appState)
+                .environmentObject(backendConnector)
+            }
+        }
+        .sheet(isPresented: $showCoachSelection) {
+            if let userId = authManager.effectiveUserId {
+                CoachChangeView(
+                    currentCoach: coach,
+                    userId: userId,
+                    onCoachChanged: { newCoach in
+                        appState.selectedCoach = newCoach
+                        showCoachSelection = false
+                    }
+                )
+                .environmentObject(appState)
+                .environmentObject(backendConnector)
+            }
+        }
+        .sheet(isPresented: $showHelp) {
+            NavigationView {
+                helpView
+            }
+        }
+        .sheet(isPresented: $showPrivacyPolicy) {
+            NavigationView {
+                privacyPolicyView
+            }
+        }
+        .alert(
+            "Billing Error",
+            isPresented: Binding(
+                get: { billingErrorMessage != nil },
+                set: { if !$0 { billingErrorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { billingErrorMessage = nil }
+            },
+            message: {
+                Text(billingErrorMessage ?? "Unable to open checkout.")
+            }
+        )
     }
 
     private var headerView: some View {
@@ -770,41 +918,111 @@ struct SettingsPageView: View {
     }
 
     private var userProfileCard: some View {
-        HStack(spacing: 16) {
-            // Profile image placeholder
-            Circle()
-                .fill(Color.gray)
-                .frame(width: 60, height: 60)
-                .overlay(
-                    Image(systemName: "person.fill")
+        Button(action: { showEditProfile = true }) {
+            HStack(spacing: 16) {
+                if let image = profileImage {
+                    image
+                        .resizable()
+                        .scaledToFill()
+                        .frame(width: 60, height: 60)
+                        .clipShape(Circle())
+                } else {
+                    Circle()
+                        .fill(Color.blue)
+                        .frame(width: 60, height: 60)
+                        .overlay(
+                            Image(systemName: "person.fill")
+                                .foregroundColor(.white)
+                                .font(.system(size: 24))
+                        )
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(displayName)
+                        .font(.system(size: 18, weight: .semibold))
                         .foregroundColor(.white)
-                        .font(.system(size: 24))
-                )
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(profileUser?.name?.isEmpty == false ? profileUser?.name ?? "" : "Your Profile")
-                    .font(.system(size: 18, weight: .semibold))
-                    .foregroundColor(.white)
+                    Text(profileStatsText)
+                        .font(.system(size: 14))
+                        .foregroundColor(.white.opacity(0.7))
+                }
 
-                Text(profileStatsText)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.7))
+                Spacer()
             }
-
-            Spacer()
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.blue, lineWidth: 1)
+                    .background(Color.clear)
+            )
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .fill(Color.white.opacity(0.1))
-        )
+        .buttonStyle(.plain)
     }
 
     private var profileStatsText: String {
-        let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) } ?? "--"
-        let weightText = profileUser?.weight_kg.map { String(format: "%.1f kg", $0) } ?? "--"
+        let heightText = profileUser?.height_cm.map { String(format: "%.0f cm", $0) }
+            ?? appState.userData?.height
+            ?? "--"
+        let weightText = profileUser?.weight_kg.map { String(format: "%.1f kg", $0) }
+            ?? appState.userData?.weight
+            ?? "--"
         let ageText = profileAgeText
         return "Height: \(heightText) | Weight: \(weightText) | Age: \(ageText)"
+    }
+
+    private var profileImage: Image? {
+        guard let base64 = profileUser?.profile_image_base64,
+              let data = Data(base64Encoded: base64),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return Image(uiImage: image)
+    }
+
+    private var displayName: String {
+        if let name = profileUser?.name, !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return name
+        }
+        if let stored = UserDefaults.standard.string(forKey: "currentUserName"),
+           !stored.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return stored
+        }
+        if let email = authManager.currentUser, !email.isEmpty {
+            return email
+        }
+        if let displayName = appState.userData?.displayName, !displayName.isEmpty {
+            return displayName
+        }
+        return "Your Profile"
+    }
+
+    private func loadProfileData() {
+        if let userId = authManager.effectiveUserId {
+            backendConnector.loadProfile(userId: userId) { result in
+                if case .success(let response) = result {
+                    profileUser = response.user
+                }
+            }
+            syncReminderNotifications(userId: userId)
+            return
+        }
+
+        guard let email = authManager.currentUser, !email.isEmpty else { return }
+        APIService.shared.getUserId(email: email)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    let userId = response.user_id
+                    backendConnector.loadProfile(userId: userId) { result in
+                        if case .success(let response) = result {
+                            profileUser = response.user
+                        }
+                    }
+                    syncReminderNotifications(userId: userId)
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private var profileAgeText: String {
@@ -815,56 +1033,92 @@ struct SettingsPageView: View {
     }
 
     private var currentCoachCard: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Text("Current Coach")
-                    .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.white)
-
-                Spacer()
-            }
-
-            HStack(spacing: 16) {
-                Circle()
-                    .fill(Color.blue)
-                    .frame(width: 50, height: 50)
-                    .overlay(
-                        Image(systemName: "person.fill")
-                            .foregroundColor(.white)
-                            .font(.system(size: 20))
-                    )
-
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(coach.name)
-                        .font(.system(size: 16, weight: .medium))
+        Button(action: {
+            showCoachSelection = true
+        }) {
+            VStack(spacing: 16) {
+                HStack {
+                    Text("Current Coach")
+                        .font(.system(size: 16, weight: .semibold))
                         .foregroundColor(.white)
 
-                    Text(coach.title)
-                        .font(.system(size: 14))
-                        .foregroundColor(.white.opacity(0.7))
+                    Spacer()
+
+                    HStack(spacing: 4) {
+                        Text("Change")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.blue)
+
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
                 }
 
-                Spacer()
+                HStack(spacing: 16) {
+                    // Coach avatar with real image or color
+                    ZStack {
+                        Circle()
+                            .fill(Color(coach.primaryColor))
+                            .frame(width: 60, height: 60)
 
-                Button("Change Coach") {
-                    // Handle coach change
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .foregroundColor(.white)
+                                    .font(.system(size: 24))
+                            }
+                        }
+                        .frame(width: 56, height: 56)
+                        .clipShape(Circle())
+                    } else {
+                        Image(systemName: "person.fill")
+                            .foregroundColor(.white)
+                            .font(.system(size: 24))
+                    }
+                    }
+
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(coach.name)
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+
+                        Text(coach.title)
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+
+                        // Coach specialty tags
+                        HStack(spacing: 6) {
+                            ForEach(Array(coach.expertise.prefix(2)), id: \.self) { specialty in
+                                Text(specialty)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .foregroundColor(Color(coach.primaryColor))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 2)
+                                    .background(
+                                        Capsule()
+                                            .fill(Color(coach.primaryColor).opacity(0.2))
+                                    )
+                            }
+                        }
+                    }
+
+                    Spacer()
                 }
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.blue)
-                .padding(.horizontal, 16)
-                .padding(.vertical, 8)
-                .background(
-                    RoundedRectangle(cornerRadius: 16)
-                        .stroke(Color.blue, lineWidth: 1)
-                )
             }
+            .padding(20)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.blue, lineWidth: 1)
+                    .background(Color.clear)
+            )
         }
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 16)
-                .stroke(Color.blue, lineWidth: 1)
-                .background(Color.clear)
-        )
+        .buttonStyle(PlainButtonStyle())
     }
 
     private var settingsList: some View {
@@ -873,17 +1127,159 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
-            SettingsRow(title: "Subscription", value: "Premium", highlight: true)
+            SettingsRow(
+                title: "Manage Plan",
+                value: selectedPlanTier == "premium" ? "$14.99 Premium" : "Free",
+                highlight: selectedPlanTier == "premium"
+            ) {
+                showManagePlan = true
+            }
 
             Divider()
                 .background(Color.white.opacity(0.2))
 
-            SettingsRow(title: "Help & Feedback")
-            SettingsRow(title: "Privacy Policy")
+            SettingsRow(title: "Help")
+                { showHelp = true }
+            SettingsRow(title: "Privacy Policy") {
+                showPrivacyPolicy = true
+            }
             SettingsRow(title: "Log Out", isDestructive: true) {
                 authManager.signOut()
             }
         }
+    }
+
+    private func syncReminderNotifications(userId: Int) {
+        backendConnector.loadReminders(userId: userId) { result in
+            switch result {
+            case .success(let reminders):
+                notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
+            case .failure(let error):
+                print("Failed to load reminders for settings sync: \(error)")
+            }
+        }
+    }
+
+    private func startPremiumCheckout() {
+        guard let userId = authManager.effectiveUserId else { return }
+        isCreatingCheckout = true
+        backendConnector.createBillingCheckoutSession(userId: userId, planTier: "premium") { result in
+            isCreatingCheckout = false
+            switch result {
+            case .success(let session):
+                guard let url = URL(string: session.checkout_url) else {
+                    billingErrorMessage = "Invalid checkout URL."
+                    return
+                }
+                openURL(url)
+            case .failure(let error):
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .serverErrorWithMessage(_, let message):
+                        billingErrorMessage = message
+                    case .serverError(let code):
+                        billingErrorMessage = "Checkout failed (HTTP \(code))."
+                    default:
+                        billingErrorMessage = "\(apiError)"
+                    }
+                } else {
+                    billingErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private var helpView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Help")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.white)
+
+                Text("Common topics")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    helpItem(title: "Account access", detail: "If you can’t sign in, make sure you’re using the same email you signed up with. If needed, try signing up again to create a new account.")
+                    helpItem(title: "Backend connection", detail: "If the app can’t reach the server, confirm the backend URL is correct and the server is running.")
+                    helpItem(title: "Logging meals & workouts", detail: "Use the Trainer chat or the Today’s Plan detail page to log workouts. Logged meals appear in Calorie Balance after sync.")
+                    helpItem(title: "Notifications", detail: "Enable notifications in Settings and allow permissions in iOS Settings > Notifications.")
+                }
+
+                Text("Contact")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Email support at support@vaylo.ai")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+            }
+            .padding(20)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { showHelp = false }
+            }
+        }
+    }
+
+    private var privacyPolicyView: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Privacy Policy")
+                    .font(.system(size: 24, weight: .bold))
+                    .foregroundColor(.white)
+
+                Text("We respect your privacy. This app only collects the data needed to provide coaching features, including profile details, workout logs, and nutrition logs.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+
+                Text("Data usage")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                VStack(alignment: .leading, spacing: 10) {
+                    helpItem(title: "Profile data", detail: "Used to personalize plans and recommendations.")
+                    helpItem(title: "Health data", detail: "Only accessed with your permission and used to enhance insights.")
+                    helpItem(title: "Account data", detail: "Stored securely to enable sign in and sync across devices.")
+                }
+
+                Text("Questions?")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+
+                Text("Email privacy@vaylo.ai for more details.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.75))
+            }
+            .padding(20)
+        }
+        .background(Color.black.ignoresSafeArea())
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button("Done") { showPrivacyPolicy = false }
+            }
+        }
+    }
+
+    private func helpItem(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(title)
+                .font(.system(size: 14, weight: .semibold))
+                .foregroundColor(.white)
+            Text(detail)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.7))
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+        )
     }
 
     private var bottomToolbar: some View {
@@ -973,6 +1369,408 @@ struct SettingsRow: View {
     }
 }
 
+struct ManagePlanView: View {
+    let selectedPlanTier: String
+    let isLoadingPremiumCheckout: Bool
+    let onChooseFree: () -> Void
+    let onChoosePremium: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 18) {
+                Text("Manage Plan")
+                    .font(.system(size: 28, weight: .bold))
+                    .foregroundColor(.white)
+
+                planCard(
+                    title: "Free Plan",
+                    subtitle: "Core coaching and tracking features.",
+                    price: "$0",
+                    isSelected: selectedPlanTier == "free",
+                    buttonTitle: selectedPlanTier == "free" ? "Current Plan" : "Choose Free",
+                    buttonAction: onChooseFree
+                )
+
+                planCard(
+                    title: "Premium Plan",
+                    subtitle: "Advanced coaching tools and premium features.",
+                    price: "$14.99 / month + tax",
+                    isSelected: selectedPlanTier == "premium",
+                    buttonTitle: isLoadingPremiumCheckout ? "Opening Checkout..." : "Choose Premium",
+                    buttonAction: onChoosePremium,
+                    buttonDisabled: isLoadingPremiumCheckout
+                )
+
+                Spacer()
+            }
+            .padding(20)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button("Close") { dismiss() }
+            }
+        }
+    }
+
+    private func planCard(
+        title: String,
+        subtitle: String,
+        price: String,
+        isSelected: Bool,
+        buttonTitle: String,
+        buttonAction: @escaping () -> Void,
+        buttonDisabled: Bool = false
+    ) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text(title)
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                if isSelected {
+                    Text("Selected")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.blue)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue.opacity(0.15)))
+                }
+            }
+            Text(price)
+                .font(.system(size: 18, weight: .bold))
+                .foregroundColor(.white)
+            Text(subtitle)
+                .font(.system(size: 14))
+                .foregroundColor(.white.opacity(0.7))
+            Button(action: buttonAction) {
+                Text(buttonTitle)
+                    .font(.system(size: 15, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 12)
+                    .background(RoundedRectangle(cornerRadius: 12).fill(Color.blue))
+            }
+            .disabled(buttonDisabled)
+            .opacity(buttonDisabled ? 0.7 : 1.0)
+        }
+        .padding(18)
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(isSelected ? Color.blue : Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
+    }
+}
+
+// MARK: - Coach Change View
+
+struct CoachChangeView: View {
+    let currentCoach: Coach
+    let userId: Int
+    let onCoachChanged: (Coach) -> Void
+
+    @Environment(\.dismiss) var dismiss
+    @EnvironmentObject var appState: AppState
+    @EnvironmentObject var backendConnector: FrontendBackendConnector
+    @State private var selectedCoach: Coach?
+    @State private var isUpdating = false
+
+    private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                VStack(spacing: 24) {
+                    // Header
+                    VStack(spacing: 12) {
+                        Text("Choose Your Coach")
+                            .font(.system(size: 28, weight: .bold, design: .rounded))
+                            .foregroundColor(.white)
+
+                        Text("Your coach will guide your fitness journey with personalized advice")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(.top, 20)
+
+                    // Coach Grid
+                    ScrollView(showsIndicators: false) {
+                        LazyVGrid(columns: columns, spacing: 16) {
+                            ForEach(appState.coaches) { coach in
+                                CoachChangeCard(
+                                    coach: coach,
+                                    isSelected: selectedCoach?.id == coach.id,
+                                    isCurrent: currentCoach.id == coach.id
+                                ) {
+                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                        selectedCoach = coach
+                                    }
+
+                                    // Haptic feedback
+                                    let selectionFeedback = UISelectionFeedbackGenerator()
+                                    selectionFeedback.selectionChanged()
+                                }
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 100)
+                    }
+                }
+
+                // Floating action button
+                if let selectedCoach = selectedCoach, selectedCoach.id != currentCoach.id {
+                    VStack {
+                        Spacer()
+                        changeCoachButton(selectedCoach)
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 40)
+                    }
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
+            }
+            .navigationTitle("")
+            .navigationBarHidden(true)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Cancel") {
+                        dismiss()
+                    }
+                    .foregroundColor(.white)
+                }
+            }
+        }
+        .onAppear {
+            selectedCoach = currentCoach
+        }
+    }
+
+    private func changeCoachButton(_ coach: Coach) -> some View {
+        Button(action: {
+            changeCoach(to: coach)
+        }) {
+            HStack(spacing: 12) {
+                if isUpdating {
+                    ProgressView()
+                        .scaleEffect(0.8)
+                        .tint(.white)
+                } else {
+                    Image(systemName: "person.2.circle.fill")
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundColor(.white)
+                }
+
+                Text(isUpdating ? "Switching Coach..." : "Switch to \(coach.name)")
+                    .font(.system(size: 16, weight: .semibold, design: .rounded))
+                    .foregroundColor(.white)
+            }
+            .frame(maxWidth: .infinity)
+            .frame(height: 56)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(
+                        LinearGradient(
+                            colors: [Color(coach.primaryColor), Color(coach.secondaryColor)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16)
+                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
+            )
+            .shadow(color: Color(coach.primaryColor).opacity(0.4), radius: 8, x: 0, y: 4)
+            .scaleEffect(isUpdating ? 0.98 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isUpdating)
+        }
+        .disabled(isUpdating)
+    }
+
+    private func changeCoach(to newCoach: Coach) {
+        guard !isUpdating else { return }
+
+        isUpdating = true
+
+        // Update UI immediately for better UX
+        onCoachChanged(newCoach)
+
+        // Success haptic
+        let successFeedback = UINotificationFeedbackGenerator()
+        successFeedback.notificationOccurred(.success)
+
+        dismiss()
+
+        // Call backend API to sync the change
+        backendConnector.changeCoach(userId: userId, newCoachId: newCoach.id) { result in
+            switch result {
+            case .success:
+                print("✅ Coach change synced with backend")
+            case .failure(let error):
+                print("❌ Failed to sync coach change with backend: \(error)")
+                // Note: UI already updated, so user sees the change even if backend fails
+            }
+        }
+    }
+}
+
+struct CoachChangeCard: View {
+    let coach: Coach
+    let isSelected: Bool
+    let isCurrent: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        Button(action: onTap) {
+            VStack(spacing: 0) {
+                // Coach Image
+                ZStack {
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(coach.primaryColor).opacity(0.8),
+                                                Color(coach.secondaryColor).opacity(0.6)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            }
+                        }
+                        .frame(height: 140)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                    } else {
+                        RoundedRectangle(cornerRadius: 12)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        Color(coach.primaryColor).opacity(0.8),
+                                        Color(coach.secondaryColor).opacity(0.6)
+                                    ],
+                                    startPoint: .topLeading,
+                                    endPoint: .bottomTrailing
+                                )
+                            )
+                            .frame(height: 140)
+
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 40))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+
+                    // Current coach indicator
+                    if isCurrent {
+                        VStack {
+                            HStack {
+                                Text("CURRENT")
+                                    .font(.system(size: 10, weight: .bold))
+                                    .foregroundColor(.white)
+                                    .padding(.horizontal, 8)
+                                    .padding(.vertical, 4)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .fill(Color.green)
+                                    )
+                                Spacer()
+                            }
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
+
+                    // Selection indicator
+                    if isSelected && !isCurrent {
+                        VStack {
+                            HStack {
+                                Spacer()
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 24, height: 24)
+                                    .overlay(
+                                        Image(systemName: "checkmark")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundColor(.white)
+                                    )
+                            }
+                            Spacer()
+                        }
+                        .padding(8)
+                    }
+                }
+
+                // Coach Info
+                VStack(alignment: .leading, spacing: 8) {
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text(coach.name)
+                            .font(.system(size: 16, weight: .bold))
+                            .foregroundColor(.white)
+                            .lineLimit(1)
+
+                        Text(coach.title)
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                            .lineLimit(2)
+                    }
+
+                    // Philosophy snippet
+                    Text(coach.philosophy)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundColor(.white.opacity(0.6))
+                        .lineLimit(2)
+
+                    // Expertise tags
+                    LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 4) {
+                        ForEach(Array(coach.expertise.prefix(2)), id: \.self) { specialty in
+                            Text(specialty)
+                                .font(.system(size: 9, weight: .medium))
+                                .foregroundColor(Color(coach.primaryColor))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(
+                                    Capsule()
+                                        .fill(Color(coach.primaryColor).opacity(0.2))
+                                )
+                                .lineLimit(1)
+                        }
+                    }
+                }
+                .padding(12)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.black.opacity(0.6))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(
+                                isSelected ? Color(coach.primaryColor) : Color.white.opacity(0.2),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                    )
+            )
+            .scaleEffect(isSelected ? 1.02 : 1.0)
+            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isSelected)
+        }
+        .buttonStyle(PlainButtonStyle())
+    }
+
+}
+
 // Extension for backdrop blur
 extension View {
     func backdrop(blur radius: CGFloat) -> some View {
@@ -985,6 +1783,7 @@ extension View {
 }
 
 #Preview {
-    MainTabView(coach: Coach.allCoaches[0])
+    MainTabView()
+        .environmentObject(AppState())
         .environmentObject(FrontendBackendConnector.shared)
 }

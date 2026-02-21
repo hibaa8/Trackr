@@ -8,10 +8,6 @@ enum BackendConfig {
         if let info = Bundle.main.infoDictionary?["BackendBaseURL"] as? String, !info.isEmpty {
             return info
         }
-        #if targetEnvironment(simulator)
-        return "http://localhost:8000"
-        #else
-        return "http://localhost:8000"
-        #endif
+        return "https://vaylo-fitness.onrender.com"
     }
 }

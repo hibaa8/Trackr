@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import re
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
@@ -41,17 +42,59 @@ def _workout_label_from_json(workout_json: Optional[str]) -> str:
     return str(payload)
 
 
+def _coerce_to_date(value: Any) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
+def _normalize_checkin_date(value: Optional[str]) -> str:
+    if not value:
+        return date.today().isoformat()
+    raw = str(value).strip()
+    if not raw:
+        return date.today().isoformat()
+    lowered = raw.lower()
+    today = date.today()
+
+    if lowered in {"today", "now"}:
+        return today.isoformat()
+    if lowered == "yesterday":
+        return (today - timedelta(days=1)).isoformat()
+
+    week_match = re.match(r"^(\d+)\s*week(?:s)?\s*ago$", lowered)
+    if week_match:
+        weeks = int(week_match.group(1))
+        return (today - timedelta(days=weeks * 7)).isoformat()
+
+    day_match = re.match(r"^(\d+)\s*day(?:s)?\s*ago$", lowered)
+    if day_match:
+        days = int(day_match.group(1))
+        return (today - timedelta(days=days)).isoformat()
+
+    try:
+        return datetime.fromisoformat(raw).date().isoformat()
+    except Exception:
+        pass
+    try:
+        return datetime.strptime(raw, "%Y-%m-%d").date().isoformat()
+    except Exception:
+        return today.isoformat()
+
+
 def _render_plan_days(
-    start_date: str,
-    end_date: str,
+    start_date: Any,
+    end_date: Any,
     cycle_length: int,
     default_calories: int,
     default_macros: Dict[str, int],
     template_days: Dict[int, Dict[str, Any]],
     overrides: Dict[str, Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    start = datetime.strptime(start_date, "%Y-%m-%d").date()
-    end = datetime.strptime(end_date, "%Y-%m-%d").date()
+    start = _coerce_to_date(start_date)
+    end = _coerce_to_date(end_date)
     total_days = (end - start).days + 1
     plan_days = []
     for offset in range(total_days):
@@ -111,8 +154,9 @@ def _load_user_context_data(user_id: int) -> Dict[str, Any]:
 
 
 def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -> Dict[str, Any]:
-    cache_key = f"user:{user_id}:active_plan"
-    cached = _redis_get_json(cache_key)
+    cache_key = f"active_plan:{user_id}"
+    legacy_key = f"user:{user_id}:active_plan"
+    cached = _redis_get_json(cache_key) or _redis_get_json(legacy_key)
     if cached:
         return cached
     if not allow_db_fallback:
@@ -184,6 +228,7 @@ def _get_active_plan_bundle_data(user_id: int, allow_db_fallback: bool = True) -
         "checkpoints": checkpoints,
     }
     _redis_set_json(cache_key, bundle, ttl_seconds=CACHE_TTL_PLAN)
+    _redis_set_json(legacy_key, bundle, ttl_seconds=CACHE_TTL_PLAN)
     return bundle
 
 
@@ -258,6 +303,7 @@ def _load_active_plan_draft(user_id: int) -> Dict[str, Any]:
 
 def _set_active_plan_cache(user_id: int, bundle: Dict[str, Any]) -> None:
     _redis_set_json(_draft_plan_key(user_id), bundle, ttl_seconds=CACHE_TTL_LONG)
+    _redis_set_json(f"active_plan:{user_id}", bundle, ttl_seconds=CACHE_TTL_PLAN)
     _redis_set_json(f"user:{user_id}:active_plan", bundle, ttl_seconds=CACHE_TTL_PLAN)
     SESSION_CACHE.setdefault(user_id, {})["active_plan"] = bundle
 
@@ -271,6 +317,7 @@ def _append_plan_patch(user_id: int, patch: Dict[str, Any]) -> None:
 
 
 def _invalidate_active_plan_cache(user_id: int) -> None:
+    _redis_delete(f"active_plan:{user_id}")
     _redis_delete(f"user:{user_id}:active_plan")
     _redis_delete(_draft_plan_key(user_id))
     _redis_delete(_draft_plan_patches_key(user_id))
@@ -1679,6 +1726,12 @@ def compute_plan_status(user_id: int, as_of_date: Optional[str] = None) -> str:
 @tool("apply_plan_patch")
 def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
     """Apply a plan patch (overrides + optional end_date) to cache and DB."""
+    idem_digest = hashlib.sha256(json.dumps(patch, sort_keys=True).encode("utf-8")).hexdigest()
+    idem_key = f"idem:tool:plan_patch:{user_id}:auto:{idem_digest}"
+    cached = _redis_get_json(idem_key)
+    if isinstance(cached, dict) and cached.get("message"):
+        return str(cached["message"])
+
     bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
@@ -1718,7 +1771,9 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
         )
         row = cur.fetchone()
         if not row:
-            return "No active plan found."
+            message = "No active plan found."
+            _redis_set_json(idem_key, {"message": message}, ttl_seconds=600)
+            return message
         template_id = row[0]
         if new_end_date:
             cur.execute("UPDATE plan_templates SET end_date = ? WHERE id = ?", (new_end_date, template_id))
@@ -1744,7 +1799,9 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
                 ),
             )
         conn.commit()
-    return "Plan patch applied."
+    message = "Plan patch applied."
+    _redis_set_json(idem_key, {"message": message}, ttl_seconds=600)
+    return message
 
 
 @tool("propose_plan_corrections")
@@ -1847,7 +1904,7 @@ def log_checkin(
     """Log or update a weight check-in."""
     if weight_kg is None:
         return "What was your weight in kg?"
-    checkin_date = checkin_date or date.today().isoformat()
+    checkin_date = _normalize_checkin_date(checkin_date)
     draft = _load_checkins_draft(user_id)
     checkins = draft.get("checkins", [])
     updated = False
@@ -1895,6 +1952,7 @@ def delete_checkin(user_id: int, checkin_date: str) -> str:
     """Delete a weight check-in for a specific date."""
     if not checkin_date:
         return "Which date should I delete?"
+    checkin_date = _normalize_checkin_date(checkin_date)
     draft = _load_checkins_draft(user_id)
     checkins = [c for c in draft.get("checkins", []) if c.get("checkin_date") != checkin_date]
     draft["checkins"] = checkins

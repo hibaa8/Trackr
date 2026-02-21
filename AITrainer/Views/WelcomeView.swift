@@ -155,7 +155,8 @@ private extension WelcomeView {
                 .font(.captionMedium)
                 .foregroundColor(.white.opacity(0.6))
                 .multilineTextAlignment(.center)
-            }
+
+        }
         .padding(.horizontal, 24)
     }
 

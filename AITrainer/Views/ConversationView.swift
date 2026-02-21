@@ -347,7 +347,7 @@ struct ConversationView: View {
             weekly_weight_change_kg: weeklyDelta,
             activity_level: activity,
             storyline: coach.philosophy,
-            trainer: coach.name,
+            trainer_id: coach.id,
             personality: coach.personality,
             voice: coach.speakingStyle,
             timeframe_weeks: timeframeWeeks,
@@ -515,12 +515,20 @@ struct ConversationView: View {
                         .fill(Color(coach.primaryColor).opacity(0.8))
                         .frame(width: 32, height: 32)
                     
-                    if let image = coachAvatar() {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 28, height: 28)
-                            .clipShape(Circle())
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .frame(width: 28, height: 28)
+                        .clipShape(Circle())
                     } else {
                         Image(systemName: "person.fill")
                             .font(.system(size: 14))
@@ -548,13 +556,6 @@ struct ConversationView: View {
             }
         }
         
-        private func coachAvatar() -> Image? {
-            guard let url = coach.imageURL,
-                  let uiImage = UIImage(contentsOfFile: url.path) else {
-                return nil
-            }
-            return Image(uiImage: uiImage)
-        }
     }
     
     struct UserMessageView: View {

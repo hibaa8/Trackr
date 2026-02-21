@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from datetime import date, datetime
 from typing import Any, Optional
 
 from dotenv import load_dotenv
@@ -17,6 +18,12 @@ except ImportError:  # pragma: no cover - optional dependency for local dev
     UpstashRedis = None
 
 load_dotenv()
+
+
+def _json_default(value: Any) -> Any:
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
 
 
 def _redis_client() -> Optional[Any]:
@@ -58,7 +65,7 @@ def _redis_get_json(key: str) -> Optional[Any]:
 def _redis_set_json(key: str, value: Any, ttl_seconds: int) -> None:
     if not REDIS:
         return
-    payload = json.dumps(value)
+    payload = json.dumps(value, default=_json_default)
     if AsyncRedis and isinstance(REDIS, AsyncRedis.Redis):
         _run_async(REDIS.setex(key, ttl_seconds, payload))
     else:

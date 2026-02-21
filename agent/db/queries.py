@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 SELECT_USER_PROFILE = """
-SELECT id, name, birthdate, height_cm, weight_kg, gender, age_years, agent_name
+SELECT id, name, birthdate, height_cm, weight_kg, gender, age_years, agent_id, profile_image_base64
 FROM users
 WHERE id = ?
 """

@@ -10,6 +10,7 @@ import SwiftUI
 struct DashboardView: View {
     @StateObject private var viewModel = DashboardViewModel()
     @EnvironmentObject var healthKitManager: HealthKitManager
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var showAddMenu = false
     @State private var showGymClasses = false
     
@@ -154,7 +155,8 @@ struct DashboardView: View {
             }
         }
         .onAppear {
-            viewModel.loadDashboardData()
+            guard let userId = authManager.effectiveUserId else { return }
+            viewModel.loadDashboardData(userId: userId)
         }
     }
 }
@@ -275,7 +277,7 @@ struct AddMenuView: View {
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(
-                coach: appState.selectedCoach ?? Coach.allCoaches[0],
+                coach: appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0],
                 initialPrompt: voicePrompt
             )
         }

@@ -239,6 +239,23 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func updateProfile(payload: ProfileUpdateRequest, completion: @escaping (Result<ProfileResponse, Error>) -> Void) {
+        APIService.shared.updateProfile(payload)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.profile = response
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func loadProgress(userId: Int, completion: @escaping (Result<ProgressResponse, Error>) -> Void) {
         APIService.shared.getProgress(userId: userId)
             .receive(on: DispatchQueue.main)
@@ -250,6 +267,58 @@ class FrontendBackendConnector: ObservableObject {
                 },
                 receiveValue: { [weak self] response in
                     self?.progress = response
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func loadReminders(userId: Int, completion: @escaping (Result<[ReminderItemResponse], Error>) -> Void) {
+        APIService.shared.getReminders(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { reminders in
+                    completion(.success(reminders))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func createBillingCheckoutSession(userId: Int, planTier: String = "premium", completion: @escaping (Result<BillingCheckoutSessionResponse, Error>) -> Void) {
+        APIService.shared.createBillingCheckoutSession(userId: userId, planTier: planTier)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { response in
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func hydrateSession(userId: Int, date: Date = Date(), completion: @escaping (Result<SessionHydrationResponse, Error>) -> Void) {
+        APIService.shared.getSessionHydration(userId: userId, date: date)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] response in
+                    self?.profile = response.profile
+                    self?.progress = response.progress
+                    self?.dailyIntake = response.daily_intake
+                    self?.coachSuggestion = response.coach_suggestion
                     completion(.success(response))
                 }
             )
@@ -272,13 +341,35 @@ class FrontendBackendConnector: ObservableObject {
         }.resume()
     }
 
+    // MARK: - Coach Management
+
+    func changeCoach(userId: Int, newCoachId: Int, completion: @escaping (Result<Void, Error>) -> Void) {
+        APIService.shared.changeUserCoach(userId: userId, newCoachId: newCoachId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { [weak self] _ in
+                    // Refresh session data after successful coach change
+                    self?.hydrateSession(userId: userId) { _ in
+                        completion(.success(()))
+                    }
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     // MARK: - Initialize
 
     func initializeApp(userId: Int) {
         print("🚀 Initializing app with backend connection...")
         checkBackendHealth()
         currentUserId = userId
-        loadDailyIntake(userId: userId)
-        loadWeeklyCalories(userId: userId)
+        hydrateSession(userId: userId) { [weak self] _ in
+            self?.loadWeeklyCalories(userId: userId)
+        }
     }
 }

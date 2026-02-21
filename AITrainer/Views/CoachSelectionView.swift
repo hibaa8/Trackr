@@ -3,6 +3,7 @@ import UIKit
 import AVKit
 
 struct CoachSelectionView: View {
+    @EnvironmentObject private var appState: AppState
     @State private var selectedCoach: Coach? = nil
     @State private var showCoachDetail = false
     @State private var contentOpacity = 0.0
@@ -28,7 +29,7 @@ struct CoachSelectionView: View {
                     // Coach Grid
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(Coach.allCoaches) { coach in
+                            ForEach(appState.coaches) { coach in
                                 CoachCard(coach: coach) {
                                     selectedCoach = coach
                                     introCoach = coach
@@ -68,12 +69,28 @@ struct CoachCard: View {
             VStack(spacing: 0) {
                 // Coach Image
                 ZStack {
-                    if let image = coachImage() {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(height: 160)
-                            .clipShape(RoundedRectangle(cornerRadius: 12))
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(coach.primaryColor).opacity(0.8),
+                                                Color(coach.primaryColor).opacity(0.4)
+                                            ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+                            }
+                        }
+                        .frame(height: 160)
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
                     } else {
                         RoundedRectangle(cornerRadius: 12)
                             .fill(
@@ -142,13 +159,6 @@ struct CoachCard: View {
         .buttonStyle(ScaleButtonStyle())
     }
 
-    private func coachImage() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
-    }
 }
 
 struct ScaleButtonStyle: ButtonStyle {

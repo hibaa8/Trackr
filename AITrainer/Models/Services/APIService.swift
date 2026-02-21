@@ -14,11 +14,18 @@ enum APIError: Error {
     case invalidResponse
     case decodingFailed(Error)
     case serverError(Int)
+    case serverErrorWithMessage(Int, String)
     case unauthorized
 }
 
 class APIService {
     static let shared = APIService()
+    
+    private struct APIErrorEnvelope: Decodable {
+        let detail: String?
+        let error: String?
+        let message: String?
+    }
     
     private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
@@ -70,6 +77,11 @@ class APIService {
                 guard (200...299).contains(httpResponse.statusCode) else {
                     if httpResponse.statusCode == 401 {
                         throw APIError.unauthorized
+                    }
+                    let decoded = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data)
+                    let message = decoded?.detail ?? decoded?.error ?? decoded?.message
+                    if let message, !message.isEmpty {
+                        throw APIError.serverErrorWithMessage(httpResponse.statusCode, message)
                     }
                     throw APIError.serverError(httpResponse.statusCode)
                 }
@@ -343,16 +355,11 @@ class APIService {
     
     // MARK: - User Profile
     
-    func updateUserProfile(_ user: User) -> AnyPublisher<User, APIError> {
-        guard let jsonData = try? JSONEncoder().encode(user) else {
+    func updateProfile(_ payload: ProfileUpdateRequest) -> AnyPublisher<ProfileResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
-        
-        return request(endpoint: "/users/profile", method: "PUT", body: jsonData)
-    }
-    
-    func getUserProfile() -> AnyPublisher<User, APIError> {
-        return request(endpoint: "/users/profile")
+        return request(endpoint: "/api/profile", method: "PUT", body: jsonData)
     }
 
     func getProfile(userId: Int) -> AnyPublisher<ProfileResponse, APIError> {
@@ -363,8 +370,30 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getReminders(userId: Int) -> AnyPublisher<[ReminderItemResponse], APIError> {
+        return request(endpoint: "/api/reminders?user_id=\(userId)")
+    }
+
+    func createBillingCheckoutSession(userId: Int, planTier: String = "premium") -> AnyPublisher<BillingCheckoutSessionResponse, APIError> {
+        struct CheckoutRequest: Codable {
+            let user_id: Int
+            let plan_tier: String
+        }
+        guard let jsonData = try? JSONEncoder().encode(CheckoutRequest(user_id: userId, plan_tier: planTier)) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/billing/checkout-session", method: "POST", body: jsonData)
+    }
+
     func getGamification(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
+    }
+
+    func getSessionHydration(userId: Int, date: Date = Date()) -> AnyPublisher<SessionHydrationResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: date)
+        return request(endpoint: "/api/session/hydrate?user_id=\(userId)&day=\(dateString)")
     }
 
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
@@ -375,6 +404,20 @@ class APIService {
             return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
         }
         return request(endpoint: "/api/gamification/use-freeze", method: "POST", body: jsonData)
+    }
+
+    func changeUserCoach(userId: Int, newCoachId: Int) -> AnyPublisher<CoachChangeResponse, APIError> {
+        struct CoachChangeRequest: Codable {
+            let user_id: Int
+            let new_coach_id: Int
+        }
+
+        let body = CoachChangeRequest(user_id: userId, new_coach_id: newCoachId)
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+
+        return request(endpoint: "/api/change-coach", method: "POST", body: jsonData)
     }
 
     // MARK: - Onboarding
@@ -410,7 +453,7 @@ struct OnboardingCompletePayload: Codable {
     let weekly_weight_change_kg: Double?
     let activity_level: String?
     let storyline: String?
-    let trainer: String?
+    let trainer_id: Int?
     let personality: String?
     let voice: String?
     let timeframe_weeks: Int?
@@ -424,4 +467,9 @@ struct OnboardingCompletePayload: Codable {
 struct OnboardingCompleteResponse: Decodable {
     let ok: Bool?
     let error: String?
+}
+
+struct CoachChangeResponse: Decodable {
+    let success: Bool
+    let message: String?
 }

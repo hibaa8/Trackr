@@ -437,7 +437,7 @@ def _update_onboarding_preferences(user_id: int, payload: dict[str, Any]) -> Non
                 fields.append("age_years = ?")
                 values.append(age)
             if trainer:
-                fields.append("agent_name = ?")
+                fields.append("agent_id = ?")
                 values.append(trainer)
             if full_name:
                 fields.append("name = ?")
@@ -638,7 +638,7 @@ def _load_user_profile(user_id: int) -> dict[str, Any]:
             "weight_kg": user_row[4],
             "gender": user_row[5],
             "age_years": user_row[6],
-            "agent_name": user_row[7],
+            "agent_id": user_row[7],
         }
     prefs = None
     if pref_row:
@@ -1084,8 +1084,7 @@ def create_handler(agent_service: AgentService):
                         cur = conn.cursor()
                         cur.execute("SELECT 1")
                         cur.fetchone()
-                        using_sqlite = conn._adapt_query is False
-                    _send_json(self, 200, {"ok": True, "db": "sqlite" if using_sqlite else "postgres"})
+                    _send_json(self, 200, {"ok": True, "db": "postgres"})
                 except Exception as exc:
                     _send_json(self, 500, {"ok": False, "error": str(exc)})
                 return

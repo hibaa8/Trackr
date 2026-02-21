@@ -28,9 +28,9 @@ final class AICoachService {
     func sendMessage(
         _ message: String,
         threadId: String?,
-        agentId: String? = nil,
+        agentId: Int? = nil,
+        userId: Int,
         imageBase64: String? = nil,
-        userId: Int? = nil,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
     ) {
         guard let url = URL(string: "\(baseURL)/coach/chat") else {
@@ -38,21 +38,15 @@ final class AICoachService {
             return
         }
 
-        let storedId = UserDefaults.standard.integer(forKey: "currentUserId")
-        let resolvedUserId = userId ?? (storedId > 0 ? storedId : nil)
-        guard let resolvedUserId else {
-            completion(.failure(URLError(.userAuthenticationRequired)))
-            return
-        }
         var payload: [String: Any] = [
             "message": message,
-            "user_id": resolvedUserId,
+            "user_id": userId,
             "thread_id": threadId as Any
         ]
         if let agentId {
             payload["agent_id"] = agentId
         }
-        if let imageBase64 {
+        if let imageBase64, !imageBase64.isEmpty {
             payload["image_base64"] = imageBase64
         }
 

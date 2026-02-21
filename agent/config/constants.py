@@ -3,7 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 import os
 
-# BASE_DIR points to the project root (Trackr/)
+# BASE_DIR points to the project root (Vaylo Fitness/)
 BASE_DIR = Path(__file__).resolve().parents[2]
 
 # Use relative paths for deployment compatibility

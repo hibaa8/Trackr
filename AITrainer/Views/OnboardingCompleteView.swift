@@ -4,10 +4,14 @@ import UIKit
 import AVFoundation
 
 struct OnboardingCompleteView: View {
-    let coach: Coach
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var authManager: AuthenticationManager
     @State private var showMainApp = false
+
+    private var coach: Coach {
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+    }
     @State private var confettiOpacity = 0.0
     @State private var checkmarkScale = 0.0
     @State private var textOpacity = 0.0
@@ -15,7 +19,8 @@ struct OnboardingCompleteView: View {
 
     var body: some View {
         if showMainApp {
-            MainTabView(coach: coach)
+            MainTabView()
+                .environmentObject(appState)
                 .environmentObject(backendConnector)
         } else {
             ZStack {
@@ -186,7 +191,7 @@ struct TrainerMainView: View {
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    headerView
+                    headerView(topInset: geometry.safeAreaInsets.top)
                         .padding(.bottom, 30)
 
                     greetingSection
@@ -213,9 +218,11 @@ struct TrainerMainView: View {
             } else {
                 todayPlan = appState.todayPlan
             }
+            refreshDashboardData()
             loadGamification(trackGain: false)
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            refreshDashboardData()
             loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
@@ -264,19 +271,27 @@ struct TrainerMainView: View {
         }
     }
 
-    private var headerView: some View {
+    private func headerView(topInset: CGFloat) -> some View {
         HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
                         .fill(Color(coach.primaryColor).opacity(0.8))
                         .frame(width: 34, height: 34)
-                    if let image = coachAvatar() {
-                        image
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 30, height: 30)
-                            .clipShape(Circle())
+                    if let url = coach.imageURL {
+                        AsyncImage(url: url) { phase in
+                            if let image = phase.image {
+                                image
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.white)
+                            }
+                        }
+                        .frame(width: 30, height: 30)
+                        .clipShape(Circle())
                     } else {
                         Image(systemName: "person.fill")
                             .font(.system(size: 14))
@@ -325,16 +340,8 @@ struct TrainerMainView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 12)
+        .padding(.top, topInset + 12)
         .frame(maxWidth: .infinity)
-    }
-
-    private func coachAvatar() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
     }
 
     private var greetingSection: some View {
@@ -477,21 +484,22 @@ struct TrainerMainView: View {
 
     private var trainerBackground: some View {
         Group {
-            if let image = coachBackgroundImage() {
+            if let url = coach.imageURL {
                 GeometryReader { geometry in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                        .scaleEffect(1.1)
-                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
-                }
-            } else if let image = coachAvatar() {
-                image
-                    .resizable()
-                    .aspectRatio(contentMode: .fill)
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image
+                                .resizable()
+                                .aspectRatio(contentMode: .fill)
+                        } else {
+                            Color.black
+                        }
+                    }
+                    .frame(width: geometry.size.width, height: geometry.size.height)
+                    .clipped()
                     .scaleEffect(1.1)
+                    .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
             } else {
                 Color.black
             }
@@ -520,21 +528,6 @@ struct TrainerMainView: View {
             return words.prefix(5).joined(separator: " ")
         }
         return plan
-    }
-
-    private func coachBackgroundImage() -> Image? {
-        let candidates = [
-            Bundle.main.url(forResource: "\(coach.imageFilename)_bg", withExtension: "png", subdirectory: "CoachImages"),
-            Bundle.main.url(forResource: "\(coach.imageFilename)_BG", withExtension: "png", subdirectory: "CoachImages"),
-            Bundle.main.url(forResource: coach.imageFilename, withExtension: "png", subdirectory: "CoachBackgrounds")
-        ]
-        for url in candidates {
-            if let url,
-               let uiImage = UIImage(contentsOfFile: url.path) {
-                return Image(uiImage: uiImage)
-            }
-        }
-        return nil
     }
 
     private var bottomInputBar: some View {
@@ -601,6 +594,12 @@ struct TrainerMainView: View {
     }
 
     // AppState handles daily intake refresh
+
+    private func refreshDashboardData() {
+        guard let userId = authManager.effectiveUserId else { return }
+        appState.refreshDailyData(for: appState.selectedDate, userId: userId)
+        loadTodayPlan()
+    }
 
     private func loadTodayPlan() {
         guard let userId = authManager.effectiveUserId else {
@@ -897,6 +896,10 @@ struct VoiceActiveView: View {
         let imageToUpload = selectedImage
         selectedImage = nil
         isLoading = true
+        guard let userId = authManager.effectiveUserId else {
+            isLoading = false
+            return
+        }
 
         if let imageToUpload {
             uploadImage(imageToUpload, message: outgoingText) { result in
@@ -907,16 +910,21 @@ struct VoiceActiveView: View {
                 case .failure:
                     imageBase64 = nil
                 }
-                sendChat(outgoingText, imageBase64: imageBase64)
+                sendChat(outgoingText, imageBase64: imageBase64, userId: userId)
             }
         } else {
-            sendChat(outgoingText, imageBase64: nil)
+            sendChat(outgoingText, imageBase64: nil, userId: userId)
         }
     }
 
-    private func sendChat(_ outgoingText: String, imageBase64: String?) {
-        let userId = authManager.effectiveUserId
-        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id, imageBase64: imageBase64, userId: userId) { result in
+    private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
+        AICoachService.shared.sendMessage(
+            outgoingText,
+            threadId: threadId,
+            agentId: coach.id,
+            userId: userId,
+            imageBase64: imageBase64
+        ) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -1069,12 +1077,20 @@ struct VoiceActiveView: View {
                 Circle()
                     .fill(Color(coach.primaryColor).opacity(0.8))
                     .frame(width: 44, height: 44)
-                if let image = coachAvatar() {
-                    image
-                        .resizable()
-                        .scaledToFill()
-                        .frame(width: 40, height: 40)
-                        .clipShape(Circle())
+                if let url = coach.imageURL {
+                    AsyncImage(url: url) { phase in
+                        if let image = phase.image {
+                            image
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            Image(systemName: "person.fill")
+                                .font(.system(size: 18))
+                                .foregroundColor(.white)
+                        }
+                    }
+                    .frame(width: 40, height: 40)
+                    .clipShape(Circle())
                 } else {
                     Image(systemName: "person.fill")
                         .font(.system(size: 18))
@@ -1097,13 +1113,6 @@ struct VoiceActiveView: View {
         .padding(.top, 16)
     }
 
-    private func coachAvatar() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
-    }
 }
 
 struct VoiceMessage: Identifiable {
@@ -1114,6 +1123,47 @@ struct VoiceMessage: Identifiable {
     let image: UIImage?
 }
 
+
+private struct VoiceImagePicker: UIViewControllerRepresentable {
+    let sourceType: UIImagePickerController.SourceType
+    @Binding var selectedImage: UIImage?
+    @Environment(\.dismiss) private var dismiss
+
+    func makeUIViewController(context: Context) -> UIImagePickerController {
+        let picker = UIImagePickerController()
+        let resolvedSource: UIImagePickerController.SourceType
+        if sourceType == .camera, UIImagePickerController.isSourceTypeAvailable(.camera) {
+            resolvedSource = .camera
+        } else {
+            resolvedSource = .photoLibrary
+        }
+        picker.sourceType = resolvedSource
+        picker.delegate = context.coordinator
+        return picker
+    }
+
+    func updateUIViewController(_ uiViewController: UIImagePickerController, context: Context) {}
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(self)
+    }
+
+    final class Coordinator: NSObject, UIImagePickerControllerDelegate, UINavigationControllerDelegate {
+        let parent: VoiceImagePicker
+        init(_ parent: VoiceImagePicker) {
+            self.parent = parent
+        }
+        func imagePickerController(_ picker: UIImagePickerController, didFinishPickingMediaWithInfo info: [UIImagePickerController.InfoKey : Any]) {
+            if let image = info[.originalImage] as? UIImage {
+                parent.selectedImage = image
+            }
+            parent.dismiss()
+        }
+        func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
+            parent.dismiss()
+        }
+    }
+}
 
 private struct GamificationSheetView: View {
     let summary: GamificationResponse
@@ -1135,6 +1185,8 @@ private struct GamificationSheetView: View {
                 }
                 .padding(.top, 4)
 
+                xpProgressBar
+
                 HStack(spacing: 12) {
                     statCard(title: "Streak", value: "\(summary.streak_days) days")
                     statCard(title: "Best", value: "\(summary.best_streak_days) days")
@@ -1143,6 +1195,17 @@ private struct GamificationSheetView: View {
                     statCard(title: "Freeze", value: "\(summary.freeze_streaks)")
                     statCard(title: "Unlocked", value: "\(summary.unlocked_freeze_streaks)")
                 }
+
+                Button(action: { onUseFreeze() }) {
+                    Text("Use freeze to save your streak")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.blue.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+                .disabled(summary.freeze_streaks <= 0)
+                .opacity(summary.freeze_streaks <= 0 ? 0.5 : 1)
 
                 ShareLink(item: summary.share_text) {
                     Text("Share streak with friends")
@@ -1163,6 +1226,37 @@ private struct GamificationSheetView: View {
                 }
             }
         }
+    }
+
+    private var xpProgressBar: some View {
+        let total = max(1, summary.next_level_points)
+        let progress = min(1.0, max(0.0, Double(summary.points) / Double(total)))
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Text("Progress to next level")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundColor(.secondary)
+                Spacer()
+                Text("\(summary.points)/\(summary.next_level_points)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+
+            GeometryReader { geo in
+                ZStack(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.primary.opacity(0.08))
+                        .frame(height: 10)
+
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(Color.blue)
+                        .frame(width: geo.size.width * progress, height: 10)
+                }
+            }
+            .frame(height: 10)
+        }
+        .padding(.horizontal, 2)
     }
 
     private func statCard(title: String, value: String) -> some View {
@@ -1193,12 +1287,20 @@ struct VoiceMessageBubble: View {
                         Circle()
                             .fill(Color(coach.primaryColor).opacity(0.8))
                             .frame(width: 32, height: 32)
-                        if let image = coachAvatar() {
-                            image
-                                .resizable()
-                                .scaledToFill()
-                                .frame(width: 28, height: 28)
-                                .clipShape(Circle())
+                        if let url = coach.imageURL {
+                            AsyncImage(url: url) { phase in
+                                if let image = phase.image {
+                                    image
+                                        .resizable()
+                                        .scaledToFill()
+                                } else {
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 14))
+                                        .foregroundColor(.white)
+                                }
+                            }
+                            .frame(width: 28, height: 28)
+                            .clipShape(Circle())
                         } else {
                             Image(systemName: "person.fill")
                                 .font(.system(size: 14))
@@ -1254,13 +1356,6 @@ struct VoiceMessageBubble: View {
         }
     }
 
-    private func coachAvatar() -> Image? {
-        guard let url = coach.imageURL,
-              let uiImage = UIImage(contentsOfFile: url.path) else {
-            return nil
-        }
-        return Image(uiImage: uiImage)
-    }
 }
 
 struct ImagePicker: UIViewControllerRepresentable {
@@ -1360,7 +1455,8 @@ struct VoiceWaveform: View {
 
 
 #Preview {
-    OnboardingCompleteView(coach: Coach.allCoaches[0])
+    OnboardingCompleteView()
+        .environmentObject(AppState())
         .environmentObject(FrontendBackendConnector.shared)
         .environmentObject(AuthenticationManager())
 }

@@ -4,6 +4,7 @@ import Combine
 
 extension Notification.Name {
     static let dataDidUpdate = Notification.Name("DataDidUpdate")
+    static let openDashboardTab = Notification.Name("OpenDashboardTab")
 }
 
 class AppState: ObservableObject {
@@ -17,6 +18,7 @@ class AppState: ObservableObject {
     @Published var selectedDate: Date = Date()
     @Published var selectedCoach: Coach?
     @Published var todayPlan: PlanDayResponse?
+    @Published var coaches: [Coach] = Coach.allCoaches
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
 
@@ -121,7 +123,7 @@ class AppState: ObservableObject {
         fatsTarget = Int((Double(calorieTarget) * 0.30) / 9.0)
     }
 
-    func sendMessage(_ text: String, userId: Int? = nil) {
+    func sendMessage(_ text: String, userId: Int) {
         let userMessage = WireframeChatMessage(text: text, isFromUser: true, timestamp: Date())
         chatMessages.append(userMessage)
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -200,6 +202,7 @@ class AppState: ObservableObject {
                 case .success(let response):
                     let replyText = response.reply.isEmpty ? "Plan updated." : response.reply
                     self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 case .failure:
                     self?.chatMessages.append(
                         WireframeChatMessage(

@@ -350,15 +350,33 @@ AGENT_ID_ALIASES: Dict[str, str] = {
     "liam_carter": "liam",
 }
 
+AGENT_ID_NUMERIC_MAP: Dict[int, str] = {
+    1: "marcus_hayes",
+    2: "hana_kim",
+    3: "alex_rivera",
+    4: "maria_santos",
+    5: "jake_foster",
+    6: "david_thompson",
+    7: "zara_khan",
+    8: "kenji_tanaka",
+    9: "chloe_evans",
+    10: "simone_adebayo",
+    11: "liam_carter",
+}
 
-def _resolve_agent_id(agent_id: str | None) -> str:
+
+def _resolve_agent_id(agent_id: str | int | None) -> str:
     if not agent_id:
         return DEFAULT_AGENT_ID
     normalized = str(agent_id).strip().lower()
+    if normalized.isdigit():
+        mapped = AGENT_ID_NUMERIC_MAP.get(int(normalized))
+        if mapped:
+            normalized = mapped
     return AGENT_ID_ALIASES.get(normalized, normalized)
 
 
-def _persona_block(agent_id: str | None) -> str:
+def _persona_block(agent_id: str | int | None) -> str:
     resolved = _resolve_agent_id(agent_id)
     persona = AGENT_PROFILES.get(resolved) or AGENT_PROFILES.get(DEFAULT_AGENT_ID) or next(iter(AGENT_PROFILES.values()))
     quote = random.choice(persona.quotes)
@@ -452,7 +470,7 @@ If no draft state exists, the assistant must ask to load or confirm an editable 
 """
 
 
-def get_system_prompt(agent_id: str | None = None) -> str:
+def get_system_prompt(agent_id: str | int | None = None) -> str:
     return (
         "You are an AI Trainer assistant.\n\n"
         + _persona_block(agent_id)
