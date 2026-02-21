@@ -165,7 +165,12 @@ struct TrainerMainView: View {
     @State private var showManualLogging = false
     @State private var showPlanDetail = false
     @State private var showCalorieDetail = false
+    @State private var showGamificationSheet = false
     @State private var todayPlan: PlanDayResponse?
+    @State private var gamification: GamificationResponse?
+    @State private var lastKnownPoints: Int?
+    @State private var xpGainToastText: String?
+    @State private var showXPGainToast = false
     @State private var isLoadingPlan = false
     @State private var cancellables = Set<AnyCancellable>()
 
@@ -175,53 +180,28 @@ struct TrainerMainView: View {
     var body: some View {
         GeometryReader { geometry in
             ZStack {
-                // Realistic gym background with person
-                AsyncImage(url: URL(string: "https://images.unsplash.com/photo-1571019613454-1cb2f99b2d8b?ixlib=rb-4.0.3&ixid=M3wxMjA3fDB8MHxwaG90by1wYWdlfHx8fGVufDB8fHx8fA%3D%3D&auto=format&fit=crop&w=1000&q=80")) { image in
-                    image
-                        .resizable()
-                        .aspectRatio(contentMode: .fill)
-                        .frame(width: geometry.size.width, height: geometry.size.height)
-                        .clipped()
-                } placeholder: {
-                    // Fallback gym-style background
-                    LinearGradient(
-                        colors: [
-                            Color(red: 0.2, green: 0.25, blue: 0.3),
-                            Color(red: 0.15, green: 0.2, blue: 0.25),
-                            Color(red: 0.1, green: 0.15, blue: 0.2)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                }
-                .ignoresSafeArea()
+                trainerBackground
 
-                // Dark overlay for text readability
-                Color.black.opacity(0.3)
+                Color.black.opacity(0.4)
                     .ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Header
                     headerView
+                        .padding(.bottom, 30)
 
-                    Spacer()
+                    greetingSection
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 30)
 
-                    // Main content positioned to match mockup
-                    VStack(spacing: 32) {
-                        // Greeting text
-                        greetingSection
-
-                        // Cards positioned lower on screen
-                        HStack(spacing: 16) {
-                            todaysPlanCard
-                            calorieBalanceCard
-                        }
-                        .padding(.horizontal, 20)
+                    VStack(spacing: 15) {
+                        todaysPlanCard
+                        calorieBalanceCard
                     }
-                    .padding(.bottom, 120) // Space for bottom toolbar
+                    .padding(.horizontal, 20)
 
                     Spacer()
                 }
+                .frame(maxWidth: .infinity, alignment: .center)
             }
         }
         .onReceive(timer) { _ in
@@ -233,6 +213,10 @@ struct TrainerMainView: View {
             } else {
                 todayPlan = appState.todayPlan
             }
+            loadGamification(trackGain: false)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
+            loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen, startRecording: !focusChatOnOpen)
@@ -265,10 +249,23 @@ struct TrainerMainView: View {
             }
             Button("Cancel", role: .cancel) {}
         }
+        .sheet(isPresented: $showGamificationSheet) {
+            if let gamification {
+                GamificationSheetView(
+                    summary: gamification,
+                    onUseFreeze: { useFreezeStreak() }
+                )
+            }
+        }
+        .onChange(of: showGamificationSheet) { _, isShown in
+            if isShown {
+                loadGamification(trackGain: false)
+            }
+        }
     }
 
     private var headerView: some View {
-        HStack {
+        HStack(alignment: .top, spacing: 0) {
             HStack(spacing: 10) {
                 ZStack {
                     Circle()
@@ -289,18 +286,47 @@ struct TrainerMainView: View {
 
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Trainer")
-                        .font(.system(size: 16, weight: .semibold))
-                        .foregroundColor(.white)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white.opacity(0.8))
                     Text(coach.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .foregroundColor(.white.opacity(0.7))
+                        .font(.system(size: 16, weight: .bold))
+                        .foregroundColor(.white)
                 }
             }
 
             Spacer()
+
+            VStack(alignment: .trailing, spacing: 6) {
+                if showXPGainToast, let xpGainToastText {
+                    Text(xpGainToastText)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 6)
+                        .background(Color.blue.opacity(0.85))
+                        .clipShape(RoundedRectangle(cornerRadius: 10))
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                }
+
+                Button(action: { showGamificationSheet = true }) {
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text("Lv \(gamification?.level ?? 1)")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundColor(.white)
+                        Text("\(gamification?.points ?? 0) XP")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white.opacity(0.8))
+                    }
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.16))
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                }
+            }
         }
         .padding(.horizontal, 20)
-        .padding(.top, 40) // Moved higher as requested
+        .padding(.top, 12)
+        .frame(maxWidth: .infinity)
     }
 
     private func coachAvatar() -> Image? {
@@ -312,80 +338,64 @@ struct TrainerMainView: View {
     }
 
     private var greetingSection: some View {
-        VStack(spacing: 8) {
+        VStack(spacing: 12) {
             Text(getGreeting())
-                .font(.system(size: 36, weight: .bold))
+                .font(.system(size: 48, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
 
             Text("Ready to crush your goals today?")
-                .font(.system(size: 18, weight: .medium))
-                .foregroundColor(.white.opacity(0.8))
+                .font(.system(size: 20, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 20)
     }
 
     private var todaysPlanCard: some View {
-        let workoutTitle = activePlan?.workout_plan ?? "Leg Day - 45 min"
-        let workoutDetails: String
-        if activePlan?.rest_day == true {
-            workoutDetails = "Rest, recover, and stretch today."
-        } else if let plan = activePlan?.workout_plan, !plan.isEmpty {
-            workoutDetails = plan
-        } else {
-            workoutDetails = "Warm-up, Squats, Lunges, Cool-down"
-        }
+        let workoutTitle = planSummaryTitle()
         let progressText = isLoadingPlan ? "Loading..." : "Tap for details"
+        let progressRatio: Double = 0.4
 
         return Button(action: {
             showPlanDetail = true
         }) {
-            VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 16) {
                 Text("Today's Plan")
-                    .font(.system(size: 16, weight: .semibold))
+                    .font(.system(size: 18, weight: .bold))
                     .foregroundColor(.white)
 
+                Text(workoutTitle)
+                    .font(.system(size: 16, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                    .lineLimit(2)
+
+                Spacer()
+
                 VStack(alignment: .leading, spacing: 8) {
-                    Text(workoutTitle)
-                        .font(.system(size: 18, weight: .bold))
-                        .foregroundColor(.white)
-
-                    Text(workoutDetails)
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white.opacity(0.9))
-                        .lineLimit(2)
-
-                    Spacer()
-
-                    VStack(alignment: .leading, spacing: 6) {
+                    GeometryReader { geo in
                         ZStack(alignment: .leading) {
-                            RoundedRectangle(cornerRadius: 2)
-                                .fill(Color.white.opacity(0.3))
-                                .frame(height: 4)
+                            RoundedRectangle(cornerRadius: 4)
+                                .fill(Color.white.opacity(0.25))
+                                .frame(height: 8)
 
-                            RoundedRectangle(cornerRadius: 2)
+                            RoundedRectangle(cornerRadius: 4)
                                 .fill(Color.blue)
-                                .frame(width: 80, height: 4) // 75% progress
+                                .frame(width: geo.size.width * progressRatio, height: 8)
                         }
-
-                        Text(progressText)
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
                     }
+                    .frame(height: 8)
+
+                    Text(progressText)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.white.opacity(0.7))
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .frame(height: 160)
             .padding(20)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(.ultraThinMaterial.opacity(0.8))
-                    .background(Color.black.opacity(0.3))
-            )
+            .background(glassCardBackground)
         }
         .buttonStyle(PlainButtonStyle())
-        .contentShape(RoundedRectangle(cornerRadius: 16))
+        .contentShape(RoundedRectangle(cornerRadius: 20))
     }
 
     private var calorieBalanceCard: some View {
@@ -394,94 +404,137 @@ struct TrainerMainView: View {
         let progress = min(1.0, max(0.0, Double(caloriesConsumed) / Double(max(caloriesGoal, 1))))
         let remaining = max(0, caloriesGoal - caloriesConsumed)
 
-        return VStack(alignment: .leading, spacing: 12) {
-            Text("Calorie Balance")
-                .font(.system(size: 16, weight: .semibold))
-                .foregroundColor(.white)
+        return Button(action: {
+            showCalorieDetail = true
+        }) {
+            VStack(alignment: .leading, spacing: 16) {
+                Text("Calorie Balance")
+                    .font(.system(size: 18, weight: .bold))
+                    .foregroundColor(.white)
 
-            HStack(spacing: 16) {
-                ZStack {
-                    Circle()
-                        .stroke(Color.white.opacity(0.12), lineWidth: 10)
-                        .frame(width: 86, height: 86)
+                HStack(spacing: 20) {
+                    ZStack {
+                        Circle()
+                            .stroke(Color.white.opacity(0.12), lineWidth: 8)
+                            .frame(width: 80, height: 80)
 
-                    Circle()
-                        .trim(from: 0, to: progress)
-                        .stroke(
-                            AngularGradient(
-                                gradient: Gradient(colors: [Color.cyan, Color.blue, Color.purple]),
-                                center: .center
-                            ),
-                            style: StrokeStyle(lineWidth: 10, lineCap: .round)
-                        )
-                        .frame(width: 86, height: 86)
-                        .rotationEffect(.degrees(-90))
-                        .shadow(color: Color.blue.opacity(0.35), radius: 5, x: 0, y: 2)
+                        Circle()
+                            .trim(from: 0, to: progress)
+                            .stroke(
+                                AngularGradient(
+                                    gradient: Gradient(colors: [Color.cyan, Color.blue]),
+                                    center: .center
+                                ),
+                                style: StrokeStyle(lineWidth: 8, lineCap: .round)
+                            )
+                            .frame(width: 80, height: 80)
+                            .rotationEffect(.degrees(-90))
 
-                    VStack(spacing: 2) {
-                        Text("\(caloriesConsumed)")
-                            .font(.system(size: 22, weight: .bold))
-                            .foregroundColor(.white)
-                        Text("of \(caloriesGoal)")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
+                        VStack(spacing: 2) {
+                            Text("\(caloriesConsumed)")
+                                .font(.system(size: 16, weight: .bold))
+                                .foregroundColor(.white)
+                            Text("of \(caloriesGoal)")
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundColor(.white.opacity(0.7))
+                        }
                     }
-                }
 
-                VStack(alignment: .leading, spacing: 10) {
-                    HStack(spacing: 6) {
-                        Text("\(remaining)")
+                    VStack(alignment: .leading, spacing: 4) {
+                        Text("\(remaining) kcal")
                             .font(.system(size: 18, weight: .bold))
                             .foregroundColor(.white)
-                        Text("kcal remaining")
+
+                        Text("remaining")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+
+                        Spacer()
+
+                        Text("Tap for details")
                             .font(.system(size: 12, weight: .medium))
                             .foregroundColor(.white.opacity(0.7))
                     }
-
-                    ZStack(alignment: .leading) {
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(Color.white.opacity(0.12))
-                            .frame(height: 6)
-
-                        RoundedRectangle(cornerRadius: 4)
-                            .fill(
-                                LinearGradient(
-                                    colors: [Color.cyan, Color.blue],
-                                    startPoint: .leading,
-                                    endPoint: .trailing
-                                )
-                            )
-                            .frame(width: CGFloat(progress) * 110, height: 6)
-                    }
-                    .frame(width: 110)
-
-                    Text("Tap for details")
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundColor(.white.opacity(0.6))
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(20)
+            .background(glassCardBackground)
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 160)
-        .padding(20)
-        .background(
-            RoundedRectangle(cornerRadius: 18)
-                .fill(.ultraThinMaterial.opacity(0.9))
-                .background(
-                    LinearGradient(
-                        colors: [Color.white.opacity(0.08), Color.black.opacity(0.35)],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
-                    )
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 18)
-                        .stroke(Color.white.opacity(0.08), lineWidth: 1)
-                )
-        )
-        .onTapGesture {
-            showCalorieDetail = true
+        .buttonStyle(PlainButtonStyle())
+        .contentShape(RoundedRectangle(cornerRadius: 20))
+    }
+
+    private var glassCardBackground: some View {
+        RoundedRectangle(cornerRadius: 20)
+            .fill(.ultraThinMaterial.opacity(0.9))
+            .background(Color.black.opacity(0.25))
+            .overlay(
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+            )
+    }
+
+    private var trainerBackground: some View {
+        Group {
+            if let image = coachBackgroundImage() {
+                GeometryReader { geometry in
+                    image
+                        .resizable()
+                        .aspectRatio(contentMode: .fill)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                        .scaleEffect(1.1)
+                        .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
+                }
+            } else if let image = coachAvatar() {
+                image
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+                    .scaleEffect(1.1)
+            } else {
+                Color.black
+            }
         }
+        .ignoresSafeArea()
+    }
+
+    private func planSummaryTitle() -> String {
+        if activePlan?.rest_day == true {
+            return "Rest Day"
+        }
+        let plan = (activePlan?.workout_plan ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        if plan.isEmpty {
+            return "Full Body Strength"
+        }
+        if let colon = plan.firstIndex(of: ":") {
+            let prefix = String(plan[..<colon]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return prefix.isEmpty ? "Full Body Strength" : prefix
+        }
+        if let period = plan.firstIndex(of: ".") {
+            let prefix = String(plan[..<period]).trimmingCharacters(in: .whitespacesAndNewlines)
+            return prefix.isEmpty ? "Full Body Strength" : prefix
+        }
+        let words = plan.split(separator: " ")
+        if words.count > 5 {
+            return words.prefix(5).joined(separator: " ")
+        }
+        return plan
+    }
+
+    private func coachBackgroundImage() -> Image? {
+        let candidates = [
+            Bundle.main.url(forResource: "\(coach.imageFilename)_bg", withExtension: "png", subdirectory: "CoachImages"),
+            Bundle.main.url(forResource: "\(coach.imageFilename)_BG", withExtension: "png", subdirectory: "CoachImages"),
+            Bundle.main.url(forResource: coach.imageFilename, withExtension: "png", subdirectory: "CoachBackgrounds")
+        ]
+        for url in candidates {
+            if let url,
+               let uiImage = UIImage(contentsOfFile: url.path) {
+                return Image(uiImage: uiImage)
+            }
+        }
+        return nil
     }
 
     private var bottomInputBar: some View {
@@ -574,6 +627,49 @@ struct TrainerMainView: View {
             )
             .store(in: &cancellables)
     }
+
+    private func loadGamification(trackGain: Bool) {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.getGamification(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { summary in
+                    let previousPoints = self.lastKnownPoints
+                    self.gamification = summary
+                    self.lastKnownPoints = summary.points
+                    guard trackGain, let previousPoints, summary.points > previousPoints else { return }
+                    let gained = summary.points - previousPoints
+                    showXPGainToast(message: "Coach: +\(gained) XP")
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func useFreezeStreak() {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.useFreezeStreak(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { summary in
+                    self.gamification = summary
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func showXPGainToast(message: String) {
+        xpGainToastText = message
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showXPGainToast = true
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showXPGainToast = false
+            }
+        }
+    }
 }
 
 // Alias for the trainer content without bottom toolbar
@@ -583,32 +679,22 @@ typealias TrainerMainViewContent = TrainerMainView
 struct VoiceActiveView: View {
     let coach: Coach
     var autoFocus: Bool = false
-<<<<<<< HEAD
     var startRecording: Bool = false
-=======
     var initialPrompt: String? = nil
->>>>>>> hiba-ios
     @State private var messages: [VoiceMessage] = []
     @State private var cancellables = Set<AnyCancellable>()
     @State private var messageText = ""
     @State private var isLoading = false
     @State private var threadId: String?
-<<<<<<< HEAD
     @State private var selectedImage: UIImage?
     @State private var showImagePicker = false
     @State private var showImageOptions = false
     @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
-=======
     @State private var didSendInitialPrompt = false
-    @State private var isRecording = false
-    @State private var audioRecorder: AVAudioRecorder?
-    @State private var recordingURL: URL?
-    @State private var audioErrorMessage: String?
-    @EnvironmentObject private var authManager: AuthenticationManager
->>>>>>> hiba-ios
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var authManager: AuthenticationManager
     @FocusState private var inputFocused: Bool
 
     var body: some View {
@@ -656,6 +742,9 @@ struct VoiceActiveView: View {
                     VStack(spacing: 16) {
                         ForEach(messages) { message in
                             VoiceMessageBubble(message: message, coach: coach)
+                        }
+                        if isLoading {
+                            VoiceTypingDots()
                         }
                     }
                     .padding(.horizontal, 20)
@@ -745,57 +834,16 @@ struct VoiceActiveView: View {
                     inputFocused = true
                 }
             }
-<<<<<<< HEAD
             if startRecording {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
                     startVoiceRecording()
-=======
+                }
+            }
             if let prompt = initialPrompt, !didSendInitialPrompt {
                 didSendInitialPrompt = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
                     messageText = prompt
                     sendMessage()
-                }
-            }
-        }
-    }
-
-    private func toggleRecording() {
-        if isRecording {
-            stopRecording()
-        } else {
-            startRecording()
-        }
-    }
-
-    private func startRecording() {
-        audioErrorMessage = nil
-        let session = AVAudioSession.sharedInstance()
-        session.requestRecordPermission { granted in
-            DispatchQueue.main.async {
-                guard granted else {
-                    audioErrorMessage = "Microphone permission denied."
-                    return
-                }
-                do {
-                    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker])
-                    try session.setActive(true, options: .notifyOthersOnDeactivation)
-                    let filename = UUID().uuidString + ".m4a"
-                    let url = FileManager.default.temporaryDirectory.appendingPathComponent(filename)
-                    let settings: [String: Any] = [
-                        AVFormatIDKey: Int(kAudioFormatMPEG4AAC),
-                        AVSampleRateKey: 44100,
-                        AVNumberOfChannelsKey: 1,
-                        AVEncoderAudioQualityKey: AVAudioQuality.high.rawValue
-                    ]
-                    let recorder = try AVAudioRecorder(url: url, settings: settings)
-                    recorder.record()
-                    audioRecorder = recorder
-                    recordingURL = url
-                    isRecording = true
-                } catch {
-                    audioErrorMessage = "Could not start recording."
->>>>>>> hiba-ios
                 }
             }
         }
@@ -817,7 +865,7 @@ struct VoiceActiveView: View {
         }
     }
 
-
+ 
     private func loadWelcomeMessage() {
         if messages.isEmpty {
             messages = [
@@ -850,30 +898,25 @@ struct VoiceActiveView: View {
         selectedImage = nil
         isLoading = true
 
-<<<<<<< HEAD
         if let imageToUpload {
-            uploadImage(imageToUpload, message: outgoingText) { _ in }
+            uploadImage(imageToUpload, message: outgoingText) { result in
+                let imageBase64: String?
+                switch result {
+                case .success(let encoded):
+                    imageBase64 = encoded
+                case .failure:
+                    imageBase64 = nil
+                }
+                sendChat(outgoingText, imageBase64: imageBase64)
+            }
+        } else {
+            sendChat(outgoingText, imageBase64: nil)
         }
+    }
 
-        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id) { result in
-=======
-        guard let userId = authManager.effectiveUserId else {
-            let errorMessage = VoiceMessage(
-                id: UUID(),
-                text: "Missing user ID. Please sign in again to log this.",
-                isFromCoach: true,
-                timestamp: Date()
-            )
-            messages.append(errorMessage)
-            return
-        }
-        AICoachService.shared.sendMessage(
-            trimmed,
-            threadId: threadId,
-            agentId: coach.id,
-            userId: userId
-        ) { result in
->>>>>>> hiba-ios
+    private func sendChat(_ outgoingText: String, imageBase64: String?) {
+        let userId = authManager.effectiveUserId
+        AICoachService.shared.sendMessage(outgoingText, threadId: threadId, agentId: coach.id, imageBase64: imageBase64, userId: userId) { result in
             DispatchQueue.main.async {
                 self.isLoading = false
                 switch result {
@@ -976,7 +1019,7 @@ struct VoiceActiveView: View {
         }.resume()
     }
 
-    private func uploadImage(_ image: UIImage, message: String?, completion: @escaping (Result<Void, Error>) -> Void) {
+    private func uploadImage(_ image: UIImage, message: String?, completion: @escaping (Result<String, Error>) -> Void) {
         guard let requestUrl = URL(string: "\(BackendConfig.baseURL)/api/upload-image") else {
             completion(.failure(URLError(.badURL)))
             return
@@ -1005,12 +1048,18 @@ struct VoiceActiveView: View {
         }
         body.append("--\(boundary)--\r\n".data(using: .utf8)!)
 
-        URLSession.shared.uploadTask(with: request, from: body) { _, _, error in
+        URLSession.shared.uploadTask(with: request, from: body) { data, _, error in
             if let error {
                 completion(.failure(error))
-            } else {
-                completion(.success(()))
+                return
             }
+            guard let data,
+                  let payload = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let encoded = payload["image_base64"] as? String else {
+                completion(.failure(URLError(.cannotParseResponse)))
+                return
+            }
+            completion(.success(encoded))
         }.resume()
     }
 
@@ -1065,6 +1114,71 @@ struct VoiceMessage: Identifiable {
     let image: UIImage?
 }
 
+
+private struct GamificationSheetView: View {
+    let summary: GamificationResponse
+    let onUseFreeze: () -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        NavigationView {
+            VStack(spacing: 18) {
+                VStack(spacing: 6) {
+                    Text("Level \(summary.level)")
+                        .font(.system(size: 28, weight: .bold))
+                    Text("\(summary.points) XP")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.blue)
+                    Text("\(summary.next_level_points) XP to next level")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.secondary)
+                }
+                .padding(.top, 4)
+
+                HStack(spacing: 12) {
+                    statCard(title: "Streak", value: "\(summary.streak_days) days")
+                    statCard(title: "Best", value: "\(summary.best_streak_days) days")
+                }
+                HStack(spacing: 12) {
+                    statCard(title: "Freeze", value: "\(summary.freeze_streaks)")
+                    statCard(title: "Unlocked", value: "\(summary.unlocked_freeze_streaks)")
+                }
+
+                ShareLink(item: summary.share_text) {
+                    Text("Share streak with friends")
+                        .font(.system(size: 15, weight: .semibold))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 12)
+                        .background(Color.green.opacity(0.18))
+                        .clipShape(RoundedRectangle(cornerRadius: 12))
+                }
+
+                Spacer()
+            }
+            .padding(20)
+            .navigationTitle("XP & Streaks")
+            .toolbar {
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Done") { dismiss() }
+                }
+            }
+        }
+    }
+
+    private func statCard(title: String, value: String) -> some View {
+        VStack(spacing: 6) {
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.secondary)
+            Text(value)
+                .font(.system(size: 16, weight: .semibold))
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .background(Color.primary.opacity(0.06))
+        .clipShape(RoundedRectangle(cornerRadius: 12))
+    }
+}
 
 struct VoiceMessageBubble: View {
     let message: VoiceMessage
@@ -1182,6 +1296,36 @@ struct ImagePicker: UIViewControllerRepresentable {
 
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) {
             picker.dismiss(animated: true)
+        }
+    }
+}
+
+private struct VoiceTypingDots: View {
+    @State private var phase = 0
+
+    var body: some View {
+        HStack {
+            HStack(spacing: 6) {
+                ForEach(0..<3, id: \.self) { index in
+                    Circle()
+                        .fill(Color.white.opacity(0.75))
+                        .frame(width: 7, height: 7)
+                        .scaleEffect(phase == index ? 1.25 : 0.9)
+                        .opacity(phase == index ? 1.0 : 0.45)
+                }
+            }
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .background(Color.white.opacity(0.16))
+            .clipShape(Capsule())
+            Spacer()
+        }
+        .onAppear {
+            Timer.scheduledTimer(withTimeInterval: 0.35, repeats: true) { _ in
+                withAnimation(.easeInOut(duration: 0.2)) {
+                    phase = (phase + 1) % 3
+                }
+            }
         }
     }
 }

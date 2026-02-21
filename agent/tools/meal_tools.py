@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+import re
 from typing import List, Optional
 
 from langchain_core.tools import tool
@@ -9,6 +10,19 @@ from agent.config.constants import CACHE_TTL_LONG, _draft_meal_logs_key
 from agent.redis.cache import _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.db.connection import get_db_conn
+
+
+def _award_points(user_id: int, points: int, reason: str) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO points (user_id, points, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, points, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
 
 
 def _estimate_meal_item_calories(item: str) -> int:
@@ -55,16 +69,43 @@ def _normalize_meal_time(consumed_at: Optional[str]) -> str:
     if not value:
         return now.isoformat(timespec="seconds")
     lowered = value.lower()
+    base_date = now.date()
+
+    if "yesterday" in lowered:
+        base_date = (now.date() - timedelta(days=1))
+        value = value.replace("yesterday", "").strip()
+        lowered = value.lower()
     if "today" in lowered:
         value = value.replace("today", "").strip()
         lowered = value.lower()
-    for fmt in ("%I %p", "%I:%M %p", "%H:%M"):
+
+    date_match = re.search(r"\b(\d{4}-\d{2}-\d{2})\b", lowered)
+    if date_match:
         try:
-            parsed = datetime.strptime(value, fmt).time()
-            return datetime.combine(now.date(), parsed).isoformat(timespec="seconds")
+            base_date = datetime.strptime(date_match.group(1), "%Y-%m-%d").date()
+            value = re.sub(r"\b\d{4}-\d{2}-\d{2}\b", "", value).strip()
+        except ValueError:
+            pass
+
+    cleaned = (
+        value.replace("a.m.", "am")
+        .replace("p.m.", "pm")
+        .replace(".", "")
+        .replace("at ", "")
+        .strip()
+    )
+
+    for fmt in ("%I %p", "%I:%M %p", "%I%p", "%H:%M"):
+        try:
+            parsed = datetime.strptime(cleaned, fmt).time()
+            return datetime.combine(base_date, parsed).isoformat(timespec="seconds")
         except ValueError:
             continue
-    return value
+
+    try:
+        return datetime.fromisoformat(value).isoformat(timespec="seconds")
+    except ValueError:
+        return datetime.combine(base_date, now.time()).isoformat(timespec="seconds")
 
 
 def _estimate_macros_from_calories(total_calories: int) -> dict[str, int]:
@@ -193,6 +234,7 @@ def log_meal(
     _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
     _sync_meal_logs_to_db(user_id, draft.get("meals", []))
+    _award_points(user_id, 5, f"meal_log:{logged_at}")
     return "Meal logged."
 
 

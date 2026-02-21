@@ -204,6 +204,26 @@ def _safe_parse_json(text: str) -> Dict[str, Any]:
         return {}
 
 
+def _strip_data_url_prefix(encoded: str) -> str:
+    if not encoded:
+        return encoded
+    if encoded.startswith("data:") and "base64," in encoded:
+        return encoded.split("base64,", 1)[1]
+    return encoded
+
+
+def _summarize_image(image_bytes: bytes, user_message: str) -> str:
+    prompt = (
+        "You are a fitness coach. Analyze the image and describe what you see in concise "
+        "plain text. If it is a meal, mention foods and estimated portions. If it is a workout "
+        "image, identify the activity, equipment, form cues, and any visible risks. If unsure, "
+        "say so. No markdown."
+    )
+    if user_message:
+        prompt += f"\nUser note: {user_message}"
+    return _gemini_generate_content(prompt, image_bytes=image_bytes, temperature=0.2).strip()
+
+
 def _extract_ingredients_from_image(image_bytes: bytes) -> List[str]:
     prompt = (
         "Identify the ingredients in the photo and return JSON only with this schema: "
@@ -361,6 +381,198 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             ),
         )
         conn.commit()
+    _award_points(payload.user_id, 5, f"meal_log:{logged_at}")
+    _maybe_award_daily_calorie_target_bonus(payload.user_id, logged_at[:10])
+
+
+def _award_points(user_id: int, points: int, reason: str) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO points (user_id, points, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, points, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
+def _has_points_reason(user_id: int, reason: str) -> bool:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM points WHERE user_id = ? AND reason = ? LIMIT 1", (user_id, reason))
+        return cur.fetchone() is not None
+
+
+def _count_points_reason_like(user_id: int, reason_like: str) -> int:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM points WHERE user_id = ? AND reason LIKE ?", (user_id, reason_like))
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def _total_points(user_id: int) -> int:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(SUM(points), 0) FROM points WHERE user_id = ?", (user_id,))
+        row = cur.fetchone()
+        return int(row[0] or 0) if row else 0
+
+
+def _daily_intake_and_target(user_id: int, target_day: str) -> tuple[int, Optional[int]]:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COALESCE(SUM(calories), 0)
+            FROM meal_logs
+            WHERE user_id = ? AND logged_at BETWEEN ? AND ?
+            """,
+            (user_id, start, end),
+        )
+        row = cur.fetchone()
+    total_calories = int(row[0] or 0) if row else 0
+    daily_target = None
+    try:
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        plan_row = bundle.get("plan")
+        if isinstance(plan_row, tuple) and len(plan_row) >= 4:
+            daily_target = plan_row[3]
+        elif isinstance(plan_row, dict):
+            daily_target = plan_row.get("daily_calorie_target")
+        plan_day = next((d for d in bundle.get("plan_days", []) if d.get("date") == target_day), None)
+        if plan_day and plan_day.get("calorie_target") is not None:
+            daily_target = plan_day.get("calorie_target")
+    except Exception:
+        daily_target = None
+    return total_calories, int(daily_target) if daily_target is not None else None
+
+
+def _maybe_award_daily_calorie_target_bonus(user_id: int, target_day: str) -> None:
+    total, target = _daily_intake_and_target(user_id, target_day)
+    if target is None or target <= 0 or total < target:
+        return
+    reason = f"daily_target_met:{target_day}"
+    if not _has_points_reason(user_id, reason):
+        _award_points(user_id, 20, reason)
+
+
+def _update_login_streak(user_id: int) -> Dict[str, int]:
+    today_str = date.today().isoformat()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, current_count, best_count, last_date FROM streaks WHERE user_id = ? AND streak_type = ? LIMIT 1",
+            (user_id, "login"),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                """
+                INSERT INTO streaks (user_id, streak_type, current_count, best_count, last_date)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, "login", 1, 1, today_str),
+            )
+            conn.commit()
+            return {"current_count": 1, "best_count": 1, "last_date": today_str}
+
+        streak_id, current_count, best_count, last_date = row
+        try:
+            last_dt = datetime.strptime(last_date, "%Y-%m-%d").date() if last_date else None
+        except ValueError:
+            last_dt = None
+        today_dt = date.today()
+
+        if last_dt == today_dt:
+            return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
+        if last_dt == (today_dt - timedelta(days=1)):
+            current_count = int(current_count) + 1
+        else:
+            current_count = 1
+        best_count = max(int(best_count), int(current_count))
+        cur.execute(
+            "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE id = ?",
+            (int(current_count), int(best_count), today_str, streak_id),
+        )
+        conn.commit()
+        return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
+
+
+def _maybe_award_biweekly_target_bonus(user_id: int) -> None:
+    try:
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        checkpoints = bundle.get("checkpoints") or []
+        if not checkpoints:
+            return
+        plan = bundle.get("plan")
+        plan_start: Optional[date] = None
+        if isinstance(plan, dict) and plan.get("start_date"):
+            plan_start = datetime.strptime(str(plan.get("start_date")), "%Y-%m-%d").date()
+        elif isinstance(plan, tuple) and len(plan) >= 2 and plan[1]:
+            plan_start = datetime.strptime(str(plan[1]), "%Y-%m-%d").date()
+        if plan_start is None:
+            return
+        today_dt = date.today()
+        eligible = []
+        for cp in checkpoints:
+            week = int(cp.get("week") or 0)
+            if week <= 0 or week % 2 != 0:
+                continue
+            cp_date = plan_start + timedelta(days=week * 7)
+            if cp_date <= today_dt:
+                eligible.append((week, cp))
+        if not eligible:
+            return
+        week, checkpoint = sorted(eligible, key=lambda item: item[0])[-1]
+        checkins = _list_checkins(user_id)
+        latest = next((c for c in checkins if c.get("weight_kg") is not None), None)
+        if latest is None:
+            return
+        weight = float(latest.get("weight_kg"))
+        min_w = float(checkpoint.get("min_weight_kg"))
+        max_w = float(checkpoint.get("max_weight_kg"))
+        if min_w <= weight <= max_w:
+            reason = f"biweekly_target_met:week{week}"
+            if not _has_points_reason(user_id, reason):
+                _award_points(user_id, 40, reason)
+    except Exception:
+        return
+
+
+def _gamification_summary(user_id: int) -> Dict[str, Any]:
+    streak = _update_login_streak(user_id)
+    _maybe_award_daily_calorie_target_bonus(user_id, date.today().isoformat())
+    _maybe_award_biweekly_target_bonus(user_id)
+
+    points = _total_points(user_id)
+    level = max(1, (points // 100) + 1)
+    next_level_points = max(0, level * 100 - points)
+    unlocked_freezes = max(0, level - 1)
+    used_freezes = _count_points_reason_like(user_id, "freeze_used:%")
+    available_freezes = max(0, unlocked_freezes - used_freezes)
+    streak_days = int(streak.get("current_count", 0))
+    best_streak_days = int(streak.get("best_count", streak_days))
+    share_text = f"I've got a {streak_days}-day streak on AI Trainer. Level {level} and climbing."
+    return {
+        "points": points,
+        "level": level,
+        "next_level_points": next_level_points,
+        "streak_days": streak_days,
+        "best_streak_days": best_streak_days,
+        "freeze_streaks": available_freezes,
+        "unlocked_freeze_streaks": unlocked_freezes,
+        "used_freeze_streaks": used_freezes,
+        "share_text": share_text,
+    }
 
 
 def _load_user_profile(user_id: int) -> Dict[str, Any]:
@@ -544,6 +756,7 @@ class CoachChatRequest(BaseModel):
     user_id: int
     thread_id: Optional[str] = None
     agent_id: Optional[str] = None
+    image_base64: Optional[str] = None
 
 
 class CoachChatResponse(BaseModel):
@@ -691,6 +904,22 @@ class RecipeSearchResponse(BaseModel):
     detected_ingredients: List[str] = []
 
 
+
+
+class GamificationResponse(BaseModel):
+    points: int
+    level: int
+    next_level_points: int
+    streak_days: int
+    best_streak_days: int
+    freeze_streaks: int
+    unlocked_freeze_streaks: int
+    used_freeze_streaks: int
+    share_text: str
+
+
+class UseFreezeRequest(BaseModel):
+    user_id: int
 
 
 class RecipeImageRequest(BaseModel):
@@ -1060,9 +1289,23 @@ def coach_chat(payload: CoachChatRequest):
         _AGENT_PRELOADED.add(thread_id)
 
     try:
+        message = payload.message
+        if payload.image_base64:
+            try:
+                encoded = _strip_data_url_prefix(payload.image_base64)
+                image_bytes = base64.b64decode(encoded)
+                analysis = _summarize_image(image_bytes, payload.message)
+                if analysis:
+                    if message:
+                        message = f"{message}\n\nImage analysis: {analysis}"
+                    else:
+                        message = f"Image analysis: {analysis}"
+            except Exception as exc:
+                raise HTTPException(status_code=400, detail=f"Invalid image data: {exc}") from exc
+
         state = graph.invoke(
             {
-                "messages": [HumanMessage(content=payload.message)],
+                "messages": [HumanMessage(content=message)],
                 "user_id": payload.user_id,
             },
             config,
@@ -1558,6 +1801,23 @@ def get_progress(user_id: int = 1):
         "meals": _list_meal_logs(user_id),
         "workouts": _list_workout_sessions(user_id),
     }
+
+
+@app.get("/api/gamification", response_model=GamificationResponse)
+def get_gamification(user_id: int = 1):
+    return _gamification_summary(user_id)
+
+
+@app.post("/api/gamification/use-freeze", response_model=GamificationResponse)
+def use_freeze_streak(payload: UseFreezeRequest):
+    summary = _gamification_summary(payload.user_id)
+    if int(summary.get("freeze_streaks", 0)) <= 0:
+        raise HTTPException(status_code=400, detail="No freeze streaks available")
+    reason = f"freeze_used:{date.today().isoformat()}"
+    if _has_points_reason(payload.user_id, reason):
+        raise HTTPException(status_code=400, detail="Freeze already used today")
+    _award_points(payload.user_id, 0, reason)
+    return _gamification_summary(payload.user_id)
 
 
 @app.get("/api/coach-suggestion")

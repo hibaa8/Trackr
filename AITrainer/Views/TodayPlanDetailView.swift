@@ -11,6 +11,7 @@ struct TodayPlanDetailView: View {
     @State private var cancellables = Set<AnyCancellable>()
     @State private var plansByDate: [String: PlanDayResponse] = [:]
     @State private var showFullDetails = false
+    @State private var showLogWorkout = false
 
     var body: some View {
         ZStack {
@@ -45,21 +46,12 @@ struct TodayPlanDetailView: View {
         .onChange(of: selectedDate) { newValue in
             loadSelectedPlan()
         }
-<<<<<<< HEAD
-=======
-        .sheet(isPresented: $showLogFood) {
+        .sheet(isPresented: $showLogWorkout) {
             VoiceActiveView(
                 coach: appState.selectedCoach ?? Coach.allCoaches[0],
-                initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+                initialPrompt: "I want to log a workout. Please ask me for the exercises, sets/reps, time, and any details needed, then log it."
             )
         }
-        .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(
-                coach: appState.selectedCoach ?? Coach.allCoaches[0],
-                initialPrompt: "I want to log a workout. Please ask me for the workout type, duration for cardio, RPE, weight, sets, reps, and any other details needed to estimate calories burned, then log it."
-            )
-        }
->>>>>>> hiba-ios
     }
 
     private var header: some View {
@@ -142,7 +134,6 @@ struct TodayPlanDetailView: View {
                 .font(.system(size: 13, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.7))
 
-<<<<<<< HEAD
             if !visibleItems.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(visibleItems, id: \.self) { item in
@@ -156,14 +147,6 @@ struct TodayPlanDetailView: View {
                                 .foregroundColor(Color.white.opacity(0.82))
                                 .lineLimit(showFullDetails ? nil : 2)
                         }
-=======
-            if !details.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    ForEach(details, id: \.self) { item in
-                        Text(item)
-                            .font(.system(size: 15))
-                            .foregroundColor(Color.white.opacity(0.85))
->>>>>>> hiba-ios
                     }
                 }
             } else {
@@ -181,9 +164,7 @@ struct TodayPlanDetailView: View {
             }
 
             if let primaryButton = primaryButton {
-                Button(action: {
-                    showVoiceChat = true
-                }) {
+                Button(action: { showLogWorkout = true }) {
                     Text(primaryButton)
                         .font(.system(size: 15, weight: .semibold))
                         .foregroundColor(.white)

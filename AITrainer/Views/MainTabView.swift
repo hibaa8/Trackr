@@ -117,9 +117,17 @@ struct ProgressPageView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .foregroundColor(.white.opacity(0.6))
-                    .font(.system(size: 14))
+                NavigationLink(
+                    destination: WorkoutLogsHistoryView(
+                        workouts: filteredWorkoutsForSelectedPeriod,
+                        periodLabel: periods[selectedPeriod],
+                        dayWindow: selectedPeriodDayWindow
+                    )
+                ) {
+                    Image(systemName: "chevron.right")
+                        .foregroundColor(.white.opacity(0.6))
+                        .font(.system(size: 14))
+                }
             }
 
             VStack(alignment: .leading, spacing: 8) {
@@ -184,10 +192,6 @@ struct ProgressPageView: View {
                     .foregroundColor(.white)
 
                 Spacer()
-
-                Image(systemName: "chevron.right")
-                    .foregroundColor(.white.opacity(0.6))
-                    .font(.system(size: 14))
             }
 
             // Detailed bar chart matching mockup
@@ -264,9 +268,22 @@ struct ProgressPageView: View {
 
                 Spacer()
 
-                Image(systemName: "chevron.right")
-                    .foregroundColor(.white.opacity(0.6))
-                    .font(.system(size: 14))
+                NavigationLink(
+                    destination: WorkoutLogsHistoryView(
+                        workouts: filteredWorkoutsForSelectedPeriod,
+                        periodLabel: periods[selectedPeriod],
+                        dayWindow: selectedPeriodDayWindow
+                    )
+                ) {
+                    HStack(spacing: 8) {
+                        Text("Show Logs")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                        Image(systemName: "chevron.right")
+                            .foregroundColor(.white.opacity(0.6))
+                            .font(.system(size: 14))
+                    }
+                }
             }
 
             HStack(spacing: 24) {
@@ -332,6 +349,46 @@ struct ProgressPageView: View {
                     )
             }
         }
+    }
+
+    private var selectedPeriodDayWindow: Int {
+        switch selectedPeriod {
+        case 0: return 7
+        case 1: return 30
+        default: return 365
+        }
+    }
+
+    private var filteredWorkoutsForSelectedPeriod: [ProgressWorkoutResponse] {
+        guard let workouts = progress?.workouts else { return [] }
+        let calendar = Calendar.current
+        let today = calendar.startOfDay(for: Date())
+        guard let earliest = calendar.date(byAdding: .day, value: -(selectedPeriodDayWindow - 1), to: today) else {
+            return workouts
+        }
+        return workouts
+            .filter { workout in
+                guard let date = workoutDate(from: workout.date) else { return false }
+                let day = calendar.startOfDay(for: date)
+                return day >= earliest && day <= today
+            }
+            .sorted { lhs, rhs in
+                (workoutDate(from: lhs.date) ?? .distantPast) > (workoutDate(from: rhs.date) ?? .distantPast)
+            }
+    }
+
+    private func workoutDate(from value: String?) -> Date? {
+        guard let value = value?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let isoFormatter = ISO8601DateFormatter()
+        if let isoDate = isoFormatter.date(from: value) {
+            return isoDate
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.date(from: value)
     }
 
     private var bottomToolbar: some View {
@@ -536,6 +593,123 @@ struct ProgressPageView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE"
         return formatter.string(from: date)
+    }
+}
+
+struct WorkoutLogsHistoryView: View {
+    let workouts: [ProgressWorkoutResponse]
+    let periodLabel: String
+    let dayWindow: Int
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 16) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Workout Logs")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("\(periodLabel) view - past \(dayWindow) days")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.65))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+
+                if workouts.isEmpty {
+                    Spacer()
+                    Text("No workouts logged in this period.")
+                        .font(.system(size: 15, weight: .medium))
+                        .foregroundColor(.white.opacity(0.65))
+                    Spacer()
+                } else {
+                    ScrollView {
+                        VStack(spacing: 10) {
+                            ForEach(Array(workouts.enumerated()), id: \.offset) { _, workout in
+                                WorkoutLogSmallCard(workout: workout)
+                            }
+                        }
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 24)
+                    }
+                }
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .navigationBarHidden(true)
+    }
+}
+
+private struct WorkoutLogSmallCard: View {
+    let workout: ProgressWorkoutResponse
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text(workout.workout_type?.isEmpty == false ? (workout.workout_type ?? "Workout") : "Workout")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
+
+            Text(formattedDateText)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.8))
+
+            HStack(spacing: 10) {
+                if let duration = workout.duration_min {
+                    Text("\(duration) min")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.blue.opacity(0.9))
+                }
+                if let calories = workout.calories_burned {
+                    Text("\(calories) kcal")
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundColor(.blue.opacity(0.9))
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+        )
+    }
+
+    private var parsedDate: Date? {
+        guard let value = workout.date?.trimmingCharacters(in: .whitespacesAndNewlines), !value.isEmpty else {
+            return nil
+        }
+        let isoFormatter = ISO8601DateFormatter()
+        if let date = isoFormatter.date(from: value) {
+            return date
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        return formatter.date(from: value)
+    }
+
+    private var formattedDateText: String {
+        guard let parsedDate else { return "Unknown date" }
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .none
+        return formatter.string(from: parsedDate)
     }
 }
 

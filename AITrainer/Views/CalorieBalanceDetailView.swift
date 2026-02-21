@@ -46,9 +46,6 @@ struct CalorieBalanceDetailView: View {
                 initialPrompt: "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
             )
         }
-        .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: appState.selectedCoach ?? Coach.allCoaches[0])
-        }
     }
 
     private var header: some View {

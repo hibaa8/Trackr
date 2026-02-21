@@ -363,6 +363,20 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getGamification(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
+        return request(endpoint: "/api/gamification?user_id=\(userId)")
+    }
+
+    func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
+        struct UseFreezePayload: Codable {
+            let user_id: Int
+        }
+        guard let jsonData = try? JSONEncoder().encode(UseFreezePayload(user_id: userId)) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/gamification/use-freeze", method: "POST", body: jsonData)
+    }
+
     // MARK: - Onboarding
 
     func completeOnboarding(payload: OnboardingCompletePayload) -> AnyPublisher<OnboardingCompleteResponse, APIError> {
