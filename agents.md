@@ -22,6 +22,32 @@ CREATE TABLE public.checkins (
   CONSTRAINT checkins_pkey PRIMARY KEY (id),
   CONSTRAINT checkins_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id)
 );
+CREATE TABLE public.coaches (
+  id bigint NOT NULL DEFAULT nextval('coaches_id_seq'::regclass),
+  slug text NOT NULL UNIQUE,
+  name text NOT NULL,
+  nickname text,
+  title text,
+  age integer,
+  ethnicity text,
+  gender text,
+  pronouns text,
+  philosophy text,
+  background_story text,
+  personality text,
+  speaking_style text,
+  expertise ARRAY,
+  common_phrases ARRAY,
+  tags ARRAY,
+  primary_color text,
+  secondary_color text,
+  image_url text,
+  video_url text,
+  image_filename text,
+  video_filename text,
+  created_at timestamp with time zone DEFAULT now(),
+  CONSTRAINT coaches_pkey PRIMARY KEY (id)
+);
 CREATE TABLE public.health_activity (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
   user_id integer NOT NULL,
@@ -176,7 +202,9 @@ CREATE TABLE public.users (
   weight_kg double precision,
   created_at text NOT NULL,
   age_years integer,
-  agent_name text,
+  password_hash text,
+  profile_image_base64 text,
+  agent_id bigint,
   CONSTRAINT users_pkey PRIMARY KEY (id)
 );
 CREATE TABLE public.workout_sessions (

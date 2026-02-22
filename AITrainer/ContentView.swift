@@ -35,6 +35,7 @@ struct ContentView: View {
         }
         .onAppear {
             authManager.forceShowLoginOnLaunch()
+            loadCoachesCatalogIfNeeded()
         }
         .onChange(of: authManager.currentUserId) { _, _ in
             prepareDashboardIfNeeded()
@@ -84,13 +85,20 @@ struct ContentView: View {
                         appState.todayPlan = plan
                     }
                 }
-                if let agentId = hydration.profile.user?.agent_id,
-                   let coach = appState.coaches.first(where: { $0.id == agentId }) {
-                    DispatchQueue.main.async {
-                        appState.setSelectedCoach(coach)
+                let desiredCoachId = hydration.profile.user?.agent_id
+                loadCoachesCatalogIfNeeded {
+                    if let desiredCoachId,
+                       let coach = appState.coaches.first(where: { $0.id == desiredCoachId }) {
+                        DispatchQueue.main.async {
+                            appState.setSelectedCoach(coach)
+                        }
+                    } else if appState.selectedCoach == nil, let firstCoach = appState.coaches.first {
+                        DispatchQueue.main.async {
+                            appState.setSelectedCoach(firstCoach)
+                        }
                     }
+                    completion()
                 }
-                completion()
             case .failure:
                 let group = DispatchGroup()
                 group.enter()
@@ -100,6 +108,28 @@ struct ContentView: View {
                 group.notify(queue: .main) {
                     completion()
                 }
+            }
+        }
+    }
+
+    private func loadCoachesCatalogIfNeeded(completion: (() -> Void)? = nil) {
+        if !appState.coaches.isEmpty {
+            completion?()
+            return
+        }
+        backendConnector.loadCoaches { result in
+            switch result {
+            case .success(let coaches):
+                DispatchQueue.main.async {
+                    appState.coaches = coaches
+                    if appState.selectedCoach == nil, let first = coaches.first {
+                        appState.setSelectedCoach(first)
+                    }
+                    completion?()
+                }
+            case .failure(let error):
+                print("Failed to load coaches: \(error)")
+                completion?()
             }
         }
     }

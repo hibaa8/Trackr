@@ -254,13 +254,27 @@ def _summarize_active_plan_for_context(active_plan: Dict[str, Any]) -> Dict[str,
 def _compact_context_summary(context: Dict[str, Any], active_plan: Dict[str, Any]) -> str:
     user = context.get("user") or ()
     pref = context.get("preferences") or ()
-    birthdate = user[2] if len(user) > 2 else None
-    height_cm = user[3] if len(user) > 3 else None
-    weight_kg = user[4] if len(user) > 4 else None
-    gender = user[5] if len(user) > 5 else None
-    age_years = user[6] if len(user) > 6 else None
-    goal_type = pref[2] if len(pref) > 2 else None
-    activity_level = pref[1] if len(pref) > 1 else None
+
+    if isinstance(user, dict):
+        birthdate = user.get("birthdate")
+        height_cm = user.get("height_cm")
+        weight_kg = user.get("weight_kg")
+        gender = user.get("gender")
+        age_years = user.get("age_years")
+    else:
+        birthdate = user[2] if len(user) > 2 else None
+        height_cm = user[3] if len(user) > 3 else None
+        weight_kg = user[4] if len(user) > 4 else None
+        gender = user[5] if len(user) > 5 else None
+        age_years = user[6] if len(user) > 6 else None
+
+    if isinstance(pref, dict):
+        goal_type = pref.get("goal_type")
+        activity_level = pref.get("activity_level")
+    else:
+        goal_type = pref[2] if len(pref) > 2 else None
+        activity_level = pref[1] if len(pref) > 1 else None
+
     age = age_years
 
     plan = active_plan.get("plan") or {}

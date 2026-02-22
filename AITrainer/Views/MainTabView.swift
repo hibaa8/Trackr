@@ -6,7 +6,7 @@ struct MainTabView: View {
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
 
     private var coach: Coach {
-        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.placeholder
     }
 
     var body: some View {
@@ -164,7 +164,7 @@ struct ProgressPageView: View {
                     .fill(Color.black.opacity(0.3))
                     .frame(height: 100)
 
-                if weightSeries.count >= 2 {
+                if weightSeries.count >= 1 {
                     GeometryReader { proxy in
                         let rect = CGRect(origin: .zero, size: proxy.size)
                         ZStack {
@@ -178,6 +178,12 @@ struct ProgressPageView: View {
                                 )
                             weightLinePath(in: rect)
                                 .stroke(Color.blue, lineWidth: 2)
+                            if weightSeries.count == 1, let onlyPoint = weightChartPoints(in: rect).first {
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 8, height: 8)
+                                    .position(onlyPoint)
+                            }
                         }
                     }
                 } else {
@@ -556,13 +562,18 @@ struct ProgressPageView: View {
 
     private func weightChartPoints(in rect: CGRect) -> [CGPoint] {
         let values = weightSeries
-        guard values.count >= 2 else { return [] }
+        guard !values.isEmpty else { return [] }
         let minValue = values.min() ?? 0
         let maxValue = values.max() ?? 1
-        let range = max(maxValue - minValue, 1)
+        let range = maxValue - minValue
         return values.enumerated().map { index, value in
             let x = rect.width * CGFloat(index) / CGFloat(max(values.count - 1, 1))
-            let y = rect.height - rect.height * CGFloat((value - minValue) / range)
+            let y: CGFloat
+            if range <= 0 {
+                y = rect.height * 0.5
+            } else {
+                y = rect.height - rect.height * CGFloat((value - minValue) / range)
+            }
             return CGPoint(x: x, y: y)
         }
     }

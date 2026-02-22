@@ -370,6 +370,10 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getCoaches() -> AnyPublisher<[Coach], APIError> {
+        return request(endpoint: "/api/coaches")
+    }
+
     func getReminders(userId: Int) -> AnyPublisher<[ReminderItemResponse], APIError> {
         return request(endpoint: "/api/reminders?user_id=\(userId)")
     }

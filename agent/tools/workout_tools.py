@@ -15,6 +15,24 @@ from agent.tools.plan_tools import _load_user_context_data
 from agent.db.connection import get_db_conn
 
 
+def _extract_weight_kg(user: Any) -> float:
+    if isinstance(user, dict):
+        raw = user.get("weight_kg")
+        if raw is None:
+            return 0.0
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return 0.0
+    if isinstance(user, (list, tuple)):
+        if len(user) > 4 and user[4] is not None:
+            try:
+                return float(user[4])
+            except (TypeError, ValueError):
+                return 0.0
+    return 0.0
+
+
 def _award_points(user_id: int, points: int, reason: str) -> None:
     with get_db_conn() as conn:
         cur = conn.cursor()
@@ -258,7 +276,7 @@ def log_workout_session(
     if calories_burned is None:
         context = _load_user_context_data(user_id)
         user = context.get("user") if isinstance(context, dict) else None
-        weight_kg = user[4] if user and len(user) > 4 else 0
+        weight_kg = _extract_weight_kg(user)
         calories_burned = _estimate_workout_calories(weight_kg, exercise_list, duration_min)
     idem_key = _idempotency_key_for_workout(
         user_id=user_id,
@@ -303,7 +321,7 @@ def log_workout_session(
             merged_duration = max(merged_duration, duration_min)
         context = _load_user_context_data(user_id)
         user = context.get("user") if isinstance(context, dict) else None
-        weight_kg = user[4] if user and len(user) > 4 else 0
+        weight_kg = _extract_weight_kg(user)
         merged_calories = _estimate_workout_calories(weight_kg, merged_exercises, merged_duration)
         existing["workout_type"] = existing.get("workout_type") or workout_type
         existing["duration_min"] = merged_duration
@@ -424,7 +442,7 @@ def remove_workout_exercise(
             entry["duration_min"] = minutes
         context = _load_user_context_data(user_id)
         user = context.get("user") if isinstance(context, dict) else None
-        weight_kg = user[4] if user and len(user) > 4 else 0
+        weight_kg = _extract_weight_kg(user)
         entry["calories_burned"] = _estimate_workout_calories(weight_kg, kept, entry.get("duration_min") or 0)
         return True
 

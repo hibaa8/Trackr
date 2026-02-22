@@ -10,7 +10,7 @@ struct OnboardingCompleteView: View {
     @State private var showMainApp = false
 
     private var coach: Coach {
-        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.placeholder
     }
     @State private var confettiOpacity = 0.0
     @State private var checkmarkScale = 0.0
@@ -158,12 +158,18 @@ struct ConfettiPiece: View {
 
 // Main trainer interface matching screen 08 mockup
 struct TrainerMainView: View {
+    private enum ChatLaunchMode {
+        case text
+        case voice
+    }
+
     let coach: Coach
     @EnvironmentObject var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
-    @State private var focusChatOnOpen = false
+    @State private var chatLaunchMode: ChatLaunchMode = .text
+    @State private var chatInitialPrompt: String?
     @State private var showingWorkoutDetail = false
     @State private var showLogFoodOptions = false
     @State private var showMealLogging = false
@@ -196,7 +202,11 @@ struct TrainerMainView: View {
 
                     greetingSection
                         .padding(.horizontal, 24)
-                        .padding(.bottom, 30)
+                        .padding(.bottom, 18)
+
+                    quickLogActions
+                        .padding(.horizontal, 20)
+                        .padding(.bottom, 16)
 
                     VStack(spacing: 15) {
                         todaysPlanCard
@@ -226,7 +236,12 @@ struct TrainerMainView: View {
             loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen, startRecording: !focusChatOnOpen)
+            VoiceActiveView(
+                coach: coach,
+                autoFocus: chatLaunchMode == .text,
+                startRecording: chatLaunchMode == .voice,
+                initialPrompt: chatInitialPrompt
+            )
         }
         .safeAreaInset(edge: .bottom) {
             bottomInputBar
@@ -405,6 +420,61 @@ struct TrainerMainView: View {
         .contentShape(RoundedRectangle(cornerRadius: 20))
     }
 
+    private var quickLogActions: some View {
+        HStack(spacing: 10) {
+            quickLogButton(
+                title: "Log Weight",
+                systemImage: "scalemass.fill"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log my weight. Please ask me for my weight in kg and the date of the weigh-in, then log it."
+                showVoiceChat = true
+            }
+
+            quickLogButton(
+                title: "Log Food",
+                systemImage: "fork.knife"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+                showVoiceChat = true
+            }
+
+            quickLogButton(
+                title: "Log Workout",
+                systemImage: "figure.strengthtraining.traditional"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log a workout. Please ask me for the workout type, duration, sets, reps, intensity, and any other details needed to estimate calories burned, then log it."
+                showVoiceChat = true
+            }
+        }
+    }
+
+    private func quickLogButton(
+        title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color.white.opacity(0.14))
+            )
+        }
+        .buttonStyle(.plain)
+    }
+
     private var calorieBalanceCard: some View {
         let caloriesConsumed = appState.caloriesIn
         let caloriesGoal = activePlan?.calorie_target ?? appState.userData?.calorieTarget ?? 2000
@@ -533,7 +603,8 @@ struct TrainerMainView: View {
     private var bottomInputBar: some View {
         HStack(spacing: 16) {
             Button(action: {
-                focusChatOnOpen = true
+                chatLaunchMode = .text
+                chatInitialPrompt = nil
                 showVoiceChat = true
             }) {
                 HStack(spacing: 8) {
@@ -552,7 +623,8 @@ struct TrainerMainView: View {
             }
 
             Button(action: {
-                focusChatOnOpen = false
+                chatLaunchMode = .voice
+                chatInitialPrompt = nil
                 showVoiceChat = true
             }) {
                 HStack(spacing: 8) {

@@ -23,7 +23,7 @@ from dotenv import load_dotenv
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=dotenv_path, override=True)
 from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT_DIR not in sys.path:
@@ -555,9 +555,34 @@ def _verify_password(password: str, stored: Optional[str]) -> bool:
         return False
 
 
+def _user_has_active_plan(user_id: int) -> bool:
+    try:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT 1
+                FROM plan_templates
+                WHERE user_id = ? AND status = 'active'
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def _onboarding_completed_from_row(row: tuple) -> bool:
     # row: id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id
-    return bool(row[4] is not None and row[5] is not None and row[6] is not None and row[7] is not None)
+    # Treat onboarding as complete if core profile exists OR user already has an active plan.
+    has_profile_basics = bool(row[4] is not None and row[5] is not None and row[6] is not None)
+    if has_profile_basics:
+        return True
+    user_id = int(row[0]) if row and row[0] is not None else None
+    if user_id is None:
+        return False
+    return _user_has_active_plan(user_id)
 
 
 def _coerce_to_date(value: Any) -> Optional[date]:
@@ -812,6 +837,50 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
         return {"user": None, "preferences": None}
 
 
+def _as_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item is not None]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item is not None]
+        except Exception:
+            pass
+        return [part.strip() for part in stripped.split(",") if part.strip()]
+    return []
+
+
+def _resolve_coach_slug(agent_id: Optional[Union[int, str]]) -> Optional[str]:
+    if agent_id is None:
+        return None
+    if isinstance(agent_id, str):
+        normalized = agent_id.strip().lower()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            agent_id = int(normalized)
+        else:
+            return normalized
+    if isinstance(agent_id, int):
+        try:
+            with get_db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT slug FROM coaches WHERE id = ? LIMIT 1", (agent_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip().lower()
+        except Exception:
+            return str(agent_id)
+        return str(agent_id)
+    return str(agent_id).strip().lower()
+
+
 def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
     try:
         with get_db_conn() as conn:
@@ -832,6 +901,46 @@ def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
         ]
     except Exception:
         return []
+
+
+def _upsert_daily_weight_checkin(user_id: int, weight_kg: float, conn=None) -> None:
+    """Persist the latest user weight to checkins for charting."""
+    own_conn = False
+    if conn is None:
+        conn = get_db_conn()
+        own_conn = True
+    try:
+        cur = conn.cursor()
+        today = datetime.now().date().isoformat()
+        cur.execute(
+            """
+            SELECT id
+            FROM checkins
+            WHERE user_id = ? AND checkin_date = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, today),
+        )
+        existing = cur.fetchone()
+        if existing and existing[0]:
+            cur.execute(
+                "UPDATE checkins SET weight_kg = ? WHERE id = ?",
+                (weight_kg, int(existing[0])),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO checkins (user_id, checkin_date, weight_kg, mood, notes)
+                VALUES (?, ?, ?, NULL, NULL)
+                """,
+                (user_id, today, weight_kg),
+            )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
@@ -925,7 +1034,7 @@ class CoachChatRequest(BaseModel):
     message: str
     user_id: int
     thread_id: Optional[str] = None
-    agent_id: Optional[int] = None
+    agent_id: Optional[Union[int, str]] = None
     image_base64: Optional[str] = None
 
 
@@ -944,6 +1053,29 @@ class CoachFeedbackRequest(BaseModel):
 class CoachFeedbackResponse(BaseModel):
     reply: str
     thread_id: str
+
+
+class CoachItemResponse(BaseModel):
+    id: int
+    slug: str
+    name: str
+    nickname: Optional[str] = None
+    title: str
+    age: int
+    ethnicity: str
+    gender: str
+    pronouns: str
+    philosophy: str
+    background_story: str
+    personality: str
+    speaking_style: str
+    expertise: List[str]
+    common_phrases: List[str]
+    tags: List[str]
+    primary_color: str
+    secondary_color: str
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
 
 
 class FoodScanItem(BaseModel):
@@ -1031,6 +1163,12 @@ class AuthSignInRequest(BaseModel):
 class AuthSignUpRequest(BaseModel):
     email: str
     password: str
+    name: Optional[str] = None
+
+
+class AuthCallbackRequest(BaseModel):
+    access_token: str
+    email: Optional[str] = None
     name: Optional[str] = None
 
 
@@ -1584,6 +1722,87 @@ def auth_signin(payload: AuthSignInRequest):
     )
 
 
+def _fetch_supabase_oauth_user(access_token: str) -> Dict[str, Any]:
+    base = _supabase_url()
+    if not base:
+        raise HTTPException(status_code=500, detail="SUPABASE_URL is not configured")
+
+    apikey = (
+        os.environ.get("SUPABASE_ANON_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or ""
+    ).strip()
+    if not apikey:
+        raise HTTPException(status_code=500, detail="Missing Supabase API key for auth callback")
+
+    request = urllib.request.Request(
+        f"{base}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "apikey": apikey,
+        },
+        method="GET",
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=ssl_context) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid OAuth callback token: {exc}") from exc
+
+
+@app.post("/auth/callback", response_model=AuthResponse)
+def auth_callback(payload: AuthCallbackRequest):
+    access_token = (payload.access_token or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=400, detail="access_token is required")
+
+    oauth_user = _fetch_supabase_oauth_user(access_token)
+    oauth_email = str(oauth_user.get("email") or "").strip().lower()
+    if not oauth_email:
+        oauth_email = str(payload.email or "").strip().lower()
+    if not oauth_email:
+        raise HTTPException(status_code=400, detail="OAuth user email is missing")
+
+    metadata = oauth_user.get("user_metadata") or {}
+    oauth_name = (
+        str(metadata.get("full_name") or metadata.get("name") or "").strip()
+        or str(payload.name or "").strip()
+        or "Google User"
+    )
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users (email, name, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (email) DO NOTHING
+            """,
+            (oauth_email, oauth_name, datetime.now().isoformat(timespec="seconds")),
+        )
+        cur.execute(
+            """
+            SELECT id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id, profile_image_base64
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (oauth_email,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="Unable to resolve user after OAuth callback")
+
+    return AuthResponse(
+        user_id=int(row[0]),
+        email=str(row[1]),
+        name=str(row[2] or oauth_name),
+        onboarding_completed=_onboarding_completed_from_row(row),
+    )
+
+
 @app.post("/api/billing/checkout-session", response_model=BillingCheckoutResponse)
 def create_checkout_session(payload: BillingCheckoutRequest):
     if payload.plan_tier.lower() != "premium":
@@ -1692,8 +1911,9 @@ def coach_chat(payload: CoachChatRequest):
     thread_id = payload.thread_id or f"user:{payload.user_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    if payload.agent_id:
-        SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = payload.agent_id
+    resolved_agent = _resolve_coach_slug(payload.agent_id)
+    if resolved_agent:
+        SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = resolved_agent
 
     if thread_id not in _AGENT_PRELOADED:
         preload_fn(payload.user_id)
@@ -2141,10 +2361,57 @@ def get_profile(user_id: int):
     return _load_user_profile(user_id)
 
 
+@app.get("/api/coaches", response_model=List[CoachItemResponse])
+def get_coaches():
+    _ensure_coach_schema()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, slug, name, nickname, title, age, ethnicity, gender, pronouns,
+                   philosophy, background_story, personality, speaking_style,
+                   expertise, common_phrases, tags,
+                   primary_color, secondary_color, image_url, video_url
+            FROM coaches
+            ORDER BY id ASC
+            """
+        )
+        rows = cur.fetchall()
+
+    coaches: List[CoachItemResponse] = []
+    for row in rows:
+        coaches.append(
+            CoachItemResponse(
+                id=int(row[0]),
+                slug=str(row[1] or ""),
+                name=str(row[2] or ""),
+                nickname=str(row[3]) if row[3] is not None else None,
+                title=str(row[4] or "Coach"),
+                age=int(row[5]) if row[5] is not None else 30,
+                ethnicity=str(row[6] or "Unknown"),
+                gender=str(row[7] or "Unknown"),
+                pronouns=str(row[8] or ""),
+                philosophy=str(row[9] or ""),
+                background_story=str(row[10] or ""),
+                personality=str(row[11] or ""),
+                speaking_style=str(row[12] or ""),
+                expertise=_as_string_list(row[13]),
+                common_phrases=_as_string_list(row[14]),
+                tags=_as_string_list(row[15]),
+                primary_color=str(row[16] or "blue"),
+                secondary_color=str(row[17] or "navy"),
+                image_url=str(row[18]) if row[18] is not None else None,
+                video_url=str(row[19]) if row[19] is not None else None,
+            )
+        )
+    return coaches
+
+
 @app.put("/api/profile")
 def update_profile(payload: ProfileUpdateRequest):
     _ensure_profile_schema()
     user_fields: Dict[str, Any] = {}
+    weight_updated = False
     if payload.name is not None:
         user_fields["name"] = payload.name
     if payload.birthdate is not None:
@@ -2153,6 +2420,7 @@ def update_profile(payload: ProfileUpdateRequest):
         user_fields["height_cm"] = payload.height_cm
     if payload.weight_kg is not None:
         user_fields["weight_kg"] = payload.weight_kg
+        weight_updated = True
     if payload.gender is not None:
         user_fields["gender"] = payload.gender
     if payload.age_years is not None:
@@ -2182,6 +2450,8 @@ def update_profile(payload: ProfileUpdateRequest):
             set_clause = ", ".join(f"{key} = ?" for key in user_fields.keys())
             params = list(user_fields.values()) + [payload.user_id]
             cur.execute(f"UPDATE users SET {set_clause} WHERE id = ?", params)
+            if weight_updated and payload.weight_kg is not None:
+                _upsert_daily_weight_checkin(payload.user_id, float(payload.weight_kg), conn=conn)
 
         if pref_fields:
             cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (payload.user_id,))
@@ -2617,13 +2887,16 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
-        if fields:
-            values.append(user_id)
-            with get_db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
-                conn.commit()
-        _refresh_profile_cache(user_id)
+
+    if fields:
+        values.append(user_id)
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
+            if payload.current_weight_kg is not None:
+                _upsert_daily_weight_checkin(user_id, float(payload.current_weight_kg), conn=conn)
+            conn.commit()
+    _refresh_profile_cache(user_id)
     _generate_plan_for_user(
         user_id,
         goal_type=payload.goal_type,
