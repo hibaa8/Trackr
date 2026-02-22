@@ -201,6 +201,7 @@ struct TrainerMainView: View {
     @State private var speechSynth = AVSpeechSynthesizer()
     @AppStorage("trainer.endOfDayPromptDate") private var lastEndOfDayPromptDate = ""
     @AppStorage("trainer.dailyChecklistPromptDate") private var lastChecklistPromptDate = ""
+    @AppStorage("trainer.lastCoachGreetingDay") private var lastCoachGreetingDay = ""
     @State private var isLoadingPlan = false
     @State private var cancellables = Set<AnyCancellable>()
 
@@ -215,35 +216,49 @@ struct TrainerMainView: View {
                 Color.black.opacity(0.4)
                     .ignoresSafeArea()
 
+                // Extra shader to improve foreground legibility over photos.
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.18),
+                        Color.black.opacity(0.36),
+                        Color.black.opacity(0.58)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+
                 VStack(spacing: 0) {
                     headerView(topInset: geometry.safeAreaInsets.top)
                         .padding(.bottom, 30)
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            greetingSection
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 10)
 
-                    greetingSection
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 18)
+                            quickLogActions
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 16)
 
-                    quickLogActions
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 16)
+                            coachToolsRow
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 12)
 
-                    coachToolsRow
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
+                            dailyChecklistCard
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 12)
 
-                    dailyChecklistCard
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 12)
-
-                    HStack(alignment: .top, spacing: 12) {
-                        todaysPlanCard
-                            .frame(maxWidth: .infinity, minHeight: 176)
-                        calorieBalanceCard
-                            .frame(maxWidth: .infinity, minHeight: 176)
+                            HStack(alignment: .top, spacing: 12) {
+                                todaysPlanCard
+                                    .frame(maxWidth: .infinity, minHeight: 176)
+                                calorieBalanceCard
+                                    .frame(maxWidth: .infinity, minHeight: 176)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 120)
+                        }
                     }
-                    .padding(.horizontal, 20)
-
-                    Spacer()
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
 
@@ -273,6 +288,7 @@ struct TrainerMainView: View {
             loadGamification(trackGain: false)
             loadProgressForXPTracking(trackChanges: false)
             checkStreakStatusOnOpen()
+            speakMotivationalGreetingIfNeeded()
             maybePromptEndOfDayCheckin()
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
@@ -602,8 +618,13 @@ struct TrainerMainView: View {
             .padding(.vertical, 12)
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.white.opacity(0.14))
+                    .fill(Color.black.opacity(0.38))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    )
             )
+            .shadow(color: .black.opacity(0.22), radius: 8, x: 0, y: 4)
         }
         .buttonStyle(.plain)
     }
@@ -674,11 +695,11 @@ struct TrainerMainView: View {
 
     private var glassCardBackground: some View {
         RoundedRectangle(cornerRadius: 20)
-            .fill(.ultraThinMaterial.opacity(0.9))
-            .background(Color.black.opacity(0.25))
+            .fill(.ultraThinMaterial.opacity(0.94))
+            .background(Color.black.opacity(0.42))
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
             )
     }
 
@@ -698,6 +719,8 @@ struct TrainerMainView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
                     .scaleEffect(1.1)
+                    .saturation(0.72)
+                    .brightness(-0.06)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 }
             } else {
@@ -1053,6 +1076,15 @@ struct TrainerMainView: View {
         utterance.rate = 0.5
         utterance.volume = 0.9
         speechSynth.speak(utterance)
+    }
+
+    private func speakMotivationalGreetingIfNeeded() {
+        let today = dayKey(from: Date())
+        guard lastCoachGreetingDay != today else { return }
+        lastCoachGreetingDay = today
+        let phrase = coach.commonPhrases.randomElement() ?? "Let's get after it."
+        let text = "\(phrase) Ready to make progress today."
+        speak(text)
     }
 }
 
