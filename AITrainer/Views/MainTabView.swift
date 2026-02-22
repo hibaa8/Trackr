@@ -1036,6 +1036,7 @@ private struct WorkoutLogSmallCard: View {
 
 // Settings Page matching screen 11 mockup
 struct SettingsPageView: View {
+    private let coachChangeCooldownDays = 2
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
     @EnvironmentObject private var appState: AppState
@@ -1365,7 +1366,7 @@ struct SettingsPageView: View {
               let changedAt = parseISODate(raw) else {
             return 0
         }
-        let nextAllowed = changedAt.addingTimeInterval(14 * 24 * 60 * 60)
+        let nextAllowed = changedAt.addingTimeInterval(TimeInterval(coachChangeCooldownDays * 24 * 60 * 60))
         let secondsLeft = nextAllowed.timeIntervalSince(Date())
         if secondsLeft <= 0 {
             return 0

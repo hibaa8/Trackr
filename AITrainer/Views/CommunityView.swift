@@ -24,9 +24,17 @@ struct CommunityView: View {
                         Spacer()
                         
                         Button(action: { dismiss() }) {
-                            Image(systemName: "xmark")
-                                .font(.system(size: 18, weight: .semibold))
-                                .foregroundColor(.black)
+                            HStack(spacing: 6) {
+                                Image(systemName: "chevron.left")
+                                    .font(.system(size: 14, weight: .semibold))
+                                Text("Back")
+                                    .font(.system(size: 14, weight: .semibold))
+                            }
+                            .foregroundColor(.black)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.black.opacity(0.06))
+                            .clipShape(Capsule())
                         }
                     }
                     .padding()
@@ -76,6 +84,40 @@ struct CommunityView: View {
                         ForEach(viewModel.joinedCommunities) { community in
                             CommunityCard(community: community, isJoined: true)
                                 .padding(.horizontal)
+                        }
+                    }
+                    .padding(.bottom, 24)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        HStack {
+                            Text("Friend Streaks")
+                                .font(.system(size: 20, weight: .bold))
+                            Spacer()
+                            Button("Add Friend") {}
+                                .font(.system(size: 13, weight: .semibold))
+                                .foregroundColor(.blue)
+                        }
+                        .padding(.horizontal)
+
+                        ForEach(viewModel.friendStreaks) { item in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(item.name)
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text("\(item.days) day streak together")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.gray)
+                                }
+                                Spacer()
+                                Text("🔥 \(item.days)")
+                                    .font(.system(size: 14, weight: .bold))
+                                    .foregroundColor(.orange)
+                            }
+                            .padding()
+                            .background(Color.white)
+                            .cornerRadius(14)
+                            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 2)
+                            .padding(.horizontal)
                         }
                     }
                     .padding(.bottom, 24)
@@ -202,6 +244,7 @@ private struct CommunityCard: View {
 class CommunityViewModel: ObservableObject {
     @Published var joinedCommunities: [Community] = []
     @Published var discoverCommunities: [Community] = []
+    @Published var friendStreaks: [FriendStreak] = []
     
     func loadCommunities() {
         // Mock data for joined communities
@@ -275,6 +318,12 @@ class CommunityViewModel: ObservableObject {
                 memberCount: 4567
             )
         ]
+
+        friendStreaks = [
+            FriendStreak(id: UUID(), name: "Alex", days: 12),
+            FriendStreak(id: UUID(), name: "Jordan", days: 7),
+            FriendStreak(id: UUID(), name: "Sam", days: 21)
+        ]
     }
 }
 
@@ -287,6 +336,12 @@ struct Community: Identifiable {
     let icon: String
     let iconColor: Color
     let memberCount: Int
+}
+
+struct FriendStreak: Identifiable {
+    let id: UUID
+    let name: String
+    let days: Int
 }
 
 #Preview {

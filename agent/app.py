@@ -122,6 +122,7 @@ _AGENT_RAG_INIT = None
 _PENDING_PLANS: Dict[str, Dict[str, Any]] = {}
 _GEMINI_MODEL = None
 _OPENAI_CLIENT = None
+COACH_CHANGE_COOLDOWN_DAYS = 2
 
 
 def _get_agent_graph():
@@ -362,6 +363,7 @@ def _extract_og_image(url: str) -> Optional[str]:
 
 
 def _store_meal_log(payload: FoodLogRequest) -> None:
+    _ensure_meal_log_schema()
     def _idempotency_key() -> str:
         if payload.idempotency_key and payload.idempotency_key.strip():
             return payload.idempotency_key.strip()
@@ -373,6 +375,9 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
                 "protein_g": item.protein_g,
                 "carbs_g": item.carbs_g,
                 "fat_g": item.fat_g,
+                "fiber_g": item.fiber_g,
+                "sugar_g": item.sugar_g,
+                "sodium_mg": item.sodium_mg,
             }
             for item in payload.items
         ]
@@ -382,6 +387,9 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             "protein_g": payload.protein_g,
             "carbs_g": payload.carbs_g,
             "fat_g": payload.fat_g,
+            "fiber_g": payload.fiber_g,
+            "sugar_g": payload.sugar_g,
+            "sodium_mg": payload.sodium_mg,
             "items": item_payload,
             "logged_at": payload.logged_at or "",
         }
@@ -402,8 +410,8 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             """
             INSERT INTO meal_logs (
                 user_id, logged_at, photo_path, description, calories,
-                protein_g, carbs_g, fat_g, confidence, confirmed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, confidence, confirmed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.user_id,
@@ -414,6 +422,9 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
                 int(payload.protein_g),
                 int(payload.carbs_g),
                 int(payload.fat_g),
+                float(payload.fiber_g or 0),
+                float(payload.sugar_g or 0),
+                float(payload.sodium_mg or 0),
                 max((item.confidence for item in payload.items), default=0.6),
                 1,
             ),
@@ -461,7 +472,51 @@ def _ensure_profile_schema() -> None:
         has_profile_image = cur.fetchone() is not None
         if not has_profile_image:
             cur.execute("ALTER TABLE users ADD COLUMN profile_image_base64 TEXT NULL")
-            conn.commit()
+        pref_columns = [
+            ("allergies", "TEXT NULL"),
+            ("preferred_workout_time", "TEXT NULL"),
+            ("menstrual_cycle_notes", "TEXT NULL"),
+        ]
+        for col_name, col_type in pref_columns:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'user_preferences'
+                  AND column_name = ?
+                """,
+                (col_name,),
+            )
+            has_col = cur.fetchone() is not None
+            if not has_col:
+                cur.execute(f"ALTER TABLE user_preferences ADD COLUMN {col_name} {col_type}")
+        conn.commit()
+
+
+def _ensure_meal_log_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        meal_columns = [
+            ("fiber_g", "DOUBLE PRECISION NULL"),
+            ("sugar_g", "DOUBLE PRECISION NULL"),
+            ("sodium_mg", "DOUBLE PRECISION NULL"),
+        ]
+        for col_name, col_type in meal_columns:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'meal_logs'
+                  AND column_name = ?
+                """,
+                (col_name,),
+            )
+            has_col = cur.fetchone() is not None
+            if not has_col:
+                cur.execute(f"ALTER TABLE meal_logs ADD COLUMN {col_name} {col_type}")
+        conn.commit()
 
 
 def _supabase_url() -> Optional[str]:
@@ -598,7 +653,7 @@ def _agent_change_cooldown_state(last_changed_at: Any) -> Dict[str, Any]:
             "next_change_available_at": None,
             "retry_after_days": 0,
         }
-    next_allowed = last_changed + timedelta(days=14)
+    next_allowed = last_changed + timedelta(days=COACH_CHANGE_COOLDOWN_DAYS)
     now_utc = datetime.now(timezone.utc)
     if now_utc >= next_allowed:
         return {
@@ -789,20 +844,15 @@ def _ensure_daily_coach_checkin_reminder(user_id: int) -> None:
         cur = conn.cursor()
         cur.execute(
             """
-            DELETE FROM reminders
-            WHERE user_id = ? AND reminder_type = ? AND scheduled_at = ?
-            """,
-            (user_id, "daily_coach_checkin", scheduled_at),
-        )
-        cur.execute(
-            """
             INSERT INTO reminders (
                 user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
             ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (user_id, reminder_type, scheduled_at) DO NOTHING
             """,
             (user_id, "daily_coach_checkin", scheduled_at, "pending", "ios", None),
         )
         conn.commit()
+    _invalidate_reminders_cache(user_id)
 
 
 def _invalidate_health_activity_cache(user_id: int) -> None:
@@ -1101,6 +1151,9 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "workout_preferences": row[5],
             "timezone": row[6],
             "created_at": row[7],
+            "allergies": row[8] if len(row) > 8 else None,
+            "preferred_workout_time": row[9] if len(row) > 9 else None,
+            "menstrual_cycle_notes": row[10] if len(row) > 10 else None,
         }
 
     try:
@@ -1259,12 +1312,14 @@ def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
 
 
 def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
+    _ensure_meal_log_schema()
     try:
         with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g,
+                       fiber_g, sugar_g, sodium_mg, confidence, confirmed
                 FROM meal_logs
                 WHERE user_id = ?
                 ORDER BY logged_at DESC
@@ -1285,8 +1340,11 @@ def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
                     "protein_g": row[5],
                     "carbs_g": row[6],
                     "fat_g": row[7],
-                    "confidence": row[8],
-                    "confirmed": bool(row[9]),
+                    "fiber_g": float(row[8] or 0),
+                    "sugar_g": float(row[9] or 0),
+                    "sodium_mg": float(row[10] or 0),
+                    "confidence": row[11],
+                    "confirmed": bool(row[12]),
                 }
             )
         return meals
@@ -1365,6 +1423,9 @@ class FoodScanItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     category: Optional[str] = None
     confidence: float
 
@@ -1375,6 +1436,9 @@ class FoodScanResponse(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     confidence: float
     items: List[FoodScanItem]
 
@@ -1386,6 +1450,9 @@ class FoodLogRequest(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     items: List[FoodScanItem]
     logged_at: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -1397,6 +1464,9 @@ class DailyIntakeResponse(BaseModel):
     total_protein_g: float
     total_carbs_g: float
     total_fat_g: float
+    total_fiber_g: float
+    total_sugar_g: float
+    total_sodium_mg: float
     meals_count: int
     daily_calorie_target: Optional[int] = None
 
@@ -1407,6 +1477,9 @@ class MealLogItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     logged_at: str
 
 
@@ -1540,6 +1613,9 @@ class ProfileUpdateRequest(BaseModel):
     target_weight_kg: Optional[float] = None
     dietary_preferences: Optional[str] = None
     workout_preferences: Optional[str] = None
+    allergies: Optional[str] = None
+    preferred_workout_time: Optional[str] = None
+    menstrual_cycle_notes: Optional[str] = None
 
 
 class BillingCheckoutRequest(BaseModel):
@@ -1602,6 +1678,9 @@ class OnboardingCompletePayload(BaseModel):
     trainer: Optional[str] = None
     full_name: Optional[str] = None
     voice: Optional[str] = None
+    allergies: Optional[str] = None
+    preferred_workout_time: Optional[str] = None
+    menstrual_cycle_notes: Optional[str] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -2704,6 +2783,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @app.get("/food/intake", response_model=DailyIntakeResponse)
 def get_daily_intake(user_id: int, day: Optional[str] = None):
     """Return daily calorie intake totals for a user."""
+    _ensure_meal_log_schema()
     target_day = day or date.today().isoformat()
     cache_key = f"daily_intake:{user_id}:{target_day}"
     cached = _redis_get_json(cache_key)
@@ -2718,7 +2798,7 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT calories, protein_g, carbs_g, fat_g
+            SELECT calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg
             FROM meal_logs
             WHERE user_id = ? AND logged_at BETWEEN ? AND ?
             """,
@@ -2729,6 +2809,9 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
     total_protein = sum(row[1] for row in rows)
     total_carbs = sum(row[2] for row in rows)
     total_fat = sum(row[3] for row in rows)
+    total_fiber = sum(float(row[4] or 0) for row in rows)
+    total_sugar = sum(float(row[5] or 0) for row in rows)
+    total_sodium = sum(float(row[6] or 0) for row in rows)
     daily_target = None
     try:
         from agent.tools.plan_tools import _get_active_plan_bundle_data
@@ -2750,6 +2833,9 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
         total_protein_g=total_protein,
         total_carbs_g=total_carbs,
         total_fat_g=total_fat,
+        total_fiber_g=total_fiber,
+        total_sugar_g=total_sugar,
+        total_sodium_mg=total_sodium,
         meals_count=len(rows),
         daily_calorie_target=daily_target,
     )
@@ -2760,6 +2846,7 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
 @app.get("/food/logs", response_model=DailyMealLogsResponse)
 def get_food_logs(user_id: int, day: Optional[str] = None):
     """Return logged meals for a specific day."""
+    _ensure_meal_log_schema()
     target_day = day or date.today().isoformat()
     bucket_key = f"user:{user_id}:meal_logs"
     cached_bucket = _redis_get_json(bucket_key)
@@ -2776,7 +2863,7 @@ def get_food_logs(user_id: int, day: Optional[str] = None):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT description, calories, protein_g, carbs_g, fat_g, logged_at
+            SELECT description, calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, logged_at
             FROM meal_logs
             WHERE user_id = ? AND logged_at BETWEEN ? AND ?
             ORDER BY logged_at DESC
@@ -2791,7 +2878,10 @@ def get_food_logs(user_id: int, day: Optional[str] = None):
             protein_g=row[2],
             carbs_g=row[3],
             fat_g=row[4],
-            logged_at=row[5],
+            fiber_g=float(row[5] or 0),
+            sugar_g=float(row[6] or 0),
+            sodium_mg=float(row[7] or 0),
+            logged_at=row[8],
         )
         for row in rows
     ]
@@ -2919,8 +3009,12 @@ def update_profile(payload: ProfileUpdateRequest):
         pref_fields["dietary_preferences"] = payload.dietary_preferences
     if payload.workout_preferences is not None:
         pref_fields["workout_preferences"] = payload.workout_preferences
-    if payload.dietary_preferences is not None:
-        pref_fields["dietary_preferences"] = payload.dietary_preferences
+    if payload.allergies is not None:
+        pref_fields["allergies"] = payload.allergies
+    if payload.preferred_workout_time is not None:
+        pref_fields["preferred_workout_time"] = payload.preferred_workout_time
+    if payload.menstrual_cycle_notes is not None:
+        pref_fields["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
 
     with get_db_conn() as conn:
         cur = conn.cursor()
@@ -2936,7 +3030,7 @@ def update_profile(payload: ProfileUpdateRequest):
                     raise HTTPException(
                         status_code=429,
                         detail=(
-                            f"You can change coaches once every 14 days. "
+                            f"You can change coaches once every {COACH_CHANGE_COOLDOWN_DAYS} days. "
                             f"Try again in about {cooldown_state['retry_after_days']} day(s)."
                         ),
                     )
@@ -2963,8 +3057,9 @@ def update_profile(payload: ProfileUpdateRequest):
                     """
                     INSERT INTO user_preferences (
                         user_id, weekly_weight_change_kg, activity_level, goal_type,
-                        target_weight_kg, dietary_preferences, workout_preferences, timezone, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_weight_kg, dietary_preferences, workout_preferences, timezone, created_at,
+                        allergies, preferred_workout_time, menstrual_cycle_notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload.user_id,
@@ -2973,9 +3068,12 @@ def update_profile(payload: ProfileUpdateRequest):
                         pref_fields.get("goal_type"),
                         pref_fields.get("target_weight_kg"),
                         pref_fields.get("dietary_preferences"),
-                        None,
+                        pref_fields.get("workout_preferences"),
                         None,
                         created_at,
+                        pref_fields.get("allergies"),
+                        pref_fields.get("preferred_workout_time"),
+                        pref_fields.get("menstrual_cycle_notes"),
                     ),
                 )
             else:
@@ -3018,7 +3116,7 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
             raise HTTPException(
                 status_code=429,
                 detail=(
-                    f"You can change coaches once every 14 days. "
+                    f"You can change coaches once every {COACH_CHANGE_COOLDOWN_DAYS} days. "
                     f"Try again in about {cooldown_state['retry_after_days']} day(s)."
                 ),
             )
@@ -3051,8 +3149,8 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
     return CoachChangeResponse(
         success=True,
         message=f"Coach successfully changed to {payload.new_coach_id}",
-        next_change_available_at=(datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
-        retry_after_days=14,
+        next_change_available_at=(datetime.now(timezone.utc) + timedelta(days=COACH_CHANGE_COOLDOWN_DAYS)).isoformat(),
+        retry_after_days=COACH_CHANGE_COOLDOWN_DAYS,
     )
 
 
@@ -3826,6 +3924,7 @@ def _generate_plan_for_user(
 @app.post("/api/onboarding/complete")
 def complete_onboarding(payload: OnboardingCompletePayload):
     _ensure_coach_schema()
+    _ensure_profile_schema()
     user_id = payload.user_id or 1
     fields = []
     values: list[Any] = []
@@ -3874,6 +3973,57 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                 if not _has_points_reason(user_id, reason):
                     _award_points(user_id, 5, reason)
                 _apply_daily_checklist_completion_bonus(user_id, date.today().isoformat())
+            conn.commit()
+
+    pref_updates: Dict[str, Any] = {}
+    if payload.activity_level is not None:
+        pref_updates["activity_level"] = payload.activity_level
+    if payload.goal_type is not None:
+        pref_updates["goal_type"] = payload.goal_type
+    if payload.target_weight_kg is not None:
+        pref_updates["target_weight_kg"] = payload.target_weight_kg
+    if payload.allergies is not None:
+        pref_updates["allergies"] = payload.allergies
+    if payload.preferred_workout_time is not None:
+        pref_updates["preferred_workout_time"] = payload.preferred_workout_time
+    if payload.menstrual_cycle_notes is not None:
+        pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
+    if pref_updates:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (user_id,))
+            has_pref = cur.fetchone() is not None
+            if not has_pref:
+                created_at = datetime.now().isoformat(timespec="seconds")
+                cur.execute(
+                    """
+                    INSERT INTO user_preferences (
+                        user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
+                        dietary_preferences, workout_preferences, timezone, created_at,
+                        allergies, preferred_workout_time, menstrual_cycle_notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        payload.weekly_weight_change_kg,
+                        pref_updates.get("activity_level"),
+                        pref_updates.get("goal_type"),
+                        pref_updates.get("target_weight_kg"),
+                        None,
+                        None,
+                        None,
+                        created_at,
+                        pref_updates.get("allergies"),
+                        pref_updates.get("preferred_workout_time"),
+                        pref_updates.get("menstrual_cycle_notes"),
+                    ),
+                )
+            else:
+                set_clause = ", ".join(f"{k} = ?" for k in pref_updates.keys())
+                cur.execute(
+                    f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?",
+                    tuple(pref_updates.values()) + (user_id,),
+                )
             conn.commit()
     if payload.current_weight_kg is not None:
         _invalidate_user_activity_cache(user_id, day=date.today().isoformat())

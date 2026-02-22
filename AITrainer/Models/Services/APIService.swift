@@ -523,6 +523,49 @@ struct OnboardingCompletePayload: Codable {
     let age: Int?
     let fitness_background: String?
     let full_name: String?
+    let allergies: String?
+    let preferred_workout_time: String?
+    let menstrual_cycle_notes: String?
+
+    init(
+        user_id: Int?,
+        goal_type: String?,
+        target_weight_kg: Double?,
+        weekly_weight_change_kg: Double?,
+        activity_level: String?,
+        storyline: String?,
+        trainer_id: Int?,
+        personality: String?,
+        voice: String?,
+        timeframe_weeks: Int?,
+        current_weight_kg: Double?,
+        height_cm: Double?,
+        age: Int?,
+        fitness_background: String?,
+        full_name: String?,
+        allergies: String? = nil,
+        preferred_workout_time: String? = nil,
+        menstrual_cycle_notes: String? = nil
+    ) {
+        self.user_id = user_id
+        self.goal_type = goal_type
+        self.target_weight_kg = target_weight_kg
+        self.weekly_weight_change_kg = weekly_weight_change_kg
+        self.activity_level = activity_level
+        self.storyline = storyline
+        self.trainer_id = trainer_id
+        self.personality = personality
+        self.voice = voice
+        self.timeframe_weeks = timeframe_weeks
+        self.current_weight_kg = current_weight_kg
+        self.height_cm = height_cm
+        self.age = age
+        self.fitness_background = fitness_background
+        self.full_name = full_name
+        self.allergies = allergies
+        self.preferred_workout_time = preferred_workout_time
+        self.menstrual_cycle_notes = menstrual_cycle_notes
+    }
 }
 
 struct OnboardingCompleteResponse: Decodable {

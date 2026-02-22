@@ -37,6 +37,9 @@ struct DailyIntakeResponse: Codable {
     let total_protein_g: Double
     let total_carbs_g: Double
     let total_fat_g: Double
+    let total_fiber_g: Double
+    let total_sugar_g: Double
+    let total_sodium_mg: Double
     let meals_count: Int
     let daily_calorie_target: Int?
 }
@@ -51,6 +54,9 @@ struct MealLogItemResponse: Codable {
     let protein_g: Double
     let carbs_g: Double
     let fat_g: Double
+    let fiber_g: Double?
+    let sugar_g: Double?
+    let sodium_mg: Double?
     let logged_at: String
 }
 
@@ -123,6 +129,9 @@ struct ProfilePreferencesResponse: Codable {
     let target_weight_kg: Double?
     let dietary_preferences: String?
     let workout_preferences: String?
+    let allergies: String?
+    let preferred_workout_time: String?
+    let menstrual_cycle_notes: String?
     let timezone: String?
     let created_at: String?
 }
@@ -147,6 +156,9 @@ struct ProfileUpdateRequest: Codable {
     let target_weight_kg: Double?
     let dietary_preferences: String?
     let workout_preferences: String?
+    let allergies: String? = nil
+    let preferred_workout_time: String? = nil
+    let menstrual_cycle_notes: String? = nil
 }
 
 struct ProgressCheckinResponse: Codable {
@@ -182,6 +194,9 @@ struct ProgressMealResponse: Codable {
     let protein_g: Double?
     let carbs_g: Double?
     let fat_g: Double?
+    let fiber_g: Double?
+    let sugar_g: Double?
+    let sodium_mg: Double?
     let confidence: Double?
     let confirmed: Bool?
 }

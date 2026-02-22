@@ -178,6 +178,8 @@ struct TrainerMainView: View {
     @State private var showPlanDetail = false
     @State private var showCalorieDetail = false
     @State private var showRecipePlanner = false
+    @State private var showCommunity = false
+    @State private var showGymFinder = false
     @State private var showGamificationSheet = false
     @State private var todayPlan: PlanDayResponse?
     @State private var gamification: GamificationResponse?
@@ -238,10 +240,6 @@ struct TrainerMainView: View {
                             greetingSection
                                 .padding(.horizontal, 24)
                                 .padding(.bottom, 10)
-
-                            quickLogActions
-                                .padding(.horizontal, 20)
-                                .padding(.bottom, 16)
 
                             coachToolsRow
                                 .padding(.horizontal, 20)
@@ -331,6 +329,12 @@ struct TrainerMainView: View {
         .fullScreenCover(isPresented: $showRecipePlanner) {
             RecipeFinderView()
         }
+        .fullScreenCover(isPresented: $showCommunity) {
+            CommunityView()
+        }
+        .fullScreenCover(isPresented: $showGymFinder) {
+            GymClassesView()
+        }
         .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
             Button("Log Food") {
                 showMealLogging = true
@@ -349,9 +353,7 @@ struct TrainerMainView: View {
         }
         .alert("Daily Check-In", isPresented: $showEndOfDayPrompt) {
             Button("Chat now") {
-                chatLaunchMode = .text
-                chatInitialPrompt = "Let's do my end-of-day check-in. Analyze today's meals, workouts, and weight progress versus plan/checkpoints, then suggest improvements or ask what I want to adjust."
-                showVoiceChat = true
+                openCoachChat(with: "Let's do my end-of-day check-in. Run the detailed status check against today's plan/checkpoints, compare meals/workouts/weight logs, ask how I felt today, and propose concrete adjustments if needed.")
             }
             Button("Later", role: .cancel) {}
         } message: {
@@ -359,9 +361,7 @@ struct TrainerMainView: View {
         }
         .alert("Today's Checklist", isPresented: $showChecklistReminder) {
             Button("Open coach chat") {
-                chatLaunchMode = .text
-                chatInitialPrompt = "Let's do my daily check-in now and confirm today's checklist."
-                showVoiceChat = true
+                openCoachChat(with: "Let's do my daily check-in now. Run the detailed daily status check and confirm checklist progress for meals, workout, and check-in.")
             }
             Button("Later", role: .cancel) {}
         } message: {
@@ -481,28 +481,51 @@ struct TrainerMainView: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundColor(checklistCompleteToday ? .green : .orange)
             }
-            checklistRow(title: "Log 3 meals", current: lastMealLogCount, target: 3)
-            checklistRow(title: "Log workout", current: lastWorkoutLogCount, target: 1)
-            checklistRow(title: "Daily check-in", current: todayCheckinCount, target: 1)
+            checklistRow(
+                title: "Log 3 meals",
+                current: lastMealLogCount,
+                target: 3,
+                prompt: "I need to complete today's meal logging checklist task. Please help me log my meals one by one with calories and macros, then confirm what's still missing for today."
+            )
+            checklistRow(
+                title: "Log workout",
+                current: lastWorkoutLogCount,
+                target: 1,
+                prompt: "I need to complete today's workout logging checklist task. Please collect my workout details and log it, then confirm if my workout checklist requirement is complete."
+            )
+            checklistRow(
+                title: "Daily check-in",
+                current: todayCheckinCount,
+                target: 1,
+                prompt: "Let's do my daily check-in now. Run the detailed daily status check against today's plan/checkpoints, compare meals/workouts/weight logs, ask how I felt today, and suggest specific adjustments or reminder updates. Then confirm the daily check-in task."
+            )
         }
         .padding(14)
         .background(Color.white.opacity(0.12))
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
-    private func checklistRow(title: String, current: Int, target: Int) -> some View {
+    private func checklistRow(title: String, current: Int, target: Int, prompt: String) -> some View {
         let done = current >= target
-        return HStack(spacing: 8) {
-            Image(systemName: done ? "checkmark.circle.fill" : "circle")
-                .foregroundColor(done ? .green : .white.opacity(0.7))
-            Text(title)
-                .font(.system(size: 14, weight: .medium))
-                .foregroundColor(.white.opacity(0.9))
-            Spacer()
-            Text("\(min(current, target))/\(target)")
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundColor(done ? .green : .orange)
+        return Button {
+            openCoachChat(with: prompt)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(done ? .green : .white.opacity(0.7))
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                Spacer()
+                Text("\(min(current, target))/\(target)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(done ? .green : .orange)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.45))
+            }
         }
+        .buttonStyle(.plain)
     }
 
     private var todaysPlanCard: some View {
@@ -584,22 +607,42 @@ struct TrainerMainView: View {
     }
 
     private var coachToolsRow: some View {
-        HStack(spacing: 10) {
-            quickLogButton(
-                title: "Plan Meals",
-                systemImage: "fork.knife.circle"
-            ) {
-                showRecipePlanner = true
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                quickLogButton(
+                    title: "Plan Meals",
+                    systemImage: "fork.knife.circle"
+                ) {
+                    openCoachChat(with: "Help me plan meals for today. Ask for ingredients on hand, cuisine preference, prep time, dietary restrictions, and target calories/macros, then propose meal options I can choose from.")
+                }
+                quickLogButton(
+                    title: "Learn Exercise",
+                    systemImage: "figure.strengthtraining.functional"
+                ) {
+                    openCoachChat(with: "Teach me an exercise with proper form. Ask which exercise I want to learn, then give setup cues, common mistakes, regressions, and progressions.")
+                }
             }
-            quickLogButton(
-                title: "Learn Exercise",
-                systemImage: "figure.strengthtraining.functional"
-            ) {
-                chatLaunchMode = .text
-                chatInitialPrompt = "Teach me how to do an exercise properly. Ask which exercise I want to learn, then give cues, common mistakes, regressions, and progressions."
-                showVoiceChat = true
+            HStack(spacing: 10) {
+                quickLogButton(
+                    title: "Community",
+                    systemImage: "person.3.sequence.fill"
+                ) {
+                    openCoachChat(with: "I want community support. Help me set up accountability with friends, streak goals, and a simple social plan I can start this week.")
+                }
+                quickLogButton(
+                    title: "Find Gyms",
+                    systemImage: "mappin.and.ellipse"
+                ) {
+                    openCoachChat(with: "Help me find nearby gyms or classes. Ask my location, schedule, budget, and preferred class style, then suggest options and a plan to pick one.")
+                }
             }
         }
+    }
+
+    private func openCoachChat(with prompt: String) {
+        chatLaunchMode = .text
+        chatInitialPrompt = prompt
+        showVoiceChat = true
     }
 
     private func quickLogButton(
@@ -1471,6 +1514,8 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(errorMessage)
+                    // Even when chat fails, refresh listeners in case server-side tools partially completed.
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 }
             }
         }

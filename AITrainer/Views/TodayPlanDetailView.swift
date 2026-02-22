@@ -208,6 +208,10 @@ struct TodayPlanDetailView: View {
                     .foregroundColor(Color.white.opacity(0.6))
             }
 
+            Text("Plan logic: compound lifts are programmed heavier (RPE 7-8), accessory lifts lighter (RPE 6-7), and progression favors clean form before loading.")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(Color.white.opacity(0.66))
+
             if let primaryButton = primaryButton {
                 Button(action: { startGuidedWorkout(from: details, title: title) }) {
                     Text(primaryButton)
@@ -321,10 +325,51 @@ struct TodayPlanDetailView: View {
             }
         }
         return rawLines.map { line in
-            line
+            let cleaned = line
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .replacingOccurrences(of: #"^\s*[•\-\*]\s*"#, with: "", options: .regularExpression)
+            let muscle = inferredMuscleGroup(from: cleaned)
+            let load = inferredLoadGuidance(from: cleaned)
+            return "\(cleaned)\nTarget: \(muscle) • Load: \(load)"
         }
+    }
+
+    private func inferredMuscleGroup(from exercise: String) -> String {
+        let lower = exercise.lowercased()
+        if lower.contains("squat") || lower.contains("lunge") || lower.contains("leg press") {
+            return "Quads/Glutes"
+        }
+        if lower.contains("deadlift") || lower.contains("rdl") || lower.contains("ham") {
+            return "Posterior Chain"
+        }
+        if lower.contains("bench") || lower.contains("chest") {
+            return "Chest/Triceps"
+        }
+        if lower.contains("row") || lower.contains("pull") || lower.contains("lat") {
+            return "Back/Biceps"
+        }
+        if lower.contains("overhead") || lower.contains("shoulder") || lower.contains("ohp") {
+            return "Shoulders/Triceps"
+        }
+        if lower.contains("curl") {
+            return "Biceps"
+        }
+        if lower.contains("plank") || lower.contains("core") || lower.contains("pallof") || lower.contains("dead bug") {
+            return "Core"
+        }
+        if lower.contains("bike") || lower.contains("run") || lower.contains("cardio") || lower.contains("zone 2") {
+            return "Cardio Conditioning"
+        }
+        return "Full Body"
+    }
+
+    private func inferredLoadGuidance(from exercise: String) -> String {
+        let lower = exercise.lowercased()
+        let compound = ["squat", "deadlift", "bench", "row", "overhead", "leg press", "pull-up", "pull up"]
+        if compound.contains(where: { lower.contains($0) }) {
+            return "Heavier, controlled"
+        }
+        return "Lighter, strict form"
     }
 
     private func startGuidedWorkout(from details: [String], title: String) {

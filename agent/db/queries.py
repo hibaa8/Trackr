@@ -8,7 +8,8 @@ WHERE id = ?
 
 SELECT_USER_PREFS = """
 SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
-       dietary_preferences, workout_preferences, timezone, created_at
+       dietary_preferences, workout_preferences, timezone, created_at,
+       allergies, preferred_workout_time, menstrual_cycle_notes
 FROM user_preferences
 WHERE user_id = ?
 """

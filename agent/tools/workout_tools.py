@@ -118,14 +118,21 @@ def _load_workout_sessions_draft(user_id: int) -> Dict[str, Any]:
 
 
 def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -> None:
+    # Persist incrementally by workout date to avoid clobbering rows from parallel writes.
+    latest_by_date: Dict[str, Dict[str, Any]] = {}
+    for session in sessions:
+        session_date = session.get("date")
+        if not session_date:
+            continue
+        latest_by_date[str(session_date)] = session
     with get_db_conn() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM workout_sessions WHERE user_id = ?", (user_id,))
-        for session in sessions:
-            session_date = session.get("date")
+        for session_date, session in latest_by_date.items():
             workout_type = session.get("workout_type") or "Workout"
-            if not session_date:
-                continue
+            cur.execute(
+                "DELETE FROM workout_sessions WHERE user_id = ? AND date = ?",
+                (user_id, session_date),
+            )
             cur.execute(
                 """
                 INSERT INTO workout_sessions (
@@ -150,6 +157,8 @@ def _invalidate_workout_cache(user_id: int) -> None:
     _redis_delete(_draft_workout_sessions_key(user_id))
     _redis_delete("workout:latest")
     _redis_delete(f"session_hydration:{user_id}")
+    _redis_delete(f"user:{user_id}:progress")
+    _redis_delete(f"user:{user_id}:meal_logs")
 
 
 def _idempotency_key_for_workout(
