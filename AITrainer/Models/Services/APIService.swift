@@ -393,11 +393,46 @@ class APIService {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
     }
 
+    func notifyAppOpen(userId: Int) -> AnyPublisher<AppOpenStreakResponse, APIError> {
+        return request(endpoint: "/api/gamification/app-open?user_id=\(userId)", method: "POST")
+    }
+
+    func submitStreakDecision(userId: Int, useFreeze: Bool) -> AnyPublisher<AppOpenStreakResponse, APIError> {
+        let payload = StreakDecisionRequest(user_id: userId, use_freeze: useFreeze)
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/gamification/streak-decision", method: "POST", body: jsonData)
+    }
+
     func getSessionHydration(userId: Int, date: Date = Date()) -> AnyPublisher<SessionHydrationResponse, APIError> {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
         return request(endpoint: "/api/session/hydrate?user_id=\(userId)&day=\(dateString)")
+    }
+
+    func logHealthActivity(_ payload: HealthActivityLogRequest) -> AnyPublisher<HealthActivityLogResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/health-activity/log", method: "POST", body: jsonData)
+    }
+
+    func getHealthActivityImpact(
+        userId: Int,
+        startDay: Date? = nil,
+        endDay: Date = Date(),
+        days: Int = 7
+    ) -> AnyPublisher<HealthActivityImpactResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let end = formatter.string(from: endDay)
+        var endpoint = "/api/health-activity/impact?user_id=\(userId)&end_day=\(end)&days=\(days)"
+        if let startDay {
+            endpoint += "&start_day=\(formatter.string(from: startDay))"
+        }
+        return request(endpoint: endpoint)
     }
 
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {

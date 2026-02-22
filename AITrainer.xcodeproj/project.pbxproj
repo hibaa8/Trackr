@@ -12,15 +12,11 @@
 		84D4F62E2F34ABBD00BEE516 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */; };
 		84D4F6322F34ABED00BEE516 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F6312F34ABED00BEE516 /* Supabase */; };
 		9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */; };
-		C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */; };
-		C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */ = {isa = PBXBuildFile; fileRef = C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
 		3D93F1942F1855FC00A8D3CB /* AITrainer.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = AITrainer.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		84D4F6282F34AAA900BEE516 /* agents.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = agents.md; sourceTree = "<group>"; };
-		C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachImages; sourceTree = SOURCE_ROOT; };
-		C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AITrainer/CoachVideos; sourceTree = SOURCE_ROOT; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -68,8 +64,6 @@
 		3DFFC9B62F32B3C5003ED109 /* Recovered References */ = {
 			isa = PBXGroup;
 			children = (
-				C0A1C0A1C0A1C0A1C0A1C0A1 /* AITrainer/CoachImages */,
-				C0A1C0A1C0A1C0A1C0A1C0A2 /* AITrainer/CoachVideos */,
 			);
 			name = "Recovered References";
 			sourceTree = "<group>";
@@ -155,8 +149,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				84D4F6292F34AAAD00BEE516 /* agents.md in Resources */,
-				C0B1C0B1C0B1C0B1C0B1C0B1 /* AITrainer/CoachImages in Resources */,
-				C0B1C0B1C0B1C0B1C0B1C0B2 /* AITrainer/CoachVideos in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

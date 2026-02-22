@@ -46,6 +46,30 @@ def _award_points(user_id: int, points: int, reason: str) -> None:
         conn.commit()
 
 
+def _apply_daily_checklist_completion_bonus(user_id: int, target_day: str) -> None:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?", (user_id, start, end))
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?", (user_id, target_day))
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, target_day))
+        checkin_count = int((cur.fetchone() or [0])[0] or 0)
+        if meal_count < 3 or workout_count < 1 or checkin_count < 1:
+            return
+        reason = f"daily_checklist_complete:{target_day}"
+        cur.execute("SELECT 1 FROM points WHERE user_id = ? AND reason = ? LIMIT 1", (user_id, reason))
+        if cur.fetchone() is not None:
+            return
+        cur.execute(
+            "INSERT INTO points (user_id, points, reason, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, 10, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
 
 
 def _append_workout_session_op(user_id: int, op: Dict[str, Any]) -> None:
@@ -125,6 +149,7 @@ def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -
 def _invalidate_workout_cache(user_id: int) -> None:
     _redis_delete(_draft_workout_sessions_key(user_id))
     _redis_delete("workout:latest")
+    _redis_delete(f"session_hydration:{user_id}")
 
 
 def _idempotency_key_for_workout(
@@ -340,7 +365,8 @@ def log_workout_session(
         )
         _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
         _invalidate_workout_cache(user_id)
-        _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
+        _award_points(user_id, 5, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
+        _apply_daily_checklist_completion_bonus(user_id, session_date)
         message = "Workout session updated for this session."
         _redis_set_json(idem_cache_key, {"message": message}, ttl_seconds=600)
         return message
@@ -370,7 +396,8 @@ def log_workout_session(
     )
     _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
     _invalidate_workout_cache(user_id)
-    _award_points(user_id, 8, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
+    _award_points(user_id, 5, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
+    _apply_daily_checklist_completion_bonus(user_id, session_date)
     message = "Workout session logged for this session."
     _redis_set_json(idem_cache_key, {"message": message}, ttl_seconds=600)
     return message
@@ -483,6 +510,7 @@ def remove_workout_exercise(
             },
         )
         _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+        _invalidate_workout_cache(user_id)
         return f"Removed {label} from {session_date}."
     return "No matching exercise found for that date."
 
@@ -548,4 +576,5 @@ def delete_workout_from_draft(
         },
     )
     _sync_workout_sessions_to_db(user_id, draft.get("sessions", []))
+    _invalidate_workout_cache(user_id)
     return f"Removed {workout_type} on {date}."

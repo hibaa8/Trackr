@@ -29,9 +29,6 @@ class AppState: ObservableObject {
     @Published var carbsTarget: Int = 200
     @Published var fatsCurrent: Int = 0
     @Published var fatsTarget: Int = 65
-    @Published var userLevel: Int = 12
-    @Published var userXp: Int = 2450
-    @Published var userXpGoal: Int = 3000
 
     init() {
         // Initialize with sample chat messages

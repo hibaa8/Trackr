@@ -299,6 +299,10 @@ class NotificationManager: NSObject, ObservableObject {
             content.title = "Meal Reminder"
             content.body = "Time to log your meal and stay on target."
             content.categoryIdentifier = "MEAL_REMINDER"
+        } else if normalizedType.contains("coach_checkin") || normalizedType.contains("daily_checkin") {
+            content.title = "Daily Coach Check-In"
+            content.body = "Let's do a quick status review and tune tomorrow's plan."
+            content.categoryIdentifier = "CHECKIN_REMINDER"
         } else {
             content.title = "Fitness Reminder"
             content.body = "You have a scheduled reminder in Vaylo Fitness."

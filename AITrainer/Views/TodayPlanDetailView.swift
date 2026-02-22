@@ -70,7 +70,7 @@ struct TodayPlanDetailView: View {
             Spacer()
 
             Text("Today's Plan")
-                .font(.system(size: 20, weight: .bold))
+                .font(.system(size: 24, weight: .bold))
                 .foregroundColor(.white)
 
             Spacer()
@@ -130,11 +130,11 @@ struct TodayPlanDetailView: View {
 
         return VStack(alignment: .leading, spacing: 12) {
             Text(title)
-                .font(.system(size: 18, weight: .semibold))
+                .font(.system(size: 22, weight: .bold))
                 .foregroundColor(.white)
 
             Text(subtitle)
-                .font(.system(size: 13, weight: .medium))
+                .font(.system(size: 15, weight: .medium))
                 .foregroundColor(Color.white.opacity(0.7))
 
             if !visibleItems.isEmpty {
@@ -146,7 +146,7 @@ struct TodayPlanDetailView: View {
                                 .frame(width: 6, height: 6)
                                 .padding(.top, 6)
                             Text(item)
-                                .font(.system(size: 12, weight: .medium))
+                                .font(.system(size: 15, weight: .medium))
                                 .foregroundColor(Color.white.opacity(0.82))
                                 .lineLimit(showFullDetails ? nil : 2)
                         }
@@ -194,7 +194,14 @@ struct TodayPlanDetailView: View {
             }
         }
         .padding(20)
-        .background(Color(red: 0.12, green: 0.12, blue: 0.12).opacity(0.85))
+        .background(
+            LinearGradient(
+                colors: [Color(red: 0.12, green: 0.12, blue: 0.14), Color(red: 0.08, green: 0.09, blue: 0.12)],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+            .opacity(0.95)
+        )
         .cornerRadius(16)
         .frame(minHeight: 220)
     }
@@ -272,7 +279,9 @@ struct TodayPlanDetailView: View {
             }
         }
         return rawLines.map { line in
-            "• \(line)"
+            line
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .replacingOccurrences(of: #"^\s*[•\-\*]\s*"#, with: "", options: .regularExpression)
         }
     }
 }

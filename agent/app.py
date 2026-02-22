@@ -9,7 +9,6 @@ import hashlib
 import io
 import os
 import re
-import hashlib
 import hmac
 import secrets
 import ssl
@@ -37,7 +36,6 @@ import urllib.parse
 import urllib.request
 import stripe
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response
@@ -50,7 +48,7 @@ from openai import OpenAI
 
 from agent.state import SESSION_CACHE
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
-from config.constants import DB_PATH, CACHE_TTL_LONG
+from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key
 from agent.db.connection import get_db_conn
 from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
@@ -421,10 +419,11 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             ),
         )
         conn.commit()
-    _redis_delete(f"user:{payload.user_id}:meal_logs")
-    _redis_delete(f"daily_intake:{payload.user_id}:{day_key}")
+    _invalidate_user_activity_cache(payload.user_id, day=day_key)
     _award_points(payload.user_id, 5, f"meal_log:{logged_at}")
     _maybe_award_daily_calorie_target_bonus(payload.user_id, logged_at[:10])
+    _apply_daily_checklist_completion_bonus(payload.user_id, logged_at[:10])
+    _ensure_daily_coach_checkin_reminder(payload.user_id)
     _redis_set_json(idem_cache_key, {"ok": True}, ttl_seconds=600)
 
 
@@ -640,6 +639,76 @@ def _total_points(user_id: int) -> int:
         return int(row[0] or 0) if row else 0
 
 
+def _level_progress_from_points(points: int) -> Dict[str, int]:
+    # Progressive thresholds: 60, 65, 70, 75, ...
+    remaining = max(0, int(points))
+    level = 1
+    required = 60
+    while remaining >= required:
+        remaining -= required
+        level += 1
+        required += 5
+    return {
+        "level": level,
+        "xp_in_level": remaining,
+        "xp_for_next_level": required,
+        "xp_to_next_level": required - remaining,
+    }
+
+
+def _invalidate_user_activity_cache(user_id: int, day: Optional[str] = None) -> None:
+    _redis_delete(f"session_hydration:{user_id}")
+    _redis_delete(f"user:{user_id}:meal_logs")
+    if day:
+        _redis_delete(f"daily_intake:{user_id}:{day}")
+
+
+def _ensure_daily_coach_checkin_reminder(user_id: int) -> None:
+    # Schedule today's check-in if upcoming; otherwise schedule for tomorrow.
+    now = datetime.now()
+    target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    scheduled_at = target.isoformat(timespec="seconds")
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM reminders
+            WHERE user_id = ? AND reminder_type = ? AND scheduled_at = ?
+            """,
+            (user_id, "daily_coach_checkin", scheduled_at),
+        )
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (user_id, "daily_coach_checkin", scheduled_at, "pending", "ios", None),
+        )
+        conn.commit()
+
+
+def _invalidate_health_activity_cache(user_id: int) -> None:
+    _redis_delete(_draft_health_activity_key(user_id))
+    _redis_delete(f"session_hydration:{user_id}")
+
+
+def _ensure_app_open_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_open_events (
+                user_id INTEGER PRIMARY KEY,
+                last_open_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
+
+
 def _daily_intake_and_target(user_id: int, target_day: str) -> tuple[int, Optional[int]]:
     start = f"{target_day}T00:00:00"
     end = f"{target_day}T23:59:59"
@@ -710,8 +779,11 @@ def _update_login_streak(user_id: int) -> Dict[str, int]:
             return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
         if last_dt == (today_dt - timedelta(days=1)):
             current_count = int(current_count) + 1
-        else:
+        elif last_dt is None:
             current_count = 1
+        else:
+            # Preserve streak until user decides freeze vs reset after inactivity.
+            return {"current_count": int(current_count), "best_count": int(best_count), "last_date": str(last_date)}
         best_count = max(int(best_count), int(current_count))
         cur.execute(
             "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE id = ?",
@@ -719,6 +791,91 @@ def _update_login_streak(user_id: int) -> Dict[str, int]:
         )
         conn.commit()
         return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
+
+
+def _set_streak_for_today(user_id: int, keep_count: bool) -> None:
+    today_str = date.today().isoformat()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, current_count, best_count FROM streaks WHERE user_id = ? AND streak_type = ? LIMIT 1",
+            (user_id, "login"),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                """
+                INSERT INTO streaks (user_id, streak_type, current_count, best_count, last_date)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, "login", 1, 1, today_str),
+            )
+            conn.commit()
+            return
+        streak_id, current_count, best_count = row
+        if keep_count:
+            new_count = max(1, int(current_count or 1))
+            new_best = max(int(best_count or 0), new_count)
+        else:
+            new_count = 1
+            new_best = max(int(best_count or 0), 1)
+        cur.execute(
+            "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE id = ?",
+            (new_count, new_best, today_str, int(streak_id)),
+        )
+        conn.commit()
+
+
+def _apply_daily_checklist_completion_bonus(user_id: int, target_day: str) -> None:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?",
+            (user_id, start, end),
+        )
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute(
+            "SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?",
+            (user_id, target_day),
+        )
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute(
+            "SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = ?",
+            (user_id, target_day),
+        )
+        checkin_count = int((cur.fetchone() or [0])[0] or 0)
+    if meal_count < 3 or workout_count < 1 or checkin_count < 1:
+        return
+    reason = f"daily_checklist_complete:{target_day}"
+    if _has_points_reason(user_id, reason):
+        return
+    _award_points(user_id, 10, reason)
+
+
+def _daily_checklist_status(user_id: int, target_day: str) -> Dict[str, Any]:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?", (user_id, start, end))
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?", (user_id, target_day))
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+    checkin_done = _has_points_reason(user_id, f"checkin_log:{target_day}")
+    checklist_reason = f"daily_checklist_complete:{target_day}"
+    checklist_done = _has_points_reason(user_id, checklist_reason)
+    return {
+        "day": target_day,
+        "meals_logged": meal_count,
+        "workouts_logged": workout_count,
+        "checkin_done": checkin_done,
+        "meals_done": meal_count >= 3,
+        "workout_done": workout_count >= 1,
+        "checklist_done": checklist_done,
+        "xp_awarded": 10 if checklist_done else 0,
+    }
 
 
 def _maybe_award_biweekly_target_bonus(user_id: int) -> None:
@@ -770,8 +927,9 @@ def _gamification_summary(user_id: int) -> Dict[str, Any]:
     _maybe_award_biweekly_target_bonus(user_id)
 
     points = _total_points(user_id)
-    level = max(1, (points // 100) + 1)
-    next_level_points = max(0, level * 100 - points)
+    progress = _level_progress_from_points(points)
+    level = progress["level"]
+    next_level_points = progress["xp_to_next_level"]
     unlocked_freezes = max(0, level - 1)
     used_freezes = _count_points_reason_like(user_id, "freeze_used:%")
     available_freezes = max(0, unlocked_freezes - used_freezes)
@@ -1144,6 +1302,36 @@ class ReminderItemResponse(BaseModel):
     related_plan_override_id: Optional[int] = None
 
 
+class HealthActivityLogRequest(BaseModel):
+    user_id: int
+    date: Optional[str] = None
+    steps: int = 0
+    calories_burned: int = 0
+    active_minutes: int = 0
+    workouts_summary: Optional[str] = None
+    source: str = "apple_health"
+
+
+class HealthActivityImpactItemResponse(BaseModel):
+    date: str
+    steps: int
+    health_calories_burned: int
+    active_minutes: int
+    workouts_summary: str
+    source: str
+    meal_intake: int
+    meal_target: Optional[int] = None
+    workout_expected_burn: Optional[int] = None
+    burn_delta: Optional[int] = None
+    intake_delta: Optional[int] = None
+
+
+class HealthActivityImpactResponse(BaseModel):
+    start_day: str
+    end_day: str
+    items: List[HealthActivityImpactItemResponse]
+
+
 class SessionHydrationResponse(BaseModel):
     user_id: int
     date: str
@@ -1246,6 +1434,7 @@ class RecipeSuggestion(BaseModel):
     ingredients: List[str]
     steps: List[str]
     tags: List[str] = []
+    source_links: List[str] = []
 
 
 class RecipeSuggestResponse(BaseModel):
@@ -1305,6 +1494,19 @@ class GamificationResponse(BaseModel):
 
 class UseFreezeRequest(BaseModel):
     user_id: int
+
+
+class StreakDecisionRequest(BaseModel):
+    user_id: int
+    use_freeze: bool
+
+
+class AppOpenStreakResponse(BaseModel):
+    freeze_prompt_required: bool
+    inactivity_hours: float
+    streak_reset: bool
+    message: str
+    gamification: GamificationResponse
 
 
 class RecipeImageRequest(BaseModel):
@@ -2078,7 +2280,7 @@ def suggest_recipes(payload: RecipeSuggestRequest):
     workout_label = plan_context.get("workout_plan") or "Unknown"
 
     prompt = (
-        "You are a nutrition coach and recipe creator. Generate 3 healthy recipes. "
+        "You are a nutrition coach and recipe creator. Generate exactly 1 healthy recipe. "
         "Return strictly valid JSON with this schema:\n"
         "{"
         "\"recipes\":[{"
@@ -2091,7 +2293,8 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         "\"fat_g\":number,"
         "\"ingredients\":[string],"
         "\"steps\":[string],"
-        "\"tags\":[string]"
+        "\"tags\":[string],"
+        "\"source_links\":[string]"
         "}],"
         "\"detected_ingredients\":[string]"
         "}\n"
@@ -2104,21 +2307,54 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         f"Dietary preferences: {', '.join(payload.dietary) if payload.dietary else 'None'}. "
         f"Available ingredients: {', '.join(combined) if combined else 'None provided'}."
     )
+    fallback_recipe = {
+        "id": str(uuid.uuid4()),
+        "name": "Trainer Suggestion",
+        "summary": "Balanced, high-protein bowl tailored to your current plan and ingredients.",
+        "calories": int(per_meal_target),
+        "protein_g": max(25, int(per_meal_target * 0.25 / 4)),
+        "carbs_g": max(30, int(per_meal_target * 0.45 / 4)),
+        "fat_g": max(10, int(per_meal_target * 0.30 / 9)),
+        "ingredients": combined[:8] if combined else ["lean protein", "rice", "mixed vegetables", "olive oil", "seasoning"],
+        "steps": [
+            "Prep ingredients and season protein.",
+            "Cook protein until done and set aside.",
+            "Cook carbs base and warm vegetables.",
+            "Assemble bowl and finish with healthy fats.",
+        ],
+        "tags": ["balanced", "high-protein", payload.cuisine or "any-cuisine"],
+        "source_links": [
+            "https://www.eatright.org/fitness/sports-and-performance/fueling-your-workout",
+            "https://www.health.harvard.edu/staying-healthy/healthy-eating-plate",
+        ],
+    }
 
-    content = _gemini_generate_content(prompt, temperature=0.3)
-    payload_json = _safe_parse_json(content)
-    recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
-    recipes = []
-    for item in recipes_raw:
-        if not isinstance(item, dict):
-            continue
-        item["id"] = item.get("id") or str(uuid.uuid4())
-        recipes.append(item)
-
-    return RecipeSuggestResponse(
-        recipes=[RecipeSuggestion(**item) for item in recipes],
-        detected_ingredients=payload_json.get("detected_ingredients", []) or detected_ingredients,
-    )
+    try:
+        content = _gemini_generate_content(prompt, temperature=0.3)
+        payload_json = _safe_parse_json(content)
+        recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
+        recipes = []
+        for item in recipes_raw[:1]:
+            if not isinstance(item, dict):
+                continue
+            item["id"] = item.get("id") or str(uuid.uuid4())
+            item["name"] = "Trainer Suggestion"
+            source_links = item.get("source_links")
+            if not isinstance(source_links, list) or not source_links:
+                item["source_links"] = fallback_recipe["source_links"]
+            recipes.append(item)
+        if not recipes:
+            recipes = [fallback_recipe]
+        detected = payload_json.get("detected_ingredients", []) if isinstance(payload_json, dict) else []
+        return RecipeSuggestResponse(
+            recipes=[RecipeSuggestion(**item) for item in recipes],
+            detected_ingredients=detected or detected_ingredients,
+        )
+    except Exception:
+        return RecipeSuggestResponse(
+            recipes=[RecipeSuggestion(**fallback_recipe)],
+            detected_ingredients=detected_ingredients,
+        )
 
 
 @app.post("/recipes/search", response_model=RecipeSearchResponse)
@@ -2452,6 +2688,10 @@ def update_profile(payload: ProfileUpdateRequest):
             cur.execute(f"UPDATE users SET {set_clause} WHERE id = ?", params)
             if weight_updated and payload.weight_kg is not None:
                 _upsert_daily_weight_checkin(payload.user_id, float(payload.weight_kg), conn=conn)
+                reason = f"checkin_log:{date.today().isoformat()}"
+                if not _has_points_reason(payload.user_id, reason):
+                    _award_points(payload.user_id, 5, reason)
+                _apply_daily_checklist_completion_bonus(payload.user_id, date.today().isoformat())
 
         if pref_fields:
             cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (payload.user_id,))
@@ -2483,6 +2723,8 @@ def update_profile(payload: ProfileUpdateRequest):
                 cur.execute(f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?", params)
         conn.commit()
 
+    if weight_updated:
+        _invalidate_user_activity_cache(payload.user_id, day=date.today().isoformat())
     _refresh_profile_cache(payload.user_id)
     return _load_user_profile(payload.user_id)
 
@@ -2631,12 +2873,282 @@ def get_progress(user_id: int):
         "plan": plan,
         "meals": _list_meal_logs(user_id),
         "workouts": _list_workout_sessions(user_id),
+        "daily_checklist": _daily_checklist_status(user_id, date.today().isoformat()),
     }
+
+
+@app.post("/api/health-activity/log")
+def log_health_activity(payload: HealthActivityLogRequest):
+    target_day_date = _coerce_to_date(payload.date) or date.today()
+    target_day = target_day_date.isoformat()
+    source = (payload.source or "apple_health").strip() or "apple_health"
+    workouts_summary = (payload.workouts_summary or "").strip()
+    if payload.active_minutes > 0:
+        suffix = f"active_minutes={int(payload.active_minutes)}"
+        workouts_summary = f"{workouts_summary}; {suffix}" if workouts_summary else suffix
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM health_activity
+            WHERE user_id = ? AND date = ? AND source = ?
+            """,
+            (payload.user_id, target_day, source),
+        )
+        cur.execute(
+            """
+            INSERT INTO health_activity (user_id, date, steps, calories_burned, workouts_summary, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.user_id,
+                target_day,
+                max(0, int(payload.steps)),
+                max(0, int(payload.calories_burned)),
+                workouts_summary or None,
+                source,
+            ),
+        )
+        conn.commit()
+
+    _invalidate_health_activity_cache(payload.user_id)
+    return {"ok": True, "date": target_day}
+
+
+@app.get("/api/health-activity/impact", response_model=HealthActivityImpactResponse)
+def get_health_activity_impact(
+    user_id: int,
+    start_day: Optional[str] = None,
+    end_day: Optional[str] = None,
+    days: int = 7,
+):
+    from agent.tools.activity_utils import _estimate_workout_calories
+
+    range_end = _coerce_to_date(end_day) or date.today()
+    default_start = range_end - timedelta(days=max(1, min(31, int(days))) - 1)
+    range_start = _coerce_to_date(start_day) or default_start
+    if range_start > range_end:
+        range_start, range_end = range_end, range_start
+
+    day_cursor = range_start
+    day_keys: List[str] = []
+    while day_cursor <= range_end:
+        day_keys.append(day_cursor.isoformat())
+        day_cursor += timedelta(days=1)
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT date, steps, calories_burned, workouts_summary, source
+            FROM health_activity
+            WHERE user_id = ? AND date >= ? AND date <= ?
+            ORDER BY date ASC
+            """,
+            (user_id, range_start.isoformat(), range_end.isoformat()),
+        )
+        activity_rows = cur.fetchall()
+
+    activity_by_day: Dict[str, Dict[str, Any]] = {}
+    for row in activity_rows:
+        day = str(row[0])
+        activity_by_day[day] = {
+            "steps": int(row[1] or 0),
+            "calories_burned": int(row[2] or 0),
+            "workouts_summary": str(row[3] or ""),
+            "source": str(row[4] or "unknown"),
+        }
+
+    meals_by_day: Dict[str, int] = {}
+    for meal in _list_meal_logs(user_id):
+        logged_at = str(meal.get("logged_at") or "")
+        day_value = _coerce_to_date(logged_at)
+        if not day_value:
+            continue
+        day_key = day_value.isoformat()
+        if day_key not in day_keys:
+            continue
+        meals_by_day[day_key] = meals_by_day.get(day_key, 0) + int(meal.get("calories") or 0)
+
+    plan_days_by_date: Dict[str, Dict[str, Any]] = {}
+    weight_kg = 70.0
+    try:
+        profile = _load_user_profile(user_id)
+        weight_kg = float(profile.get("user", {}).get("weight_kg") or 70.0)
+    except Exception:
+        pass
+    try:
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        for plan_day in bundle.get("plan_days", []):
+            day_key = str(plan_day.get("date") or "")
+            if day_key:
+                plan_days_by_date[day_key] = plan_day
+    except Exception:
+        plan_days_by_date = {}
+
+    def _extract_minutes(label: str) -> int:
+        lowered = label.lower()
+        match = re.search(r"(\d{1,3})\s*min", lowered)
+        if match:
+            try:
+                return max(10, int(match.group(1)))
+            except Exception:
+                return 30
+        return 30
+
+    items: List[HealthActivityImpactItemResponse] = []
+    for day_key in day_keys:
+        activity = activity_by_day.get(day_key, {})
+        meal_intake = int(meals_by_day.get(day_key, 0))
+        plan_day = plan_days_by_date.get(day_key, {})
+        meal_target = plan_day.get("calorie_target")
+        workout_label = str(plan_day.get("workout_plan") or "").strip()
+        expected_burn: Optional[int] = None
+        if workout_label and workout_label.lower() != "rest day":
+            estimated = _estimate_workout_calories(
+                max(35.0, weight_kg),
+                [{"name": workout_label, "duration_min": _extract_minutes(workout_label)}],
+                _extract_minutes(workout_label),
+            )
+            expected_burn = int(max(0, estimated))
+
+        health_burn = int(activity.get("calories_burned", 0))
+        burn_delta = (health_burn - expected_burn) if expected_burn is not None else None
+        intake_delta = (meal_intake - int(meal_target)) if meal_target is not None else None
+
+        active_minutes = 0
+        summary_text = str(activity.get("workouts_summary") or "")
+        active_match = re.search(r"active_minutes=(\d+)", summary_text)
+        if active_match:
+            try:
+                active_minutes = int(active_match.group(1))
+            except Exception:
+                active_minutes = 0
+        clean_summary = re.sub(r";?\s*active_minutes=\d+", "", summary_text).strip(" ;")
+
+        items.append(
+            HealthActivityImpactItemResponse(
+                date=day_key,
+                steps=int(activity.get("steps", 0)),
+                health_calories_burned=health_burn,
+                active_minutes=active_minutes,
+                workouts_summary=clean_summary,
+                source=str(activity.get("source") or "unknown"),
+                meal_intake=meal_intake,
+                meal_target=int(meal_target) if meal_target is not None else None,
+                workout_expected_burn=expected_burn,
+                burn_delta=burn_delta,
+                intake_delta=intake_delta,
+            )
+        )
+
+    return HealthActivityImpactResponse(
+        start_day=range_start.isoformat(),
+        end_day=range_end.isoformat(),
+        items=items,
+    )
 
 
 @app.get("/api/gamification", response_model=GamificationResponse)
 def get_gamification(user_id: int):
     return _gamification_summary(user_id)
+
+
+@app.post("/api/gamification/app-open", response_model=AppOpenStreakResponse)
+def gamification_app_open(user_id: int):
+    _ensure_app_open_schema()
+    now = datetime.now()
+    inactivity_hours = 0.0
+    freeze_prompt_required = False
+    streak_reset = False
+    message = "Welcome back."
+
+    has_existing_open_row = False
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT last_open_at FROM app_open_events WHERE user_id = ? LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        has_existing_open_row = row is not None
+        if row and row[0]:
+            try:
+                parsed_open = datetime.fromisoformat(str(row[0]))
+                inactivity_hours = max(0.0, (now - parsed_open).total_seconds() / 3600.0)
+            except Exception:
+                inactivity_hours = 0.0
+
+    summary = _gamification_summary(user_id)
+    if inactivity_hours >= 24.0:
+        if int(summary.get("freeze_streaks", 0)) > 0:
+            freeze_prompt_required = True
+            message = "You were away for over 24h. Use a freeze to keep your streak?"
+        else:
+            _set_streak_for_today(user_id, keep_count=False)
+            streak_reset = True
+            summary = _gamification_summary(user_id)
+            message = "Your streak reset after 24h inactivity. Start a new streak today."
+
+    if not freeze_prompt_required:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            if has_existing_open_row:
+                cur.execute(
+                    "UPDATE app_open_events SET last_open_at = ? WHERE user_id = ?",
+                    (now.isoformat(timespec="seconds"), user_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO app_open_events (user_id, last_open_at) VALUES (?, ?)",
+                    (user_id, now.isoformat(timespec="seconds")),
+                )
+            conn.commit()
+
+    return AppOpenStreakResponse(
+        freeze_prompt_required=freeze_prompt_required,
+        inactivity_hours=round(inactivity_hours, 1),
+        streak_reset=streak_reset,
+        message=message,
+        gamification=GamificationResponse(**summary),
+    )
+
+
+@app.post("/api/gamification/streak-decision", response_model=AppOpenStreakResponse)
+def gamification_streak_decision(payload: StreakDecisionRequest):
+    summary = _gamification_summary(payload.user_id)
+    if payload.use_freeze:
+        if int(summary.get("freeze_streaks", 0)) <= 0:
+            raise HTTPException(status_code=400, detail="No freeze streaks available")
+        reason = f"freeze_used:{date.today().isoformat()}"
+        if not _has_points_reason(payload.user_id, reason):
+            _award_points(payload.user_id, 0, reason)
+        _set_streak_for_today(payload.user_id, keep_count=True)
+        message = "Freeze used. Your streak is preserved."
+    else:
+        _set_streak_for_today(payload.user_id, keep_count=False)
+        message = "Streak reset. You can build it back starting today."
+
+    refreshed = _gamification_summary(payload.user_id)
+    _ensure_app_open_schema()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO app_open_events (user_id, last_open_at)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET last_open_at = excluded.last_open_at
+            """,
+            (payload.user_id, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+    return AppOpenStreakResponse(
+        freeze_prompt_required=False,
+        inactivity_hours=0.0,
+        streak_reset=not payload.use_freeze,
+        message=message,
+        gamification=GamificationResponse(**refreshed),
+    )
 
 
 @app.post("/api/gamification/use-freeze", response_model=GamificationResponse)
@@ -2648,6 +3160,7 @@ def use_freeze_streak(payload: UseFreezeRequest):
     if _has_points_reason(payload.user_id, reason):
         raise HTTPException(status_code=400, detail="Freeze already used today")
     _award_points(payload.user_id, 0, reason)
+    _set_streak_for_today(payload.user_id, keep_count=True)
     return _gamification_summary(payload.user_id)
 
 
@@ -2667,8 +3180,75 @@ def get_coach_suggestion(user_id: int):
     return {"suggestion": suggestion}
 
 
+@app.get("/api/status-summary")
+def get_status_summary(user_id: int):
+    """Return end-of-day style status summary + actionable suggestions."""
+    try:
+        from agent.tools.plan_tools import compute_plan_status
+
+        status_raw = compute_plan_status.func(user_id)
+        status = _safe_parse_json(status_raw)
+    except Exception:
+        status = {"explanation": "No status available.", "status": "limited"}
+
+    suggestions: List[str] = []
+    last_7d = status.get("last_7d") if isinstance(status, dict) else None
+    if isinstance(last_7d, dict):
+        workouts_done = int(last_7d.get("workouts_done") or 0)
+        workouts_planned = int(last_7d.get("workouts_planned") or 0)
+        meal_log_days = int(last_7d.get("meal_log_days") or 0)
+        if workouts_planned > workouts_done:
+            suggestions.append("You missed some workouts. Want me to add reminders or rebalance this week?")
+        if meal_log_days < 4:
+            suggestions.append("Meal logging is sparse this week. Set reminders for key meal windows?")
+        avg_target = last_7d.get("avg_target_kcal")
+        avg_intake = last_7d.get("avg_intake_kcal")
+        if avg_target is not None and avg_intake is not None:
+            delta = int(avg_intake) - int(avg_target)
+            if abs(delta) >= 150:
+                direction = "over" if delta > 0 else "under"
+                suggestions.append(
+                    f"Your intake trend is {abs(delta)} kcal/day {direction} target. Want a calorie adjustment?"
+                )
+
+    if not suggestions:
+        suggestions.append("You are in a solid spot. Want to keep the plan as-is or tweak anything?")
+    health_summary: Dict[str, Any] = {"days_with_health_data": 0, "avg_steps": 0, "avg_burn_kcal": 0}
+    try:
+        end_day = date.today()
+        start_day = end_day - timedelta(days=6)
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT date, steps, calories_burned, source
+                FROM health_activity
+                WHERE user_id = ? AND date >= ? AND date <= ? AND source = ?
+                ORDER BY date ASC
+                """,
+                (user_id, start_day.isoformat(), end_day.isoformat(), "apple_health"),
+            )
+            rows = cur.fetchall()
+        if rows:
+            steps_total = sum(int(row[1] or 0) for row in rows)
+            burn_total = sum(int(row[2] or 0) for row in rows)
+            day_count = len(rows)
+            health_summary = {
+                "days_with_health_data": day_count,
+                "avg_steps": int(steps_total / day_count),
+                "avg_burn_kcal": int(burn_total / day_count),
+            }
+            if health_summary["avg_steps"] < 5000:
+                suggestions.append("Apple Health shows lower daily movement. Want a step goal reminder added?")
+    except Exception:
+        pass
+
+    return {"status": status, "health_activity_summary": health_summary, "suggestions": suggestions}
+
+
 @app.get("/api/reminders", response_model=List[ReminderItemResponse])
 def get_reminders_api(user_id: int):
+    _ensure_daily_coach_checkin_reminder(user_id)
     with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2697,6 +3277,7 @@ def get_reminders_api(user_id: int):
 @app.get("/api/session/hydrate", response_model=SessionHydrationResponse)
 def hydrate_session(user_id: int, day: Optional[str] = None):
     target_day = day or date.today().isoformat()
+    _ensure_daily_coach_checkin_reminder(user_id)
     profile = _load_user_profile(user_id)
     progress = get_progress(user_id)
     daily_intake = get_daily_intake(user_id, target_day)
@@ -2895,7 +3476,13 @@ def complete_onboarding(payload: OnboardingCompletePayload):
             cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
             if payload.current_weight_kg is not None:
                 _upsert_daily_weight_checkin(user_id, float(payload.current_weight_kg), conn=conn)
+                reason = f"checkin_log:{date.today().isoformat()}"
+                if not _has_points_reason(user_id, reason):
+                    _award_points(user_id, 5, reason)
+                _apply_daily_checklist_completion_bonus(user_id, date.today().isoformat())
             conn.commit()
+    if payload.current_weight_kg is not None:
+        _invalidate_user_activity_cache(user_id, day=date.today().isoformat())
     _refresh_profile_cache(user_id)
     _generate_plan_for_user(
         user_id,

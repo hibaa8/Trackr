@@ -30,6 +30,50 @@ from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_ex
 from agent.db.connection import get_db_conn
 
 
+def _award_points(user_id: int, points: int, reason: str) -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO points (user_id, points, reason, created_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (user_id, points, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
+def _apply_daily_checklist_completion_bonus(user_id: int, target_day: str) -> None:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?", (user_id, start, end))
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?", (user_id, target_day))
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, target_day))
+        checkin_count = int((cur.fetchone() or [0])[0] or 0)
+        if meal_count < 3 or workout_count < 1 or checkin_count < 1:
+            return
+        reason = f"daily_checklist_complete:{target_day}"
+        cur.execute("SELECT 1 FROM points WHERE user_id = ? AND reason = ? LIMIT 1", (user_id, reason))
+        if cur.fetchone() is not None:
+            return
+        cur.execute(
+            "INSERT INTO points (user_id, points, reason, created_at) VALUES (?, ?, ?, ?)",
+            (user_id, 10, reason, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+
+
+def _has_points_reason(user_id: int, reason: str) -> bool:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM points WHERE user_id = ? AND reason = ? LIMIT 1", (user_id, reason))
+        return cur.fetchone() is not None
+
+
 def _workout_label_from_json(workout_json: Optional[str]) -> str:
     if not workout_json:
         return "Workout"
@@ -393,6 +437,11 @@ def _sync_checkins_to_db(user_id: int, checkins: List[Dict[str, Any]]) -> None:
                 ),
             )
         conn.commit()
+
+
+def _invalidate_checkins_cache(user_id: int) -> None:
+    _redis_delete(_draft_checkins_key(user_id))
+    _redis_delete(f"session_hydration:{user_id}")
 
 
 def _load_health_activity_draft(user_id: int) -> Dict[str, Any]:
@@ -1279,6 +1328,89 @@ def propose_plan_patch_with_llm(
     upcoming = [d for d in plan_days_sorted if d["date"] >= start_day]
     next_days = upcoming
 
+    # Deterministic fast-path for "skip next N day(s)" so the plan reliably updates.
+    lowered_request = user_request.lower()
+    skip_match = re.search(r"skip\s+(?:the\s+)?next\s+(\d+)\s+day", lowered_request)
+    word_to_num = {
+        "one": 1,
+        "two": 2,
+        "three": 3,
+        "four": 4,
+        "five": 5,
+        "six": 6,
+        "seven": 7,
+    }
+    skip_word_match = re.search(
+        r"skip\s+(?:the\s+)?next\s+(one|two|three|four|five|six|seven)\s+day",
+        lowered_request,
+    )
+    if skip_match:
+        skip_days = max(1, int(skip_match.group(1)))
+    elif skip_word_match:
+        skip_days = word_to_num.get(skip_word_match.group(1), 1)
+    else:
+        skip_days = 0
+    if skip_days > 0:
+        moved_workouts: List[str] = []
+        overrides: List[Dict[str, Any]] = []
+        for day in next_days[:skip_days]:
+            if not day.get("rest_day"):
+                moved_workouts.append(day.get("workout_plan") or "Workout")
+            overrides.append(
+                {
+                    "date": day["date"],
+                    "override_type": "pause",
+                    "workout_json": {"label": "Rest day"},
+                    "calorie_target": None,
+                    "calorie_delta": None,
+                }
+            )
+
+        # Reassign skipped workouts into existing rest days first to preserve end date.
+        for day in next_days[skip_days:]:
+            if not moved_workouts:
+                break
+            if day.get("rest_day"):
+                label = moved_workouts.pop(0)
+                overrides.append(
+                    {
+                        "date": day["date"],
+                        "override_type": "adjust",
+                        "workout_json": {"label": label},
+                        "calorie_target": None,
+                        "calorie_delta": None,
+                    }
+                )
+
+        new_end_date = None
+        if moved_workouts:
+            end_dt = _parse_iso_date(end_day)
+            if end_dt is not None:
+                new_end_date = (end_dt + timedelta(days=len(moved_workouts))).isoformat()
+
+        patch = {
+            "overrides": overrides,
+            "new_end_date": new_end_date,
+            "notes": (
+                "Auto-generated skip patch: paused requested days, moved missed workouts into remaining rest days, "
+                "and extended end date only for residual carryover."
+            ),
+        }
+        patch["_user_id"] = user_id
+        is_ok, errors = validate_patch(bundle, patch, as_of.isoformat())
+        sanitized_patch = {k: v for k, v in patch.items() if k != "_user_id"}
+        apply_result = None
+        if is_ok and apply:
+            apply_result = apply_plan_patch.func(user_id, sanitized_patch)
+        return json.dumps(
+            {
+                "applied": bool(apply and is_ok),
+                "validation_errors": errors,
+                "patch": sanitized_patch,
+                "apply_result": apply_result,
+            }
+        )
+
     status_raw = compute_plan_status.func(user_id, as_of_date=as_of.isoformat())
     status_summary = _compact_status_summary(status_raw)
 
@@ -1290,7 +1422,9 @@ def propose_plan_patch_with_llm(
     system_prompt = (
         "You are a plan patch generator. Return ONLY valid JSON with the schema:\n"
         '{"overrides":[{"date":"YYYY-MM-DD","override_type":"adjust","workout_json":{"label":"..."},"calorie_target":null,"calorie_delta":null}],"new_end_date":null,"notes":"..."}\n'
-        "Use only the dates provided. If no changes are needed, return overrides as an empty list. No markdown."
+        "Use only the dates provided. If no changes are needed, return overrides as an empty list. "
+        "If user asks to skip days, first try to reassign missed workouts within existing remaining days; "
+        "set new_end_date only if truly needed. No markdown."
     )
     human_prompt = (
         f"User request: {user_request}\n"
@@ -1758,6 +1892,33 @@ def apply_plan_patch(user_id: int, patch: Dict[str, Any]) -> str:
     if new_end_date:
         plan["end_date"] = new_end_date
     plan_days_by_date = {day.get("date"): day for day in plan_days if day.get("date")}
+
+    if new_end_date:
+        old_end = max((day.get("date") for day in plan_days if day.get("date")), default=None)
+        old_end_dt = _parse_iso_date(old_end)
+        new_end_dt = _parse_iso_date(new_end_date)
+        sorted_existing = sorted(plan_days, key=lambda d: d.get("date") or "")
+        cycle_length = max(1, min(7, len(sorted_existing)))
+        if old_end_dt and new_end_dt and sorted_existing:
+            offset = 1
+            while old_end_dt + timedelta(days=offset) <= new_end_dt:
+                new_day = old_end_dt + timedelta(days=offset)
+                date_key = new_day.isoformat()
+                if date_key in plan_days_by_date:
+                    offset += 1
+                    continue
+                template = sorted_existing[((new_day - _coerce_to_date(plan.get("start_date"))).days) % cycle_length]
+                plan_days_by_date[date_key] = {
+                    "date": date_key,
+                    "workout_plan": template.get("workout_plan"),
+                    "workout_raw": template.get("workout_raw"),
+                    "rest_day": template.get("rest_day", 0),
+                    "calorie_target": template.get("calorie_target"),
+                    "protein_g": template.get("protein_g"),
+                    "carbs_g": template.get("carbs_g"),
+                    "fat_g": template.get("fat_g"),
+                }
+                offset += 1
     for override in overrides:
         day = plan_days_by_date.get(override.get("date"))
         if not day:
@@ -1945,6 +2106,11 @@ def log_checkin(
     _redis_set_json(_draft_checkins_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
     SESSION_CACHE.setdefault(user_id, {})["checkins"] = draft
     _sync_checkins_to_db(user_id, checkins)
+    _invalidate_checkins_cache(user_id)
+    reason = f"checkin_log:{checkin_date}"
+    if not _has_points_reason(user_id, reason):
+        _award_points(user_id, 5, reason)
+    _apply_daily_checklist_completion_bonus(user_id, checkin_date)
     if checkin_date == date.today().isoformat():
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -1976,4 +2142,5 @@ def delete_checkin(user_id: int, checkin_date: str) -> str:
         cur = conn.cursor()
         cur.execute("DELETE FROM checkins WHERE user_id = ? AND checkin_date = ?", (user_id, checkin_date))
         conn.commit()
+    _invalidate_checkins_cache(user_id)
     return "Check-in deleted."

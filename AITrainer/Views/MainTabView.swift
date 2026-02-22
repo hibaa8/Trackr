@@ -208,6 +208,22 @@ struct ProgressPageView: View {
                     .foregroundColor(.white)
 
                 Spacer()
+
+                NavigationLink(
+                    destination: NetCaloriesDetailView(
+                        data: netCaloriesSeries,
+                        periodLabel: periods[selectedPeriod]
+                    )
+                ) {
+                    HStack(spacing: 6) {
+                        Text("Net Details")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
+                }
             }
 
             // Detailed bar chart matching mockup
@@ -629,6 +645,34 @@ struct ProgressPageView: View {
         return "\(latest) kcal"
     }
 
+    private var netCaloriesSeries: [(day: String, intake: Int, burned: Int, net: Int)] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let days = (0..<selectedPeriodDayWindow).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+        var intakeByDay: [String: Int] = [:]
+        var burnedByDay: [String: Int] = [:]
+
+        for meal in progress?.meals ?? [] {
+            guard let loggedAt = meal.logged_at else { continue }
+            let dayKey = String(loggedAt.prefix(10))
+            intakeByDay[dayKey, default: 0] += meal.calories ?? 0
+        }
+
+        for workout in progress?.workouts ?? [] {
+            guard workout.completed == true, let rawDate = workout.date else { continue }
+            let dayKey = String(rawDate.prefix(10))
+            burnedByDay[dayKey, default: 0] += workout.calories_burned ?? 0
+        }
+
+        return days.reversed().map { day in
+            let key = formatter.string(from: day)
+            let intake = intakeByDay[key, default: 0]
+            let burned = burnedByDay[key, default: 0]
+            return (day: key, intake: intake, burned: burned, net: intake - burned)
+        }
+    }
+
     private var workoutCompletionRatio: Double {
         let workouts = progress?.workouts ?? []
         let calendar = Calendar.current
@@ -731,6 +775,208 @@ struct WorkoutLogsHistoryView: View {
     }
 }
 
+private struct NetCaloriesDetailView: View {
+    let data: [(day: String, intake: Int, burned: Int, net: Int)]
+    let periodLabel: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Net Calories")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("\(periodLabel) view • intake - burned")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.68))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(Array(data.enumerated()), id: \.offset) { _, item in
+                            HStack {
+                                Text(item.day)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.82))
+                                Spacer()
+                                Text("+\(item.intake)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.orange)
+                                Text("-\(item.burned)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.green)
+                                Text("\(item.net) kcal")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(item.net <= 0 ? .green : .white)
+                                    .frame(minWidth: 80, alignment: .trailing)
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.white.opacity(0.08))
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                }
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .navigationBarHidden(true)
+    }
+}
+
+private struct HealthDataImpactView: View {
+    let userId: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var response: HealthActivityImpactResponse?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var cancellables = Set<AnyCancellable>()
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if isLoading {
+                    ProgressView("Loading Apple Health impact...")
+                        .tint(.white)
+                        .foregroundColor(.white)
+                } else if let errorMessage {
+                    VStack(spacing: 12) {
+                        Text("Could not load data")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(errorMessage)
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.75))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(20)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Health Data & Plan Impact")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundColor(.white)
+                            Text("Daily view of Apple Health metrics versus plan targets.")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.72))
+
+                            ForEach(response?.items ?? []) { item in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(formatDay(item.date))
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    HStack {
+                                        Text("Steps: \(item.steps)")
+                                        Spacer()
+                                        Text("Burn: \(item.health_calories_burned) kcal")
+                                    }
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.86))
+
+                                    HStack {
+                                        Text("Exercise: \(item.active_minutes) min")
+                                        Spacer()
+                                        if let intakeTarget = item.meal_target {
+                                            Text("Meals: \(item.meal_intake)/\(intakeTarget) kcal")
+                                        } else {
+                                            Text("Meals: \(item.meal_intake) kcal")
+                                        }
+                                    }
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.86))
+
+                                    if let expected = item.workout_expected_burn {
+                                        Text("Calorie burn: actual \(item.health_calories_burned) / planned \(expected) kcal")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.78))
+                                    } else {
+                                        Text("Calorie burn: actual \(item.health_calories_burned) kcal")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.78))
+                                    }
+                                    if !item.workouts_summary.isEmpty {
+                                        Text("Workout source: \(item.workouts_summary)")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.white.opacity(0.72))
+                                    }
+                                }
+                                .padding(14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Refresh") { load() }
+                }
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private func load() {
+        isLoading = true
+        errorMessage = nil
+        APIService.shared.getHealthActivityImpact(userId: userId, days: 7)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    isLoading = false
+                    if case .failure(let error) = completion {
+                        errorMessage = String(describing: error)
+                    }
+                },
+                receiveValue: { payload in
+                    response = payload
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func formatDay(_ value: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        guard let date = formatter.date(from: value) else { return value }
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter.string(from: date)
+    }
+
+}
+
 private struct WorkoutLogSmallCard: View {
     let workout: ProgressWorkoutResponse
 
@@ -795,18 +1041,21 @@ struct SettingsPageView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var notificationManager: NotificationManager
+    @EnvironmentObject private var healthKitManager: HealthKitManager
     @Environment(\.openURL) private var openURL
     @AppStorage("enableNotifications") private var notificationsEnabled = true
     @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
-    @State private var healthSyncEnabled = false
+    @AppStorage("enableHealthSync") private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
     @State private var showManagePlan = false
     @State private var showHelp = false
     @State private var showPrivacyPolicy = false
     @State private var showEditProfile = false
     @State private var showCoachSelection = false
+    @State private var showHealthImpact = false
     @State private var isCreatingCheckout = false
     @State private var billingErrorMessage: String?
+    @State private var healthSyncMessage: String?
     @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
@@ -851,6 +1100,13 @@ struct SettingsPageView: View {
                 syncReminderNotifications(userId: userId)
             } else {
                 notificationManager.cancelReminderNotifications()
+            }
+        }
+        .onChange(of: healthSyncEnabled) { _, isEnabled in
+            guard let userId = authManager.effectiveUserId else { return }
+            if isEnabled {
+                healthKitManager.requestAuthorization()
+                syncHealthDataFromHealthKit(userId: userId, days: 7)
             }
         }
         .sheet(isPresented: $showManagePlan) {
@@ -902,6 +1158,11 @@ struct SettingsPageView: View {
                 privacyPolicyView
             }
         }
+        .sheet(isPresented: $showHealthImpact) {
+            if let userId = authManager.effectiveUserId {
+                HealthDataImpactView(userId: userId)
+            }
+        }
         .alert(
             "Billing Error",
             isPresented: Binding(
@@ -913,6 +1174,19 @@ struct SettingsPageView: View {
             },
             message: {
                 Text(billingErrorMessage ?? "Unable to open checkout.")
+            }
+        )
+        .alert(
+            "Apple Health Sync",
+            isPresented: Binding(
+                get: { healthSyncMessage != nil },
+                set: { if !$0 { healthSyncMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { healthSyncMessage = nil }
+            },
+            message: {
+                Text(healthSyncMessage ?? "")
             }
         )
     }
@@ -1138,6 +1412,9 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
+            SettingsRow(title: "Health Data & Plan Impact") {
+                showHealthImpact = true
+            }
             SettingsRow(
                 title: "Manage Plan",
                 value: selectedPlanTier == "premium" ? "$14.99 Premium" : "Free",
@@ -1157,6 +1434,45 @@ struct SettingsPageView: View {
             SettingsRow(title: "Log Out", isDestructive: true) {
                 authManager.signOut()
             }
+        }
+    }
+
+    private func syncHealthDataFromHealthKit(userId: Int, days: Int) {
+        healthKitManager.collectDailySnapshots(lastDays: days) { snapshots in
+            guard !snapshots.isEmpty else {
+                healthSyncMessage = "No Apple Health data available yet."
+                return
+            }
+
+            let publishers = snapshots.map { snapshot in
+                APIService.shared.logHealthActivity(
+                    HealthActivityLogRequest(
+                        user_id: userId,
+                        date: snapshot.date,
+                        steps: snapshot.steps,
+                        calories_burned: snapshot.caloriesBurned,
+                        active_minutes: snapshot.activeMinutes,
+                        workouts_summary: snapshot.workoutsSummary,
+                        source: "apple_health"
+                    )
+                )
+                .map { _ in true }
+                .replaceError(with: false)
+                .eraseToAnyPublisher()
+            }
+
+            Publishers.MergeMany(publishers)
+                .collect()
+                .receive(on: DispatchQueue.main)
+                .sink { results in
+                    let successCount = results.filter { $0 }.count
+                    if successCount > 0 {
+                        healthSyncMessage = "Synced \(successCount)/\(snapshots.count) day(s) from Apple Health."
+                    } else {
+                        healthSyncMessage = "Sync failed. Please try again."
+                    }
+                }
+                .store(in: &cancellables)
         }
     }
 

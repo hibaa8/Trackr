@@ -9,6 +9,7 @@ struct RecipeFinderView: View {
     @State private var ingredientsText = ""
     @State private var selectedCuisine = "Cuisine"
     @State private var selectedFlavor = "Flavor"
+    @State private var selectedPrepTime = "Prep Time"
     @State private var selectedDietary: Set<String> = []
     @State private var photoItem: PhotosPickerItem?
     @State private var photoData: Data?
@@ -16,6 +17,7 @@ struct RecipeFinderView: View {
     
     let cuisineOptions = ["Any", "Italian", "Mexican", "Asian", "American", "Mediterranean", "Indian"]
     let flavorOptions = ["Any", "Spicy", "Sweet", "Savory", "Tangy", "Mild"]
+    let prepTimeOptions = ["Any", "Under 15 min", "15-30 min", "30-45 min", "45+ min"]
     let dietaryOptions = ["Vegetarian", "Vegan", "Gluten-Free", "Low Carb", "High Protein"]
     
     enum SearchMode: String, CaseIterable {
@@ -27,9 +29,9 @@ struct RecipeFinderView: View {
         NavigationView {
             ZStack {
                 LinearGradient(
-                    colors: [Color.backgroundGradientStart, Color.backgroundGradientEnd, Color.white.opacity(0.9)],
-                    startPoint: .topLeading,
-                    endPoint: .bottomTrailing
+                    colors: [Color.black, Color(red: 0.07, green: 0.08, blue: 0.13)],
+                    startPoint: .top,
+                    endPoint: .bottom
                 )
                 .ignoresSafeArea()
                 
@@ -68,16 +70,16 @@ struct RecipeFinderView: View {
             VStack(alignment: .leading, spacing: 4) {
                 Text("Recipe Finder")
                     .font(.system(size: 28, weight: .bold))
-                    .foregroundColor(.textPrimary)
-                Text("Discover healthy meals")
+                    .foregroundColor(.white)
+                Text("Plan meals with your coach")
                     .font(.system(size: 15))
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.75))
             }
             Spacer()
             Button(action: { dismiss() }) {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 28))
-                    .foregroundColor(.gray.opacity(0.6))
+                        .foregroundColor(.white.opacity(0.7))
             }
         }
     }
@@ -88,10 +90,10 @@ struct RecipeFinderView: View {
                 Button(action: { searchMode = mode }) {
                     Text(mode.rawValue)
                         .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(searchMode == mode ? .white : .textSecondary)
+                        .foregroundColor(searchMode == mode ? .white : .white.opacity(0.7))
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background(searchMode == mode ? Color.blue : Color.white.opacity(0.5))
+                        .background(searchMode == mode ? Color.blue : Color.white.opacity(0.12))
                         .cornerRadius(12)
                 }
             }
@@ -103,10 +105,15 @@ struct RecipeFinderView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Ingredients")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
                 TextField("e.g. chicken, rice, broccoli", text: $ingredientsText)
                     .padding(14)
-                    .background(Color.white)
+                    .foregroundColor(.white)
+                    .background(Color.white.opacity(0.12))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12)
+                            .stroke(Color.white.opacity(0.18), lineWidth: 1)
+                    )
                     .cornerRadius(12)
             }
             
@@ -142,11 +149,16 @@ struct RecipeFinderView: View {
                     selectedFlavor = $0
                 }
             }
+            HStack(spacing: 12) {
+                FilterMenu(title: selectedPrepTime, icon: "⏱", options: prepTimeOptions) {
+                    selectedPrepTime = $0
+                }
+            }
 
             VStack(alignment: .leading, spacing: 8) {
                 Text("Dietary Preferences")
                     .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 8) {
                         ForEach(dietaryOptions, id: \.self) { option in
@@ -189,7 +201,11 @@ struct RecipeFinderView: View {
             }
         }
         .padding(16)
-        .background(Color.white.opacity(0.4))
+        .background(Color.white.opacity(0.08))
+        .overlay(
+            RoundedRectangle(cornerRadius: 16)
+                .stroke(Color.white.opacity(0.12), lineWidth: 1)
+        )
         .cornerRadius(16)
     }
     
@@ -208,7 +224,7 @@ struct RecipeFinderView: View {
             VStack(alignment: .leading, spacing: 16) {
             Text("\(viewModel.recipes.count) Recipes Found")
                 .font(.system(size: 18, weight: .bold))
-                .foregroundColor(.textPrimary)
+                .foregroundColor(.white)
             
             ForEach(viewModel.recipes) { recipe in
                 RecipeCard(recipe: recipe) {
@@ -219,9 +235,10 @@ struct RecipeFinderView: View {
     }
     
     private func searchRecipes() {
+        let query = ingredientsWithPrepConstraint()
         if searchMode == .smart {
             viewModel.generateRecipes(
-                ingredients: ingredientsText,
+                ingredients: query,
                 cuisine: (selectedCuisine == "Any" || selectedCuisine == "Cuisine") ? nil : selectedCuisine,
                 flavor: (selectedFlavor == "Any" || selectedFlavor == "Flavor") ? nil : selectedFlavor,
                 dietary: Array(selectedDietary),
@@ -229,12 +246,23 @@ struct RecipeFinderView: View {
             )
         } else {
             viewModel.searchOnlineRecipes(
-                ingredients: ingredientsText,
+                ingredients: query,
                 cuisine: (selectedCuisine == "Any" || selectedCuisine == "Cuisine") ? nil : selectedCuisine,
                 flavor: (selectedFlavor == "Any" || selectedFlavor == "Flavor") ? nil : selectedFlavor,
                 dietary: Array(selectedDietary)
             )
         }
+    }
+
+    private func ingredientsWithPrepConstraint() -> String {
+        let base = ingredientsText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard selectedPrepTime != "Prep Time", selectedPrepTime != "Any" else {
+            return base
+        }
+        if base.isEmpty {
+            return "meal with \(selectedPrepTime.lowercased()) prep"
+        }
+        return "\(base), \(selectedPrepTime.lowercased()) prep"
     }
 }
 
@@ -257,14 +285,14 @@ struct FilterMenu: View {
                     .font(.system(size: 14))
                 Text(title)
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.82))
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .semibold))
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.75))
             }
             .padding(.horizontal, 12)
             .padding(.vertical, 8)
-            .background(Color.white)
+            .background(Color.white.opacity(0.14))
             .cornerRadius(20)
         }
     }
@@ -279,10 +307,10 @@ struct FilterChip: View {
         Button(action: action) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(isSelected ? .white : .textSecondary)
+                .foregroundColor(isSelected ? .white : .white.opacity(0.78))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 8)
-                .background(isSelected ? Color.blue : Color.white)
+                .background(isSelected ? Color.blue : Color.white.opacity(0.14))
                 .cornerRadius(18)
         }
     }
@@ -301,12 +329,12 @@ struct RecipeCard: View {
             VStack(alignment: .leading, spacing: 12) {
                 Text(recipe.name)
                     .font(.system(size: 18, weight: .bold))
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
                     .lineLimit(2)
                 
                 Text(recipe.summary)
                     .font(.system(size: 14))
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.82))
                     .lineLimit(3)
                 
                 HStack(spacing: 16) {
@@ -348,7 +376,13 @@ struct RecipeCard: View {
             }
             .padding(16)
         }
-        .background(Color.white)
+        .background(
+            LinearGradient(
+                colors: [Color.black.opacity(0.86), Color(red: 0.09, green: 0.16, blue: 0.11)],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+        )
         .clipShape(RoundedRectangle(cornerRadius: 16))
         .shadow(color: Color.black.opacity(0.06), radius: 8, x: 0, y: 2)
     }
@@ -504,6 +538,23 @@ struct RecipeDetailView: View {
                                 .foregroundColor(.textSecondary)
                         }
                     }
+
+                    if let links = recipe.sourceLinks, !links.isEmpty {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text("Inspired by")
+                                .font(.system(size: 16, weight: .semibold))
+                            ForEach(links.prefix(2), id: \.self) { raw in
+                                if let url = URL(string: raw) {
+                                    Link(destination: url) {
+                                        Text(raw)
+                                            .font(.system(size: 13, weight: .medium))
+                                            .foregroundColor(.blue)
+                                            .underline()
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
                 .padding(20)
             }
@@ -526,6 +577,7 @@ struct RecipeItem: Identifiable, Equatable {
     let ingredients: [String]?
     let steps: [String]?
     let tags: [String]?
+    let sourceLinks: [String]?
 
     var hasDetails: Bool {
         // Always show details button for AI-generated recipes (they have ingredients/steps)
@@ -625,7 +677,7 @@ class RecipeFinderViewModel: ObservableObject {
                         
                         return RecipeItem(
                             id: item.id,
-                            name: item.name,
+                            name: "Trainer Suggestion",
                             summary: item.summary,
                             calories: item.calories,
                             protein: item.protein_g,
@@ -635,7 +687,8 @@ class RecipeFinderViewModel: ObservableObject {
                             url: nil,
                             ingredients: item.ingredients,
                             steps: item.steps,
-                            tags: item.tags
+                            tags: item.tags,
+                            sourceLinks: item.source_links
                         )
                     }
                 } catch {
@@ -689,7 +742,8 @@ class RecipeFinderViewModel: ObservableObject {
                             url: item.url,
                             ingredients: nil,
                             steps: nil,
-                            tags: nil
+                            tags: nil,
+                            sourceLinks: nil
                         )
                     }
                 } catch {

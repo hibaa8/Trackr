@@ -70,6 +70,7 @@ struct RecipeSuggestionItem: Codable, Identifiable {
     let ingredients: [String]
     let steps: [String]
     let tags: [String]
+    let source_links: [String]?
 }
 
 struct RecipeSuggestionResponse: Codable {
@@ -195,11 +196,23 @@ struct ProgressWorkoutResponse: Codable {
 }
 
 struct ProgressResponse: Codable {
+    let daily_checklist: DailyChecklistStatusResponse?
     let checkins: [ProgressCheckinResponse]
     let checkpoints: [PlanCheckpointResponse]
     let plan: PlanSummaryResponse?
     let meals: [ProgressMealResponse]
     let workouts: [ProgressWorkoutResponse]
+}
+
+struct DailyChecklistStatusResponse: Codable {
+    let day: String
+    let meals_logged: Int
+    let workouts_logged: Int
+    let checkin_done: Bool
+    let meals_done: Bool
+    let workout_done: Bool
+    let checklist_done: Bool
+    let xp_awarded: Int
 }
 
 struct CoachSuggestionResponse: Codable {
@@ -235,6 +248,19 @@ struct GamificationResponse: Codable {
     let share_text: String
 }
 
+struct AppOpenStreakResponse: Codable {
+    let freeze_prompt_required: Bool
+    let inactivity_hours: Double
+    let streak_reset: Bool
+    let message: String
+    let gamification: GamificationResponse
+}
+
+struct StreakDecisionRequest: Codable {
+    let user_id: Int
+    let use_freeze: Bool
+}
+
 struct SessionHydrationResponse: Codable {
     let user_id: Int
     let date: String
@@ -244,6 +270,42 @@ struct SessionHydrationResponse: Codable {
     let daily_intake: DailyIntakeResponse
     let gamification: GamificationResponse
     let coach_suggestion: CoachSuggestionResponse?
+}
+
+struct HealthActivityLogRequest: Codable {
+    let user_id: Int
+    let date: String
+    let steps: Int
+    let calories_burned: Int
+    let active_minutes: Int
+    let workouts_summary: String
+    let source: String
+}
+
+struct HealthActivityLogResponse: Codable {
+    let ok: Bool
+    let date: String
+}
+
+struct HealthActivityImpactItemResponse: Codable, Identifiable {
+    var id: String { date }
+    let date: String
+    let steps: Int
+    let health_calories_burned: Int
+    let active_minutes: Int
+    let workouts_summary: String
+    let source: String
+    let meal_intake: Int
+    let meal_target: Int?
+    let workout_expected_burn: Int?
+    let burn_delta: Int?
+    let intake_delta: Int?
+}
+
+struct HealthActivityImpactResponse: Codable {
+    let start_day: String
+    let end_day: String
+    let items: [HealthActivityImpactItemResponse]
 }
 
 struct BillingCheckoutSessionResponse: Codable {
