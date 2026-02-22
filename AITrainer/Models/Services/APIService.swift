@@ -453,6 +453,10 @@ class APIService {
         return request(endpoint: endpoint)
     }
 
+    func getLocalWorkoutVideos() -> AnyPublisher<[LocalWorkoutVideoResponse], APIError> {
+        return request(endpoint: "/api/workout-local-videos")
+    }
+
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
         struct UseFreezePayload: Codable {
             let user_id: Int

@@ -328,6 +328,16 @@ struct HealthActivityImpactResponse: Codable {
     let items: [HealthActivityImpactItemResponse]
 }
 
+struct LocalWorkoutVideoResponse: Codable, Hashable {
+    let key: String
+    let base_filename: String
+    let base_url: String
+    let base_local_path: String?
+    let reps_filename: String?
+    let reps_url: String?
+    let reps_local_path: String?
+}
+
 struct BillingCheckoutSessionResponse: Codable {
     let checkout_url: String
     let session_id: String

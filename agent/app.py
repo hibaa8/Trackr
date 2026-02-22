@@ -36,9 +36,9 @@ import urllib.parse
 import urllib.request
 import stripe
 
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from googleapiclient.discovery import build
 import google.generativeai as genai
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -1515,6 +1515,16 @@ class CoachChangeResponse(BaseModel):
     retry_after_days: Optional[int] = None
 
 
+class LocalWorkoutVideoResponse(BaseModel):
+    key: str
+    base_filename: str
+    base_url: str
+    base_local_path: Optional[str] = None
+    reps_filename: Optional[str] = None
+    reps_url: Optional[str] = None
+    reps_local_path: Optional[str] = None
+
+
 class ProfileUpdateRequest(BaseModel):
     user_id: int
     name: Optional[str] = None
@@ -1841,6 +1851,100 @@ def _places_request(path: str, params: Dict[str, str]) -> Dict:
 def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "ai-trainer-youtube-api"}
+
+
+def _local_workout_videos_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "videos")
+
+
+def _safe_local_video_path(file_name: str) -> str:
+    videos_dir = os.path.abspath(_local_workout_videos_dir())
+    candidate = os.path.abspath(os.path.join(videos_dir, file_name))
+    if not candidate.startswith(videos_dir + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid video filename")
+    return candidate
+
+
+def _group_local_workout_videos() -> Dict[str, Dict[str, str]]:
+    videos_dir = _local_workout_videos_dir()
+    if not os.path.isdir(videos_dir):
+        return {}
+    grouped: Dict[str, Dict[str, str]] = {}
+    allowed_ext = {".mp4", ".mov", ".m4v"}
+
+    def _normalized_key(raw_stem: str) -> str:
+        lowered = raw_stem.strip().lower()
+        for suffix in ("_intro", "_reps", "-intro", "-reps", " intro", " reps"):
+            if lowered.endswith(suffix):
+                lowered = lowered[: -len(suffix)]
+                break
+        lowered = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+        return lowered or "video"
+
+    for entry in os.listdir(videos_dir):
+        path = os.path.join(videos_dir, entry)
+        if not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(entry)
+        if ext.lower() not in allowed_ext:
+            continue
+        stem_lower = stem.lower().strip()
+        is_intro = stem_lower.endswith("_intro") or stem_lower.endswith("-intro") or stem_lower.endswith(" intro")
+        is_reps = stem_lower.endswith("_reps") or stem_lower.endswith("-reps") or stem_lower.endswith(" reps")
+        key = _normalized_key(stem)
+        slot = grouped.setdefault(key, {})
+        if is_intro:
+            slot["base"] = entry
+        elif is_reps:
+            slot["reps"] = entry
+        else:
+            # Fallback for files that don't carry explicit suffix.
+            if "base" not in slot:
+                slot["base"] = entry
+            elif "reps" not in slot:
+                slot["reps"] = entry
+    return {k: v for k, v in grouped.items() if v.get("base")}
+
+
+@app.get("/api/workout-local-videos", response_model=List[LocalWorkoutVideoResponse])
+def get_local_workout_videos(request: Request):
+    grouped = _group_local_workout_videos()
+    base_url = str(request.base_url).rstrip("/")
+    rows: List[LocalWorkoutVideoResponse] = []
+    for key in sorted(grouped.keys()):
+        files = grouped[key]
+        base_name = files.get("base")
+        reps_name = files.get("reps")
+        if not base_name:
+            continue
+        rows.append(
+            LocalWorkoutVideoResponse(
+                key=key,
+                base_filename=base_name,
+                base_url=f"{base_url}/api/workout-local-videos/file/{urllib.parse.quote(base_name)}",
+                base_local_path=os.path.abspath(os.path.join(_local_workout_videos_dir(), base_name)),
+                reps_filename=reps_name,
+                reps_url=(
+                    f"{base_url}/api/workout-local-videos/file/{urllib.parse.quote(reps_name)}"
+                    if reps_name
+                    else None
+                ),
+                reps_local_path=(
+                    os.path.abspath(os.path.join(_local_workout_videos_dir(), reps_name))
+                    if reps_name
+                    else None
+                ),
+            )
+        )
+    return rows
+
+
+@app.get("/api/workout-local-videos/file/{file_name:path}")
+def get_local_workout_video_file(file_name: str):
+    full_path = _safe_local_video_path(file_name)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Workout video file not found")
+    return FileResponse(full_path, media_type="video/mp4", filename=os.path.basename(full_path))
 
 
 @app.get("/categories")

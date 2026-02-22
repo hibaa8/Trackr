@@ -1,6 +1,7 @@
 import SwiftUI
 import Combine
 import AVFoundation
+import AVKit
 
 struct TodayPlanDetailView: View {
     @Environment(\.dismiss) private var dismiss
@@ -327,10 +328,10 @@ struct TodayPlanDetailView: View {
     }
 
     private func startGuidedWorkout(from details: [String], title: String) {
-        let parsed = parseGuidedExercises(from: details)
-        guard !parsed.isEmpty else {
-            showLogWorkout = true
-            return
+        var parsed = parseGuidedExercises(from: details)
+        if parsed.isEmpty {
+            let fallbackName = title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Full Body Workout" : title
+            parsed = [GuidedExercise(name: fallbackName, setsReps: "3x8-12", rpe: "RPE7")]
         }
         let dayKey = isoDateFormatter.string(from: selectedDate)
         pendingStartPayload = (title: title, exercises: parsed, dayKey: dayKey)
@@ -423,12 +424,12 @@ private struct GuidedWorkoutPlayerView: View {
     @State private var isPreparing = true
     @State private var isLogging = false
     @State private var tips: [String] = []
-    @State private var speechSynth = AVSpeechSynthesizer()
-    @State private var lastSpokenIndex: Int?
     @State private var showLoggedToast = false
-    @AppStorage("coachVoicePreference") private var coachVoicePreference = ""
     @State private var beatsPlayer: AVAudioPlayer?
     @State private var activeBeatStepIndex: Int?
+    @State private var localVideoCatalog: [LocalWorkoutVideoResponse] = []
+    @State private var assignedVideoByStepIndex: [Int: LocalWorkoutVideoResponse] = [:]
+    @StateObject private var videoPlayback = GuidedWorkoutVideoPlayback()
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -453,13 +454,19 @@ private struct GuidedWorkoutPlayerView: View {
         .onAppear {
             initializeState()
             configureAudioSession()
+            loadLocalVideoCatalog()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 isPreparing = false
-                speakStepTipIfNeeded()
+                playCurrentStepVideo()
             }
         }
         .onChange(of: currentIndex) { _, _ in
-            speakStepTipIfNeeded()
+            playCurrentStepVideo()
+        }
+        .onChange(of: isPreparing) { _, preparing in
+            if !preparing {
+                playCurrentStepVideo()
+            }
         }
         .onReceive(timer) { _ in
             guard !isPaused, !isPreparing, !isLogging else { return }
@@ -468,23 +475,28 @@ private struct GuidedWorkoutPlayerView: View {
         .onChange(of: isPaused) { _, paused in
             if paused {
                 beatsPlayer?.pause()
+                videoPlayback.pause()
             } else if let beatsPlayer {
                 beatsPlayer.play()
+                videoPlayback.play()
             } else {
-                scheduleBeatsAfterCoachSpeech(forStepIndex: currentIndex)
+                videoPlayback.play()
             }
         }
         .onDisappear {
-            speechSynth.stopSpeaking(at: .immediate)
             stopBeats()
+            videoPlayback.stop()
         }
     }
 
     private var steps: [GuidedExercise] {
+        let sourceExercises = exercises.isEmpty
+            ? [GuidedExercise(name: workoutTitle.isEmpty ? "Full Body Workout" : workoutTitle, setsReps: "3x8-12", rpe: "RPE7")]
+            : exercises
         var all: [GuidedExercise] = []
-        for idx in exercises.indices {
-            all.append(exercises[idx])
-            if idx < exercises.count - 1 {
+        for idx in sourceExercises.indices {
+            all.append(sourceExercises[idx])
+            if idx < sourceExercises.count - 1 {
                 all.append(GuidedExercise(name: "Rest", setsReps: "60-90 sec", rpe: "Recovery"))
             }
         }
@@ -500,17 +512,8 @@ private struct GuidedWorkoutPlayerView: View {
 
     @ViewBuilder
     private var backgroundLayer: some View {
-        if let clip = localVideoClip(for: currentStep.name) {
-            YouTubePlayerView(
-                videoId: clip.videoId,
-                autoplay: true,
-                muted: true,
-                loopPlayback: true,
-                showControls: false,
-                startSeconds: clip.startSeconds,
-                endSeconds: clip.endSeconds,
-                onError: nil
-            )
+        if let player = videoPlayback.player {
+            GuidedVideoLayerView(player: player)
                 .ignoresSafeArea()
                 .clipped()
         } else {
@@ -530,7 +533,7 @@ private struct GuidedWorkoutPlayerView: View {
                     .font(.system(size: 26, weight: .bold))
                     .foregroundColor(.white)
                 Spacer()
-                Button(isPaused ? "Resume" : "Pause") {
+                Button(isPaused ? "Resume Workout" : "Pause Workout") {
                     isPaused.toggle()
                     saveProgress()
                 }
@@ -561,18 +564,6 @@ private struct GuidedWorkoutPlayerView: View {
                     .foregroundColor(.white.opacity(0.72))
 
                 HStack(spacing: 10) {
-                    Button("Pause & Exit") {
-                        isPaused = true
-                        saveProgress()
-                        dismiss()
-                    }
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white.opacity(0.95))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(Color.white.opacity(0.14))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-
                     Button("Complete Workout") {
                         finishWorkout()
                     }
@@ -583,7 +574,7 @@ private struct GuidedWorkoutPlayerView: View {
                     .background(Color.green.opacity(0.9))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
-                    Button(currentIndex >= steps.count - 1 ? "Finish" : "Next") {
+                    Button("Next") {
                         goNext()
                     }
                     .font(.system(size: 14, weight: .semibold))
@@ -592,6 +583,8 @@ private struct GuidedWorkoutPlayerView: View {
                     .padding(.vertical, 10)
                     .background(Color.blue)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .disabled(currentIndex >= steps.count - 1)
+                    .opacity(currentIndex >= steps.count - 1 ? 0.45 : 1.0)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -689,6 +682,7 @@ private struct GuidedWorkoutPlayerView: View {
         isLogging = true
         isPaused = true
         stopBeats()
+        videoPlayback.stop()
         let summary = exercises.map { "\($0.name) \($0.setsReps) \($0.rpe)" }.joined(separator: ", ")
         guard let userId else {
             onSaveState(nil)
@@ -717,64 +711,90 @@ private struct GuidedWorkoutPlayerView: View {
         }
     }
 
-    private struct GuidedVideoClip {
-        let videoId: String
-        let startSeconds: Int
-        let endSeconds: Int?
+    private func loadLocalVideoCatalog() {
+        APIService.shared.getLocalWorkoutVideos()
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in
+                    assignVideosToStepsIfNeeded()
+                },
+                receiveValue: { videos in
+                    localVideoCatalog = videos
+                    assignVideosToStepsIfNeeded()
+                    playCurrentStepVideo()
+                }
+            )
+            .store(in: &videoPlayback.cancellables)
     }
 
-    private func localVideoClip(for exercise: String) -> GuidedVideoClip? {
-        let lower = exercise.lowercased()
-        if lower.contains("rest") { return GuidedVideoClip(videoId: "v7AYKMP6rOE", startSeconds: 40, endSeconds: 70) }
-        if lower.contains("squat") { return GuidedVideoClip(videoId: "YaXPRqUwItQ", startSeconds: 15, endSeconds: 45) }
-        if lower.contains("bench") || lower.contains("chest press") { return GuidedVideoClip(videoId: "rT7DgCr-3pg", startSeconds: 8, endSeconds: 36) }
-        if lower.contains("row") { return GuidedVideoClip(videoId: "vT2GjY_Umpw", startSeconds: 22, endSeconds: 52) }
-        if lower.contains("deadlift") || lower.contains("rdl") { return GuidedVideoClip(videoId: "op9kVnSso6Q", startSeconds: 12, endSeconds: 44) }
-        if lower.contains("lunge") { return GuidedVideoClip(videoId: "QOVaHwm-Q6U", startSeconds: 10, endSeconds: 40) }
-        if lower.contains("overhead") || lower.contains("ohp") || lower.contains("shoulder press") { return GuidedVideoClip(videoId: "2yjwXTZQDDI", startSeconds: 14, endSeconds: 46) }
-        if lower.contains("pull") || lower.contains("lat") { return GuidedVideoClip(videoId: "CAwf7n6Luuc", startSeconds: 15, endSeconds: 46) }
-        if lower.contains("plank") { return GuidedVideoClip(videoId: "ASdvN_XEl_c", startSeconds: 7, endSeconds: 37) }
-        if lower.contains("run") || lower.contains("cardio") { return GuidedVideoClip(videoId: "ml6cT4AZdqI", startSeconds: 18, endSeconds: 48) }
-        return nil
+    private func assignVideosToStepsIfNeeded() {
+        guard assignedVideoByStepIndex.isEmpty else { return }
+        guard !localVideoCatalog.isEmpty else { return }
+        for idx in steps.indices {
+            let name = steps[idx].name
+            if let matched = findBestMatchVideo(for: name) {
+                assignedVideoByStepIndex[idx] = matched
+                continue
+            }
+            assignedVideoByStepIndex[idx] = localVideoCatalog.randomElement()
+        }
     }
 
-    private func speakStepTipIfNeeded() {
-        guard !isPreparing, !isLogging else { return }
-        guard lastSpokenIndex != currentIndex else { return }
-        stopBeats()
-        speechSynth.stopSpeaking(at: .immediate)
-        lastSpokenIndex = currentIndex
-        let tip = stepTip(for: currentStep.name)
-        let utterance = AVSpeechUtterance(string: tip)
-        CoachVoiceProfile.configure(
-            utterance: utterance,
-            coach: coach,
-            preferredVoiceHint: coachVoicePreference
+    private func findBestMatchVideo(for exerciseName: String) -> LocalWorkoutVideoResponse? {
+        let key = exerciseName.lowercased().replacingOccurrences(of: " ", with: "_")
+        if let exact = localVideoCatalog.first(where: { $0.key.lowercased() == key }) {
+            return exact
+        }
+        let words = Set(
+            exerciseName
+                .lowercased()
+                .split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+                .map(String.init)
+                .filter { $0.count > 2 }
         )
-        speechSynth.speak(utterance)
-        scheduleBeatsAfterCoachSpeech(forStepIndex: currentIndex)
+        return localVideoCatalog.first { video in
+            let hay = "\(video.key.lowercased()) \(video.base_filename.lowercased())"
+            return words.contains(where: { hay.contains($0) })
+        }
+    }
+
+    private func playCurrentStepVideo() {
+        guard !isPreparing else { return }
+        guard !steps.isEmpty else {
+            videoPlayback.stop()
+            return
+        }
+        if assignedVideoByStepIndex.isEmpty {
+            assignVideosToStepsIfNeeded()
+        }
+        if assignedVideoByStepIndex[currentIndex] == nil, let random = localVideoCatalog.randomElement() {
+            assignedVideoByStepIndex[currentIndex] = random
+        }
+        guard let pair = assignedVideoByStepIndex[currentIndex] else {
+            videoPlayback.stop()
+            return
+        }
+        videoPlayback.play(
+            introURL: resolvedURL(remote: pair.base_url, localPath: pair.base_local_path),
+            repsURL: resolvedURL(remote: pair.reps_url, localPath: pair.reps_local_path)
+        )
+    }
+
+    private func resolvedURL(remote: String?, localPath: String?) -> URL? {
+        if let localPath, !localPath.isEmpty, FileManager.default.fileExists(atPath: localPath) {
+            return URL(fileURLWithPath: localPath)
+        }
+        guard let remote, !remote.isEmpty else { return nil }
+        return URL(string: remote)
     }
 
     private func configureAudioSession() {
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
+            try session.setCategory(.playback, mode: .moviePlayback, options: [])
             try session.setActive(true)
         } catch {
             // Non-fatal: guided workout can run without custom audio session.
-        }
-    }
-
-    private func scheduleBeatsAfterCoachSpeech(forStepIndex stepIndex: Int) {
-        guard !isPaused, !isPreparing, !isLogging else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-            guard currentIndex == stepIndex else { return }
-            guard !isPaused, !isPreparing, !isLogging else { return }
-            if speechSynth.isSpeaking {
-                scheduleBeatsAfterCoachSpeech(forStepIndex: stepIndex)
-                return
-            }
-            startBeats(forStepIndex: stepIndex)
         }
     }
 
@@ -800,26 +820,6 @@ private struct GuidedWorkoutPlayerView: View {
         activeBeatStepIndex = nil
     }
 
-    private func stepTip(for exercise: String) -> String {
-        let lower = exercise.lowercased()
-        if lower.contains("rest") {
-            return "Take a controlled rest. Breathe deeply and get ready for the next set."
-        }
-        if lower.contains("squat") {
-            return "For squats, keep your chest up, brace your core, and push through your mid-foot."
-        }
-        if lower.contains("bench") {
-            return "For bench press, keep your shoulders packed and control the bar path."
-        }
-        if lower.contains("deadlift") || lower.contains("rdl") {
-            return "For hinge movements, keep a neutral spine and drive with your hips."
-        }
-        if lower.contains("row") {
-            return "On rows, pull your elbows back and squeeze your shoulder blades."
-        }
-        return "Move with control, keep good form, and stay near your target effort."
-    }
-
     private func completionQuote() -> String {
         [
             "Strong finish. You showed up and did the work.",
@@ -834,6 +834,108 @@ private struct GuidedWorkoutPlayerView: View {
         let s = totalSeconds % 60
         if h > 0 { return String(format: "%d:%02d:%02d", h, m, s) }
         return String(format: "%02d:%02d", m, s)
+    }
+}
+
+private final class GuidedWorkoutVideoPlayback: ObservableObject {
+    @Published var player: AVQueuePlayer?
+    var cancellables = Set<AnyCancellable>()
+    private var itemEndObserver: NSObjectProtocol?
+    private var repsURL: URL?
+
+    deinit {
+        stop()
+    }
+
+    func play(introURL: URL?, repsURL: URL?) {
+        guard let introURL else { return }
+        stopObservers()
+        self.repsURL = repsURL
+        let queuePlayer = AVQueuePlayer()
+        queuePlayer.isMuted = false
+        queuePlayer.actionAtItemEnd = .none
+        player = queuePlayer
+
+        let item = AVPlayerItem(url: introURL)
+        queuePlayer.replaceCurrentItem(with: item)
+        itemEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self, weak queuePlayer] _ in
+            if let reps = self?.repsURL {
+                let repsItem = AVPlayerItem(url: reps)
+                queuePlayer?.replaceCurrentItem(with: repsItem)
+                queuePlayer?.play()
+                self?.setupLoopObserver(for: repsItem)
+                return
+            }
+            queuePlayer?.seek(to: .zero)
+            queuePlayer?.play()
+        }
+        queuePlayer.play()
+    }
+
+    private func setupLoopObserver(for item: AVPlayerItem) {
+        stopObservers()
+        itemEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            self?.player?.seek(to: .zero)
+            self?.player?.play()
+        }
+    }
+
+    func play() {
+        player?.play()
+    }
+
+    func pause() {
+        player?.pause()
+    }
+
+    func stop() {
+        stopObservers()
+        player?.pause()
+        repsURL = nil
+        player = nil
+    }
+
+    private func stopObservers() {
+        if let itemEndObserver {
+            NotificationCenter.default.removeObserver(itemEndObserver)
+            self.itemEndObserver = nil
+        }
+    }
+
+}
+
+private struct GuidedVideoLayerView: UIViewRepresentable {
+    let player: AVQueuePlayer
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView(frame: .zero)
+        view.backgroundColor = .black
+        let layer = AVPlayerLayer(player: player)
+        layer.videoGravity = .resizeAspect
+        view.layer.addSublayer(layer)
+        context.coordinator.playerLayer = layer
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.playerLayer?.player = player
+        context.coordinator.playerLayer?.frame = uiView.bounds
+    }
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    final class Coordinator {
+        var playerLayer: AVPlayerLayer?
     }
 }
 

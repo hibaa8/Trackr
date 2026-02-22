@@ -1198,6 +1198,7 @@ struct VoiceActiveView: View {
     @State private var audioRecorder: AVAudioRecorder?
     @State private var didSendInitialPrompt = false
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
     @FocusState private var inputFocused: Bool
 
@@ -1460,7 +1461,7 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(coachMessage)
-                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                    refreshPlanAndBroadcast(userId: userId)
                 case .failure:
                     let errorMessage = VoiceMessage(
                         id: UUID(),
@@ -1473,6 +1474,22 @@ struct VoiceActiveView: View {
                 }
             }
         }
+    }
+
+    private func refreshPlanAndBroadcast(userId: Int) {
+        // Pull latest plan directly after coach actions so UI reflects plan patches quickly.
+        APIService.shared.getTodayPlan(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                },
+                receiveValue: { plan in
+                    appState.todayPlan = plan
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private func startVoiceRecording() {
