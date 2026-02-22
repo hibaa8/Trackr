@@ -422,12 +422,13 @@ private struct GuidedWorkoutPlayerView: View {
     @State private var isPaused = false
     @State private var isPreparing = true
     @State private var isLogging = false
-    @State private var videosByIndex: [Int: WorkoutVideo] = [:]
-    @State private var cancellables = Set<AnyCancellable>()
     @State private var tips: [String] = []
     @State private var speechSynth = AVSpeechSynthesizer()
     @State private var lastSpokenIndex: Int?
     @State private var showLoggedToast = false
+    @AppStorage("coachVoicePreference") private var coachVoicePreference = ""
+    @State private var beatsPlayer: AVAudioPlayer?
+    @State private var activeBeatStepIndex: Int?
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
 
@@ -451,7 +452,7 @@ private struct GuidedWorkoutPlayerView: View {
         }
         .onAppear {
             initializeState()
-            fetchVideosForSteps()
+            configureAudioSession()
             DispatchQueue.main.asyncAfter(deadline: .now() + 1.2) {
                 isPreparing = false
                 speakStepTipIfNeeded()
@@ -463,6 +464,19 @@ private struct GuidedWorkoutPlayerView: View {
         .onReceive(timer) { _ in
             guard !isPaused, !isPreparing, !isLogging else { return }
             elapsedSeconds += 1
+        }
+        .onChange(of: isPaused) { _, paused in
+            if paused {
+                beatsPlayer?.pause()
+            } else if let beatsPlayer {
+                beatsPlayer.play()
+            } else {
+                scheduleBeatsAfterCoachSpeech(forStepIndex: currentIndex)
+            }
+        }
+        .onDisappear {
+            speechSynth.stopSpeaking(at: .immediate)
+            stopBeats()
         }
     }
 
@@ -486,12 +500,19 @@ private struct GuidedWorkoutPlayerView: View {
 
     @ViewBuilder
     private var backgroundLayer: some View {
-        if let localId = localVideoId(for: currentStep.name) {
-            YouTubePlayerView(videoId: localId, onError: nil)
+        if let clip = localVideoClip(for: currentStep.name) {
+            YouTubePlayerView(
+                videoId: clip.videoId,
+                autoplay: true,
+                muted: true,
+                loopPlayback: true,
+                showControls: false,
+                startSeconds: clip.startSeconds,
+                endSeconds: clip.endSeconds,
+                onError: nil
+            )
                 .ignoresSafeArea()
-        } else if let video = videosByIndex[currentIndex], !video.id.isEmpty {
-            YouTubePlayerView(videoId: video.id, onError: nil)
-                .ignoresSafeArea()
+                .clipped()
         } else {
             LinearGradient(
                 colors: [Color.black, Color(red: 0.06, green: 0.08, blue: 0.14)],
@@ -636,35 +657,6 @@ private struct GuidedWorkoutPlayerView: View {
         }
     }
 
-    private func fetchVideosForSteps() {
-        for index in steps.indices {
-            let step = steps[index]
-            let category = categoryForExercise(step.name)
-            APIService.shared.getVideos(category: category, limit: 8)
-                .receive(on: DispatchQueue.main)
-                .sink(
-                    receiveCompletion: { _ in },
-                    receiveValue: { videos in
-                        if let first = videos.first {
-                            videosByIndex[index] = first
-                        }
-                    }
-                )
-                .store(in: &cancellables)
-        }
-    }
-
-    private func categoryForExercise(_ name: String) -> String {
-        let lower = name.lowercased()
-        if lower == "rest" { return "yoga" }
-        if lower.contains("run") || lower.contains("bike") || lower.contains("cardio") || lower.contains("walk") {
-            return "cardio"
-        }
-        if lower.contains("hiit") { return "hiit" }
-        if lower.contains("flow") || lower.contains("mobility") { return "yoga" }
-        return "strength"
-    }
-
     private func goNext() {
         guard !steps.isEmpty else {
             finishWorkout()
@@ -675,6 +667,7 @@ private struct GuidedWorkoutPlayerView: View {
             return
         }
         currentIndex += 1
+        stopBeats()
         saveProgress()
     }
 
@@ -695,6 +688,7 @@ private struct GuidedWorkoutPlayerView: View {
         guard !isLogging else { return }
         isLogging = true
         isPaused = true
+        stopBeats()
         let summary = exercises.map { "\($0.name) \($0.setsReps) \($0.rpe)" }.joined(separator: ", ")
         guard let userId else {
             onSaveState(nil)
@@ -723,30 +717,87 @@ private struct GuidedWorkoutPlayerView: View {
         }
     }
 
-    private func localVideoId(for exercise: String) -> String? {
+    private struct GuidedVideoClip {
+        let videoId: String
+        let startSeconds: Int
+        let endSeconds: Int?
+    }
+
+    private func localVideoClip(for exercise: String) -> GuidedVideoClip? {
         let lower = exercise.lowercased()
-        if lower.contains("rest") { return "v7AYKMP6rOE" } // calm recovery/yoga
-        if lower.contains("squat") { return "YaXPRqUwItQ" }
-        if lower.contains("bench") || lower.contains("chest press") { return "rT7DgCr-3pg" }
-        if lower.contains("row") { return "vT2GjY_Umpw" }
-        if lower.contains("deadlift") || lower.contains("rdl") { return "op9kVnSso6Q" }
-        if lower.contains("lunge") { return "QOVaHwm-Q6U" }
-        if lower.contains("overhead") || lower.contains("ohp") || lower.contains("shoulder press") { return "2yjwXTZQDDI" }
-        if lower.contains("pull") || lower.contains("lat") { return "CAwf7n6Luuc" }
-        if lower.contains("plank") { return "ASdvN_XEl_c" }
-        if lower.contains("run") || lower.contains("cardio") { return "ml6cT4AZdqI" }
+        if lower.contains("rest") { return GuidedVideoClip(videoId: "v7AYKMP6rOE", startSeconds: 40, endSeconds: 70) }
+        if lower.contains("squat") { return GuidedVideoClip(videoId: "YaXPRqUwItQ", startSeconds: 15, endSeconds: 45) }
+        if lower.contains("bench") || lower.contains("chest press") { return GuidedVideoClip(videoId: "rT7DgCr-3pg", startSeconds: 8, endSeconds: 36) }
+        if lower.contains("row") { return GuidedVideoClip(videoId: "vT2GjY_Umpw", startSeconds: 22, endSeconds: 52) }
+        if lower.contains("deadlift") || lower.contains("rdl") { return GuidedVideoClip(videoId: "op9kVnSso6Q", startSeconds: 12, endSeconds: 44) }
+        if lower.contains("lunge") { return GuidedVideoClip(videoId: "QOVaHwm-Q6U", startSeconds: 10, endSeconds: 40) }
+        if lower.contains("overhead") || lower.contains("ohp") || lower.contains("shoulder press") { return GuidedVideoClip(videoId: "2yjwXTZQDDI", startSeconds: 14, endSeconds: 46) }
+        if lower.contains("pull") || lower.contains("lat") { return GuidedVideoClip(videoId: "CAwf7n6Luuc", startSeconds: 15, endSeconds: 46) }
+        if lower.contains("plank") { return GuidedVideoClip(videoId: "ASdvN_XEl_c", startSeconds: 7, endSeconds: 37) }
+        if lower.contains("run") || lower.contains("cardio") { return GuidedVideoClip(videoId: "ml6cT4AZdqI", startSeconds: 18, endSeconds: 48) }
         return nil
     }
 
     private func speakStepTipIfNeeded() {
         guard !isPreparing, !isLogging else { return }
         guard lastSpokenIndex != currentIndex else { return }
+        stopBeats()
+        speechSynth.stopSpeaking(at: .immediate)
         lastSpokenIndex = currentIndex
         let tip = stepTip(for: currentStep.name)
         let utterance = AVSpeechUtterance(string: tip)
-        utterance.rate = 0.5
-        utterance.volume = 0.9
+        CoachVoiceProfile.configure(
+            utterance: utterance,
+            coach: coach,
+            preferredVoiceHint: coachVoicePreference
+        )
         speechSynth.speak(utterance)
+        scheduleBeatsAfterCoachSpeech(forStepIndex: currentIndex)
+    }
+
+    private func configureAudioSession() {
+        do {
+            let session = AVAudioSession.sharedInstance()
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            // Non-fatal: guided workout can run without custom audio session.
+        }
+    }
+
+    private func scheduleBeatsAfterCoachSpeech(forStepIndex stepIndex: Int) {
+        guard !isPaused, !isPreparing, !isLogging else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            guard currentIndex == stepIndex else { return }
+            guard !isPaused, !isPreparing, !isLogging else { return }
+            if speechSynth.isSpeaking {
+                scheduleBeatsAfterCoachSpeech(forStepIndex: stepIndex)
+                return
+            }
+            startBeats(forStepIndex: stepIndex)
+        }
+    }
+
+    private func startBeats(forStepIndex stepIndex: Int) {
+        guard activeBeatStepIndex != stepIndex else { return }
+        guard let beatsURL = Bundle.main.url(forResource: "light_beats_loop", withExtension: "mp3") else { return }
+        do {
+            let player = try AVAudioPlayer(contentsOf: beatsURL)
+            player.numberOfLoops = -1
+            player.volume = 0.18
+            player.prepareToPlay()
+            player.play()
+            beatsPlayer = player
+            activeBeatStepIndex = stepIndex
+        } catch {
+            // Non-fatal: fallback is coach voice only.
+        }
+    }
+
+    private func stopBeats() {
+        beatsPlayer?.stop()
+        beatsPlayer = nil
+        activeBeatStepIndex = nil
     }
 
     private func stepTip(for exercise: String) -> String {

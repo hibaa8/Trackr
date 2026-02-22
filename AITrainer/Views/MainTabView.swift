@@ -1053,9 +1053,14 @@ struct SettingsPageView: View {
     @State private var showEditProfile = false
     @State private var showCoachSelection = false
     @State private var showHealthImpact = false
+    @State private var showReminderManager = false
     @State private var isCreatingCheckout = false
     @State private var billingErrorMessage: String?
     @State private var healthSyncMessage: String?
+    @State private var reminderErrorMessage: String?
+    @State private var reminders: [ReminderItemResponse] = []
+    @State private var remindersLoading = false
+    @State private var reminderBusyIds: Set<Int> = []
     @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
@@ -1087,6 +1092,9 @@ struct SettingsPageView: View {
         .onAppear {
             notificationManager.checkAuthorizationStatus()
             loadProfileData()
+            if let userId = authManager.effectiveUserId {
+                loadRemindersForSettings(userId: userId)
+            }
         }
         .onReceive(backendConnector.$profile) { response in
             if let response {
@@ -1141,6 +1149,7 @@ struct SettingsPageView: View {
                     userId: userId,
                     onCoachChanged: { newCoach in
                         appState.selectedCoach = newCoach
+                        loadProfileData()
                         showCoachSelection = false
                     }
                 )
@@ -1161,6 +1170,27 @@ struct SettingsPageView: View {
         .sheet(isPresented: $showHealthImpact) {
             if let userId = authManager.effectiveUserId {
                 HealthDataImpactView(userId: userId)
+            }
+        }
+        .sheet(isPresented: $showReminderManager) {
+            if let userId = authManager.effectiveUserId {
+                NavigationView {
+                    ReminderManagementView(
+                        reminders: reminders,
+                        isLoading: remindersLoading,
+                        busyReminderIds: reminderBusyIds,
+                        notificationsEnabled: notificationsEnabled,
+                        onRefresh: {
+                            loadRemindersForSettings(userId: userId)
+                        },
+                        onToggleReminder: { reminder, isEnabled in
+                            updateReminderStatus(userId: userId, reminder: reminder, isEnabled: isEnabled)
+                        },
+                        onDeleteReminder: { reminder in
+                            deleteReminder(userId: userId, reminder: reminder)
+                        }
+                    )
+                }
             }
         }
         .alert(
@@ -1187,6 +1217,19 @@ struct SettingsPageView: View {
             },
             message: {
                 Text(healthSyncMessage ?? "")
+            }
+        )
+        .alert(
+            "Reminder Update",
+            isPresented: Binding(
+                get: { reminderErrorMessage != nil },
+                set: { if !$0 { reminderErrorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { reminderErrorMessage = nil }
+            },
+            message: {
+                Text(reminderErrorMessage ?? "")
             }
         )
     }
@@ -1317,9 +1360,28 @@ struct SettingsPageView: View {
         return "--"
     }
 
+    private var coachChangeCooldownDaysRemaining: Int {
+        guard let raw = profileUser?.last_agent_change_at,
+              let changedAt = parseISODate(raw) else {
+            return 0
+        }
+        let nextAllowed = changedAt.addingTimeInterval(14 * 24 * 60 * 60)
+        let secondsLeft = nextAllowed.timeIntervalSince(Date())
+        if secondsLeft <= 0 {
+            return 0
+        }
+        return max(1, Int(ceil(secondsLeft / 86400)))
+    }
+
+    private var canChangeCoach: Bool {
+        coachChangeCooldownDaysRemaining == 0
+    }
+
     private var currentCoachCard: some View {
         Button(action: {
-            showCoachSelection = true
+            if canChangeCoach {
+                showCoachSelection = true
+            }
         }) {
             VStack(spacing: 16) {
                 HStack {
@@ -1330,13 +1392,13 @@ struct SettingsPageView: View {
                     Spacer()
 
                     HStack(spacing: 4) {
-                        Text("Change")
+                        Text(canChangeCoach ? "Change" : "Locked")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.blue)
+                            .foregroundColor(canChangeCoach ? .blue : .white.opacity(0.55))
 
                         Image(systemName: "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.blue)
+                            .foregroundColor(canChangeCoach ? .blue : .white.opacity(0.55))
                     }
                 }
 
@@ -1391,6 +1453,12 @@ struct SettingsPageView: View {
                                     )
                             }
                         }
+
+                        if !canChangeCoach {
+                            Text("Coach change available in \(coachChangeCooldownDaysRemaining) day(s)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.yellow.opacity(0.9))
+                        }
                     }
 
                     Spacer()
@@ -1404,6 +1472,26 @@ struct SettingsPageView: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
+        .disabled(!canChangeCoach)
+        .opacity(canChangeCoach ? 1.0 : 0.9)
+    }
+
+    private func parseISODate(_ raw: String) -> Date? {
+        let isoWithFraction = ISO8601DateFormatter()
+        isoWithFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoWithFraction.date(from: raw) {
+            return date
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: raw) {
+            return date
+        }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.timeZone = TimeZone(secondsFromGMT: 0)
+        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return fallback.date(from: raw)
     }
 
     private var settingsList: some View {
@@ -1412,6 +1500,9 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
+            SettingsRow(title: "Manage Notification Reminders") {
+                showReminderManager = true
+            }
             SettingsRow(title: "Health Data & Plan Impact") {
                 showHealthImpact = true
             }
@@ -1480,11 +1571,82 @@ struct SettingsPageView: View {
         backendConnector.loadReminders(userId: userId) { result in
             switch result {
             case .success(let reminders):
+                self.reminders = reminders
                 notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
             case .failure(let error):
                 print("Failed to load reminders for settings sync: \(error)")
             }
         }
+    }
+
+    private func loadRemindersForSettings(userId: Int) {
+        remindersLoading = true
+        backendConnector.loadReminders(userId: userId) { result in
+            remindersLoading = false
+            switch result {
+            case .success(let items):
+                reminders = items.sorted { $0.scheduled_at < $1.scheduled_at }
+                notificationManager.syncReminders(items, notificationsEnabled: notificationsEnabled)
+            case .failure(let error):
+                reminderErrorMessage = "Unable to load reminders: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func updateReminderStatus(userId: Int, reminder: ReminderItemResponse, isEnabled: Bool) {
+        guard !reminderBusyIds.contains(reminder.id) else { return }
+        reminderBusyIds.insert(reminder.id)
+        let payload = ReminderUpdateRequest(
+            user_id: userId,
+            status: isEnabled ? "pending" : "cancelled",
+            scheduled_at: nil
+        )
+        backendConnector.updateReminder(reminderId: reminder.id, payload: payload) { result in
+            reminderBusyIds.remove(reminder.id)
+            switch result {
+            case .success:
+                loadRemindersForSettings(userId: userId)
+            case .failure(let error):
+                if let apiError = error as? APIError,
+                   case .serverErrorWithMessage(let code, let message) = apiError,
+                   code == 404 {
+                    loadRemindersForSettings(userId: userId)
+                    reminderErrorMessage = "That reminder was already removed. Refreshed the list."
+                    return
+                }
+                reminderErrorMessage = "Unable to update reminder: \(readableReminderError(error))"
+            }
+        }
+    }
+
+    private func deleteReminder(userId: Int, reminder: ReminderItemResponse) {
+        guard !reminderBusyIds.contains(reminder.id) else { return }
+        reminderBusyIds.insert(reminder.id)
+        backendConnector.deleteReminder(reminderId: reminder.id, userId: userId) { result in
+            reminderBusyIds.remove(reminder.id)
+            switch result {
+            case .success:
+                loadRemindersForSettings(userId: userId)
+            case .failure(let error):
+                reminderErrorMessage = "Unable to delete reminder: \(readableReminderError(error))"
+            }
+        }
+    }
+
+    private func readableReminderError(_ error: Error) -> String {
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .serverErrorWithMessage(_, let message):
+                return message
+            case .serverError(let code):
+                return "Server error (HTTP \(code))."
+            case .unauthorized:
+                return "You are not authorized. Please sign in again."
+            default:
+                return "\(apiError)"
+            }
+        }
+        return error.localizedDescription
     }
 
     private func startPremiumCheckout() {
@@ -1696,6 +1858,161 @@ struct SettingsRow: View {
     }
 }
 
+struct ReminderManagementView: View {
+    let reminders: [ReminderItemResponse]
+    let isLoading: Bool
+    let busyReminderIds: Set<Int>
+    let notificationsEnabled: Bool
+    let onRefresh: () -> Void
+    let onToggleReminder: (ReminderItemResponse, Bool) -> Void
+    let onDeleteReminder: (ReminderItemResponse) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 14) {
+                HStack {
+                    Text("Notification Reminders")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(.top, 8)
+
+                if !notificationsEnabled {
+                    Text("Enable Notifications in Settings to receive reminder alerts.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.yellow.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.yellow.opacity(0.14)))
+                }
+
+                if isLoading {
+                    ProgressView("Loading reminders...")
+                        .tint(.white)
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.top, 30)
+                    Spacer()
+                } else if reminders.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "bell.slash")
+                            .font(.system(size: 24))
+                            .foregroundColor(.white.opacity(0.6))
+                        Text("No reminders set")
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .padding(.top, 30)
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(reminders, id: \.id) { reminder in
+                            reminderRow(reminder)
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                    .scrollContentBackground(.hidden)
+                    .listStyle(.plain)
+                }
+            }
+            .padding(18)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .foregroundColor(.white)
+            }
+        }
+    }
+
+    private func reminderRow(_ reminder: ReminderItemResponse) -> some View {
+        let isEnabled = reminder.status.lowercased() != "cancelled"
+        let isBusy = busyReminderIds.contains(reminder.id)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(reminderTitle(reminder.reminder_type))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { isEnabled },
+                    set: { onToggleReminder(reminder, $0) }
+                ))
+                .labelsHidden()
+                .disabled(isBusy)
+            }
+
+            Text(formattedReminderDate(reminder.scheduled_at))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.72))
+
+            HStack {
+                Text(isEnabled ? "Enabled" : "Disabled")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isEnabled ? .green.opacity(0.9) : .red.opacity(0.9))
+                Spacer()
+                Button(role: .destructive) {
+                    onDeleteReminder(reminder)
+                } label: {
+                    Text(isBusy ? "Updating..." : "Delete")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .disabled(isBusy)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+        )
+        .padding(.vertical, 4)
+    }
+
+    private func reminderTitle(_ type: String) -> String {
+        let normalized = type.lowercased()
+        if normalized.contains("coach_checkin") || normalized.contains("daily_checkin") {
+            return "Daily Coach Check-In"
+        }
+        if normalized.contains("workout") {
+            return "Workout Reminder"
+        }
+        if normalized.contains("meal") {
+            return "Meal Reminder"
+        }
+        return type.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func formattedReminderDate(_ raw: String) -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        if let date = isoFormatter.date(from: raw) {
+            return formatDate(date)
+        }
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: raw) {
+            return formatDate(date)
+        }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        if let date = fallback.date(from: raw) {
+            return formatDate(date)
+        }
+        return raw
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
 struct ManagePlanView: View {
     let selectedPlanTier: String
     let isLoadingPremiumCheckout: Bool
@@ -1806,6 +2123,7 @@ struct CoachChangeView: View {
     @EnvironmentObject var backendConnector: FrontendBackendConnector
     @State private var selectedCoach: Coach?
     @State private var isUpdating = false
+    @State private var errorMessage: String?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
 
@@ -1877,6 +2195,19 @@ struct CoachChangeView: View {
         .onAppear {
             selectedCoach = currentCoach
         }
+        .alert(
+            "Unable to Change Coach",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { errorMessage = nil }
+            },
+            message: {
+                Text(errorMessage ?? "Please try again later.")
+            }
+        )
     }
 
     private func changeCoachButton(_ coach: Coach) -> some View {
@@ -1926,23 +2257,30 @@ struct CoachChangeView: View {
 
         isUpdating = true
 
-        // Update UI immediately for better UX
-        onCoachChanged(newCoach)
-
-        // Success haptic
-        let successFeedback = UINotificationFeedbackGenerator()
-        successFeedback.notificationOccurred(.success)
-
-        dismiss()
-
         // Call backend API to sync the change
         backendConnector.changeCoach(userId: userId, newCoachId: newCoach.id) { result in
+            isUpdating = false
             switch result {
             case .success:
+                onCoachChanged(newCoach)
+                let successFeedback = UINotificationFeedbackGenerator()
+                successFeedback.notificationOccurred(.success)
                 print("✅ Coach change synced with backend")
+                dismiss()
             case .failure(let error):
                 print("❌ Failed to sync coach change with backend: \(error)")
-                // Note: UI already updated, so user sees the change even if backend fails
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .serverErrorWithMessage(_, let message):
+                        errorMessage = message
+                    case .serverError(let code):
+                        errorMessage = "Coach change failed (HTTP \(code))."
+                    default:
+                        errorMessage = "Coach change failed. Please try again."
+                    }
+                } else {
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }

@@ -349,7 +349,7 @@ struct ConversationView: View {
             storyline: coach.philosophy,
             trainer_id: coach.id,
             personality: coach.personality,
-            voice: coach.speakingStyle,
+            voice: CoachVoiceProfile.preferredBackendVoice(for: coach),
             timeframe_weeks: timeframeWeeks,
             current_weight_kg: weightKg,
             height_cm: heightCm,

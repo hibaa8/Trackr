@@ -165,6 +165,7 @@ struct TrainerMainView: View {
 
     let coach: Coach
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
@@ -199,6 +200,7 @@ struct TrainerMainView: View {
     @State private var showStreakFreezePrompt = false
     @State private var streakFreezePromptMessage = ""
     @State private var speechSynth = AVSpeechSynthesizer()
+    @AppStorage("coachVoicePreference") private var coachVoicePreference = ""
     @AppStorage("trainer.endOfDayPromptDate") private var lastEndOfDayPromptDate = ""
     @AppStorage("trainer.dailyChecklistPromptDate") private var lastChecklistPromptDate = ""
     @AppStorage("trainer.lastCoachGreetingDay") private var lastCoachGreetingDay = ""
@@ -1073,8 +1075,15 @@ struct TrainerMainView: View {
 
     private func speak(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
-        utterance.rate = 0.5
-        utterance.volume = 0.9
+        let voiceHint = backendConnector.profile?.user?.coach_voice
+        if let voiceHint, !voiceHint.isEmpty, coachVoicePreference != voiceHint {
+            coachVoicePreference = voiceHint
+        }
+        CoachVoiceProfile.configure(
+            utterance: utterance,
+            coach: coach,
+            preferredVoiceHint: voiceHint ?? coachVoicePreference
+        )
         speechSynth.speak(utterance)
     }
 

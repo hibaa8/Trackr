@@ -378,6 +378,24 @@ class APIService {
         return request(endpoint: "/api/reminders?user_id=\(userId)")
     }
 
+    func createReminder(_ payload: ReminderCreateRequest) -> AnyPublisher<ReminderItemResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/reminders", method: "POST", body: jsonData)
+    }
+
+    func updateReminder(reminderId: Int, payload: ReminderUpdateRequest) -> AnyPublisher<ReminderItemResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/reminders/\(reminderId)", method: "PUT", body: jsonData)
+    }
+
+    func deleteReminder(reminderId: Int, userId: Int) -> AnyPublisher<ReminderDeleteResponse, APIError> {
+        return request(endpoint: "/api/reminders/\(reminderId)?user_id=\(userId)", method: "DELETE")
+    }
+
     func createBillingCheckoutSession(userId: Int, planTier: String = "premium") -> AnyPublisher<BillingCheckoutSessionResponse, APIError> {
         struct CheckoutRequest: Codable {
             let user_id: Int
@@ -511,4 +529,6 @@ struct OnboardingCompleteResponse: Decodable {
 struct CoachChangeResponse: Decodable {
     let success: Bool
     let message: String?
+    let next_change_available_at: String?
+    let retry_after_days: Int?
 }

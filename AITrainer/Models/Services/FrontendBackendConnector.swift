@@ -305,6 +305,38 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func updateReminder(reminderId: Int, payload: ReminderUpdateRequest, completion: @escaping (Result<ReminderItemResponse, Error>) -> Void) {
+        APIService.shared.updateReminder(reminderId: reminderId, payload: payload)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { reminder in
+                    completion(.success(reminder))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func deleteReminder(reminderId: Int, userId: Int, completion: @escaping (Result<ReminderDeleteResponse, Error>) -> Void) {
+        APIService.shared.deleteReminder(reminderId: reminderId, userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { response in
+                    completion(.success(response))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func createBillingCheckoutSession(userId: Int, planTier: String = "premium", completion: @escaping (Result<BillingCheckoutSessionResponse, Error>) -> Void) {
         APIService.shared.createBillingCheckoutSession(userId: userId, planTier: planTier)
             .receive(on: DispatchQueue.main)

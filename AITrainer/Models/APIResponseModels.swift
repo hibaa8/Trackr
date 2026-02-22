@@ -112,6 +112,8 @@ struct ProfileUserResponse: Codable {
     let age_years: Int?
     let agent_id: Int?
     let profile_image_base64: String?
+    let coach_voice: String?
+    let last_agent_change_at: String?
 }
 
 struct ProfilePreferencesResponse: Codable {
@@ -234,6 +236,24 @@ struct ReminderItemResponse: Codable {
     let status: String
     let channel: String
     let related_plan_override_id: Int?
+}
+
+struct ReminderCreateRequest: Codable {
+    let user_id: Int
+    let reminder_type: String
+    let scheduled_at: String
+    let status: String
+    let channel: String
+}
+
+struct ReminderUpdateRequest: Codable {
+    let user_id: Int
+    let status: String?
+    let scheduled_at: String?
+}
+
+struct ReminderDeleteResponse: Codable {
+    let ok: Bool
 }
 
 struct GamificationResponse: Codable {

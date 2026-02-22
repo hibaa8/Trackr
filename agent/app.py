@@ -21,7 +21,7 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=dotenv_path, override=True)
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Union
 
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -48,7 +48,7 @@ from openai import OpenAI
 
 from agent.state import SESSION_CACHE
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
-from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key
+from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key, _draft_reminders_key
 from agent.db.connection import get_db_conn
 from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
@@ -520,9 +520,99 @@ def _ensure_coach_schema() -> None:
         if not has_agent_id:
             cur.execute("ALTER TABLE users ADD COLUMN agent_id BIGINT NULL")
 
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'coach_voice'
+            """
+        )
+        has_coach_voice = cur.fetchone() is not None
+        if not has_coach_voice:
+            cur.execute("ALTER TABLE users ADD COLUMN coach_voice TEXT NULL")
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'last_agent_change_at'
+            """
+        )
+        has_last_agent_change_at = cur.fetchone() is not None
+        if not has_last_agent_change_at:
+            cur.execute("ALTER TABLE users ADD COLUMN last_agent_change_at TEXT NULL")
+
         # Default to Marcus (id=1) when missing.
         cur.execute("UPDATE users SET agent_id = 1 WHERE agent_id IS NULL")
+        cur.execute(
+            """
+            UPDATE users
+            SET coach_voice = CASE
+                WHEN agent_id = 1 THEN 'onyx'
+                WHEN agent_id = 2 THEN 'shimmer'
+                WHEN agent_id = 3 THEN 'sage'
+                WHEN agent_id = 4 THEN 'nova'
+                WHEN agent_id = 5 THEN 'echo'
+                WHEN agent_id = 6 THEN 'alloy'
+                WHEN agent_id = 7 THEN 'nova'
+                WHEN agent_id = 8 THEN 'echo'
+                WHEN agent_id = 9 THEN 'shimmer'
+                WHEN agent_id = 10 THEN 'nova'
+                WHEN agent_id = 11 THEN 'alloy'
+                ELSE 'alloy'
+            END
+            WHERE coach_voice IS NULL OR coach_voice = ''
+            """
+        )
         conn.commit()
+
+
+def _default_voice_for_agent(agent_id: Optional[int]) -> str:
+    mapping = {
+        1: "onyx",
+        2: "shimmer",
+        3: "sage",
+        4: "nova",
+        5: "echo",
+        6: "alloy",
+        7: "nova",
+        8: "echo",
+        9: "shimmer",
+        10: "nova",
+        11: "alloy",
+    }
+    if agent_id is None:
+        return "alloy"
+    return mapping.get(int(agent_id), "alloy")
+
+
+def _agent_change_cooldown_state(last_changed_at: Any) -> Dict[str, Any]:
+    last_changed = _coerce_to_datetime(last_changed_at)
+    if not last_changed:
+        return {
+            "blocked": False,
+            "next_change_available_at": None,
+            "retry_after_days": 0,
+        }
+    next_allowed = last_changed + timedelta(days=14)
+    now_utc = datetime.now(timezone.utc)
+    if now_utc >= next_allowed:
+        return {
+            "blocked": False,
+            "next_change_available_at": next_allowed.isoformat(),
+            "retry_after_days": 0,
+        }
+    seconds_left = max(0, int((next_allowed - now_utc).total_seconds()))
+    retry_after_days = max(1, int((seconds_left + 86399) / 86400))
+    return {
+        "blocked": True,
+        "next_change_available_at": next_allowed.isoformat(),
+        "retry_after_days": retry_after_days,
+    }
 
 
 def _hash_password(password: str) -> str:
@@ -601,6 +691,31 @@ def _coerce_to_date(value: Any) -> Optional[date]:
         return datetime.fromisoformat(text).date()
     except ValueError:
         return None
+
+
+def _coerce_to_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def _award_points(user_id: int, points: int, reason: str) -> None:
@@ -692,6 +807,11 @@ def _ensure_daily_coach_checkin_reminder(user_id: int) -> None:
 
 def _invalidate_health_activity_cache(user_id: int) -> None:
     _redis_delete(_draft_health_activity_key(user_id))
+    _redis_delete(f"session_hydration:{user_id}")
+
+
+def _invalidate_reminders_cache(user_id: int) -> None:
+    _redis_delete(_draft_reminders_key(user_id))
     _redis_delete(f"session_hydration:{user_id}")
 
 
@@ -965,6 +1085,8 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "age_years": row[6],
             "agent_id": row[7],
             "profile_image_base64": row[8],
+            "coach_voice": row[9],
+            "last_agent_change_at": row[10],
         }
 
     def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
@@ -1302,6 +1424,20 @@ class ReminderItemResponse(BaseModel):
     related_plan_override_id: Optional[int] = None
 
 
+class ReminderCreateRequest(BaseModel):
+    user_id: int
+    reminder_type: str
+    scheduled_at: str
+    status: str = "pending"
+    channel: str = "ios"
+
+
+class ReminderUpdateRequest(BaseModel):
+    user_id: int
+    status: Optional[str] = None
+    scheduled_at: Optional[str] = None
+
+
 class HealthActivityLogRequest(BaseModel):
     user_id: int
     date: Optional[str] = None
@@ -1375,6 +1511,8 @@ class CoachChangeRequest(BaseModel):
 class CoachChangeResponse(BaseModel):
     success: bool
     message: Optional[str] = None
+    next_change_available_at: Optional[str] = None
+    retry_after_days: Optional[int] = None
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -1453,6 +1591,7 @@ class OnboardingCompletePayload(BaseModel):
     trainer_id: Optional[int] = None
     trainer: Optional[str] = None
     full_name: Optional[str] = None
+    voice: Optional[str] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -2646,6 +2785,7 @@ def get_coaches():
 @app.put("/api/profile")
 def update_profile(payload: ProfileUpdateRequest):
     _ensure_profile_schema()
+    _ensure_coach_schema()
     user_fields: Dict[str, Any] = {}
     weight_updated = False
     if payload.name is not None:
@@ -2661,8 +2801,6 @@ def update_profile(payload: ProfileUpdateRequest):
         user_fields["gender"] = payload.gender
     if payload.age_years is not None:
         user_fields["age_years"] = payload.age_years
-    if payload.agent_id is not None:
-        user_fields["agent_id"] = payload.agent_id
     if payload.profile_image_base64 is not None:
         user_fields["profile_image_base64"] = payload.profile_image_base64
 
@@ -2682,6 +2820,25 @@ def update_profile(payload: ProfileUpdateRequest):
 
     with get_db_conn() as conn:
         cur = conn.cursor()
+        if payload.agent_id is not None:
+            cur.execute("SELECT agent_id, last_agent_change_at FROM users WHERE id = ? LIMIT 1", (payload.user_id,))
+            current_row = cur.fetchone()
+            if not current_row:
+                raise HTTPException(status_code=404, detail="User not found")
+            current_agent_id = int(current_row[0]) if current_row[0] is not None else None
+            if payload.agent_id != current_agent_id:
+                cooldown_state = _agent_change_cooldown_state(current_row[1])
+                if cooldown_state["blocked"]:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=(
+                            f"You can change coaches once every 14 days. "
+                            f"Try again in about {cooldown_state['retry_after_days']} day(s)."
+                        ),
+                    )
+                user_fields["last_agent_change_at"] = datetime.now(timezone.utc).isoformat()
+            user_fields["agent_id"] = payload.agent_id
+            user_fields["coach_voice"] = _default_voice_for_agent(payload.agent_id)
         if user_fields:
             set_clause = ", ".join(f"{key} = ?" for key in user_fields.keys())
             params = list(user_fields.values()) + [payload.user_id]
@@ -2745,9 +2902,22 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
         cur = conn.cursor()
 
         # Check if user exists
-        cur.execute("SELECT id FROM users WHERE id = ?", (payload.user_id,))
-        if not cur.fetchone():
+        cur.execute("SELECT id, agent_id, last_agent_change_at FROM users WHERE id = ?", (payload.user_id,))
+        user_row = cur.fetchone()
+        if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
+        current_agent_id = int(user_row[1]) if user_row[1] is not None else None
+        cooldown_state = _agent_change_cooldown_state(user_row[2])
+        if current_agent_id == payload.new_coach_id:
+            return CoachChangeResponse(success=True, message="Coach already selected")
+        if cooldown_state["blocked"]:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"You can change coaches once every 14 days. "
+                    f"Try again in about {cooldown_state['retry_after_days']} day(s)."
+                ),
+            )
 
         # Validate coach exists
         cur.execute("SELECT id FROM coaches WHERE id = ? LIMIT 1", (payload.new_coach_id,))
@@ -2755,9 +2925,15 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
             raise HTTPException(status_code=400, detail=f"Invalid coach ID: {payload.new_coach_id}")
 
         # Update the user's coach assignment
+        changed_at = datetime.now(timezone.utc).isoformat()
         cur.execute(
-            "UPDATE users SET agent_id = ? WHERE id = ?",
-            (payload.new_coach_id, payload.user_id)
+            "UPDATE users SET agent_id = ?, coach_voice = ?, last_agent_change_at = ? WHERE id = ?",
+            (
+                payload.new_coach_id,
+                _default_voice_for_agent(payload.new_coach_id),
+                changed_at,
+                payload.user_id,
+            )
         )
 
         # user_preferences does not store coach_id; agent_name lives on users
@@ -2768,7 +2944,12 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
     _refresh_profile_cache(payload.user_id)
     _redis_delete(f"session_hydration:{payload.user_id}")
 
-    return CoachChangeResponse(success=True, message=f"Coach successfully changed to {payload.new_coach_id}")
+    return CoachChangeResponse(
+        success=True,
+        message=f"Coach successfully changed to {payload.new_coach_id}",
+        next_change_available_at=(datetime.now(timezone.utc) + timedelta(days=14)).isoformat(),
+        retry_after_days=14,
+    )
 
 
 @app.get("/api/voice")
@@ -3274,6 +3455,106 @@ def get_reminders_api(user_id: int):
     ]
 
 
+@app.post("/api/reminders", response_model=ReminderItemResponse)
+def create_reminder_api(payload: ReminderCreateRequest):
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reminders (user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.user_id,
+                payload.reminder_type,
+                payload.scheduled_at,
+                payload.status,
+                payload.channel,
+                None,
+            ),
+        )
+        reminder_id = int(cur.lastrowid or 0)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (reminder_id, payload.user_id),
+        )
+        row = cur.fetchone()
+    _invalidate_reminders_cache(payload.user_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create reminder")
+    return ReminderItemResponse(
+        id=int(row[0]),
+        reminder_type=str(row[1]),
+        scheduled_at=str(row[2]),
+        status=str(row[3]),
+        channel=str(row[4]),
+        related_plan_override_id=int(row[5]) if row[5] is not None else None,
+    )
+
+
+@app.put("/api/reminders/{reminder_id}", response_model=ReminderItemResponse)
+def update_reminder_api(reminder_id: int, payload: ReminderUpdateRequest):
+    fields: List[str] = []
+    values: List[Any] = []
+    if payload.status is not None:
+        fields.append("status = ?")
+        values.append(payload.status)
+    if payload.scheduled_at is not None:
+        fields.append("scheduled_at = ?")
+        values.append(payload.scheduled_at)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No reminder fields to update")
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        values.extend([payload.user_id, reminder_id])
+        cur.execute(
+            f"UPDATE reminders SET {', '.join(fields)} WHERE user_id = ? AND id = ?",
+            values,
+        )
+        conn.commit()
+        cur.execute(
+            """
+            SELECT id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (reminder_id, payload.user_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    _invalidate_reminders_cache(payload.user_id)
+    return ReminderItemResponse(
+        id=int(row[0]),
+        reminder_type=str(row[1]),
+        scheduled_at=str(row[2]),
+        status=str(row[3]),
+        channel=str(row[4]),
+        related_plan_override_id=int(row[5]) if row[5] is not None else None,
+    )
+
+
+@app.delete("/api/reminders/{reminder_id}")
+def delete_reminder_api(reminder_id: int, user_id: int):
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
+        deleted = int(cur.rowcount or 0)
+        conn.commit()
+    if deleted <= 0:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    _invalidate_reminders_cache(user_id)
+    return {"ok": True}
+
+
 @app.get("/api/session/hydrate", response_model=SessionHydrationResponse)
 def hydrate_session(user_id: int, day: Optional[str] = None):
     target_day = day or date.today().isoformat()
@@ -3444,6 +3725,7 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     user_id = payload.user_id or 1
     fields = []
     values: list[Any] = []
+    selected_trainer_id: Optional[int] = None
     if payload.current_weight_kg is not None:
         fields.append("weight_kg = ?")
         values.append(payload.current_weight_kg)
@@ -3456,6 +3738,7 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.trainer_id is not None:
         fields.append("agent_id = ?")
         values.append(payload.trainer_id)
+        selected_trainer_id = int(payload.trainer_id)
     elif payload.trainer:
         # Fallback for legacy payloads using trainer slug
         with get_db_conn() as conn:
@@ -3464,7 +3747,14 @@ def complete_onboarding(payload: OnboardingCompletePayload):
             row = cur.fetchone()
         if row and row[0]:
             fields.append("agent_id = ?")
-            values.append(int(row[0]))
+            selected_trainer_id = int(row[0])
+            values.append(selected_trainer_id)
+    if payload.voice:
+        fields.append("coach_voice = ?")
+        values.append(payload.voice)
+    elif selected_trainer_id is not None:
+        fields.append("coach_voice = ?")
+        values.append(_default_voice_for_agent(selected_trainer_id))
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
