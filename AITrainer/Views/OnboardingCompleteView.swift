@@ -613,7 +613,7 @@ struct TrainerMainView: View {
                     title: "Plan Meals",
                     systemImage: "fork.knife.circle"
                 ) {
-                    openCoachChat(with: "Help me plan meals for today. Ask for ingredients on hand, cuisine preference, prep time, dietary restrictions, and target calories/macros, then propose meal options I can choose from.")
+                    showRecipePlanner = true
                 }
                 quickLogButton(
                     title: "Learn Exercise",
@@ -627,7 +627,7 @@ struct TrainerMainView: View {
                     title: "Community",
                     systemImage: "person.3.sequence.fill"
                 ) {
-                    openCoachChat(with: "I want community support. Help me set up accountability with friends, streak goals, and a simple social plan I can start this week.")
+                    showCommunity = true
                 }
                 quickLogButton(
                     title: "Find Gyms",

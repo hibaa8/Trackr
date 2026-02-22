@@ -41,7 +41,7 @@ struct CommunityView: View {
                     
                     Text("Connect with others on the same journey")
                         .font(.system(size: 14))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.black)
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal)
                         .padding(.bottom, 20)
@@ -95,7 +95,7 @@ struct CommunityView: View {
                             Spacer()
                             Button("Add Friend") {}
                                 .font(.system(size: 13, weight: .semibold))
-                                .foregroundColor(.blue)
+                                .foregroundColor(.black)
                         }
                         .padding(.horizontal)
 
@@ -106,12 +106,45 @@ struct CommunityView: View {
                                         .font(.system(size: 16, weight: .semibold))
                                     Text("\(item.days) day streak together")
                                         .font(.system(size: 13))
-                                        .foregroundColor(.gray)
+                                        .foregroundColor(.black)
                                 }
                                 Spacer()
                                 Text("🔥 \(item.days)")
                                     .font(.system(size: 14, weight: .bold))
-                                    .foregroundColor(.orange)
+                                    .foregroundColor(.black)
+                            }
+                            .padding()
+                            .background(Color.white)
+                            .cornerRadius(14)
+                            .shadow(color: Color.black.opacity(0.04), radius: 6, x: 0, y: 2)
+                            .padding(.horizontal)
+                        }
+                    }
+                    .padding(.bottom, 24)
+
+                    VStack(alignment: .leading, spacing: 12) {
+                        Text("Group Chats")
+                            .font(.system(size: 20, weight: .bold))
+                            .padding(.horizontal)
+
+                        ForEach(viewModel.groupChats) { room in
+                            HStack(spacing: 12) {
+                                VStack(alignment: .leading, spacing: 4) {
+                                    Text(room.name)
+                                        .font(.system(size: 16, weight: .semibold))
+                                    Text("\(room.members) members • \(room.topic)")
+                                        .font(.system(size: 13))
+                                        .foregroundColor(.black)
+                                        .lineLimit(1)
+                                }
+                                Spacer()
+                                Button("Join Chat") {}
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundColor(.black)
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(Color.blue)
+                                    .cornerRadius(18)
                             }
                             .padding()
                             .background(Color.white)
@@ -154,11 +187,11 @@ private struct StatItem: View {
         VStack(spacing: 4) {
             Text(value)
                 .font(.system(size: 28, weight: .bold))
-                .foregroundColor(.white)
+                .foregroundColor(.black)
             
             Text(label)
                 .font(.system(size: 12))
-                .foregroundColor(.white.opacity(0.9))
+                .foregroundColor(.black)
         }
         .frame(maxWidth: .infinity)
     }
@@ -190,18 +223,18 @@ private struct CommunityCard: View {
                 if let description = community.description {
                     Text(description)
                         .font(.system(size: 14))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.black)
                         .lineLimit(2)
                 }
                 
                 HStack(spacing: 4) {
                     Image(systemName: "person.2.fill")
                         .font(.system(size: 10))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.black)
                     
                     Text("\(formatNumber(community.memberCount)) members")
                         .font(.system(size: 12))
-                        .foregroundColor(.gray)
+                        .foregroundColor(.black)
                 }
             }
             
@@ -211,12 +244,12 @@ private struct CommunityCard: View {
             if isJoined {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 16, weight: .semibold))
-                    .foregroundColor(.gray)
+                    .foregroundColor(.black)
             } else {
                 Button(action: {}) {
                     Text("Join Community")
                         .font(.system(size: 14, weight: .semibold))
-                        .foregroundColor(.white)
+                        .foregroundColor(.black)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(Color.blue)
@@ -245,6 +278,7 @@ class CommunityViewModel: ObservableObject {
     @Published var joinedCommunities: [Community] = []
     @Published var discoverCommunities: [Community] = []
     @Published var friendStreaks: [FriendStreak] = []
+    @Published var groupChats: [GroupChatRoom] = []
     
     func loadCommunities() {
         // Mock data for joined communities
@@ -324,6 +358,12 @@ class CommunityViewModel: ObservableObject {
             FriendStreak(id: UUID(), name: "Jordan", days: 7),
             FriendStreak(id: UUID(), name: "Sam", days: 21)
         ]
+
+        groupChats = [
+            GroupChatRoom(id: UUID(), name: "Early Risers 6AM", topic: "Morning workouts", members: 86),
+            GroupChatRoom(id: UUID(), name: "High Protein Meal Prep", topic: "Meal planning swaps", members: 143),
+            GroupChatRoom(id: UUID(), name: "Weekend Long Run", topic: "Cardio accountability", members: 54)
+        ]
     }
 }
 
@@ -342,6 +382,13 @@ struct FriendStreak: Identifiable {
     let id: UUID
     let name: String
     let days: Int
+}
+
+struct GroupChatRoom: Identifiable {
+    let id: UUID
+    let name: String
+    let topic: String
+    let members: Int
 }
 
 #Preview {

@@ -5,7 +5,6 @@ import PhotosUI
 struct RecipeFinderView: View {
     @StateObject private var viewModel = RecipeFinderViewModel()
     @Environment(\.dismiss) var dismiss
-    @State private var searchMode: SearchMode = .smart
     @State private var ingredientsText = ""
     @State private var selectedCuisine = "Cuisine"
     @State private var selectedFlavor = "Flavor"
@@ -20,11 +19,6 @@ struct RecipeFinderView: View {
     let prepTimeOptions = ["Any", "Under 15 min", "15-30 min", "30-45 min", "45+ min"]
     let dietaryOptions = ["Vegetarian", "Vegan", "Gluten-Free", "Low Carb", "High Protein"]
     
-    enum SearchMode: String, CaseIterable {
-        case smart = "AI Generated"
-        case online = "Online Recipes"
-    }
-    
     var body: some View {
         NavigationView {
             ZStack {
@@ -38,7 +32,6 @@ struct RecipeFinderView: View {
                 ScrollView {
                     VStack(spacing: 24) {
                         headerSection
-                        modeSelector
                         inputSection
                         
                         if viewModel.isLoading {
@@ -80,22 +73,6 @@ struct RecipeFinderView: View {
                 Image(systemName: "xmark.circle.fill")
                     .font(.system(size: 28))
                         .foregroundColor(.white.opacity(0.7))
-            }
-        }
-    }
-    
-    private var modeSelector: some View {
-        HStack(spacing: 12) {
-            ForEach(SearchMode.allCases, id: \.self) { mode in
-                Button(action: { searchMode = mode }) {
-                    Text(mode.rawValue)
-                        .font(.system(size: 15, weight: .semibold))
-                        .foregroundColor(searchMode == mode ? .white : .white.opacity(0.7))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(searchMode == mode ? Color.blue : Color.white.opacity(0.12))
-                        .cornerRadius(12)
-                }
             }
         }
     }
@@ -185,7 +162,7 @@ struct RecipeFinderView: View {
             }
             
             Button(action: searchRecipes) {
-                Text(searchMode == .smart ? "Generate Recipes" : "Search Recipes")
+                Text("Search Recipes")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white)
                     .frame(maxWidth: .infinity)
@@ -213,7 +190,7 @@ struct RecipeFinderView: View {
         VStack(spacing: 12) {
             ProgressView()
                 .scaleEffect(1.2)
-            Text(searchMode == .smart ? "Generating recipes..." : "Searching recipes...")
+            Text("Searching recipes...")
                 .font(.system(size: 14))
                 .foregroundColor(.textSecondary)
         }
@@ -236,22 +213,12 @@ struct RecipeFinderView: View {
     
     private func searchRecipes() {
         let query = ingredientsWithPrepConstraint()
-        if searchMode == .smart {
-            viewModel.generateRecipes(
-                ingredients: query,
-                cuisine: (selectedCuisine == "Any" || selectedCuisine == "Cuisine") ? nil : selectedCuisine,
-                flavor: (selectedFlavor == "Any" || selectedFlavor == "Flavor") ? nil : selectedFlavor,
-                dietary: Array(selectedDietary),
-                imageData: photoData
-            )
-        } else {
-            viewModel.searchOnlineRecipes(
-                ingredients: query,
-                cuisine: (selectedCuisine == "Any" || selectedCuisine == "Cuisine") ? nil : selectedCuisine,
-                flavor: (selectedFlavor == "Any" || selectedFlavor == "Flavor") ? nil : selectedFlavor,
-                dietary: Array(selectedDietary)
-            )
-        }
+        viewModel.searchOnlineRecipes(
+            ingredients: query,
+            cuisine: (selectedCuisine == "Any" || selectedCuisine == "Cuisine") ? nil : selectedCuisine,
+            flavor: (selectedFlavor == "Any" || selectedFlavor == "Flavor") ? nil : selectedFlavor,
+            dietary: Array(selectedDietary)
+        )
     }
 
     private func ingredientsWithPrepConstraint() -> String {
