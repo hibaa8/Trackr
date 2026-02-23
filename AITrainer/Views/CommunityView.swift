@@ -18,11 +18,6 @@ struct CommunityView: View {
                 VStack(spacing: 0) {
                     // Header
                     HStack {
-                        Text("Community")
-                            .font(.system(size: 24, weight: .bold))
-                        
-                        Spacer()
-                        
                         Button(action: { dismiss() }) {
                             HStack(spacing: 6) {
                                 Image(systemName: "chevron.left")
@@ -30,12 +25,18 @@ struct CommunityView: View {
                                 Text("Back")
                                     .font(.system(size: 14, weight: .semibold))
                             }
-                            .foregroundColor(.black)
+                            .foregroundColor(.white)
                             .padding(.horizontal, 10)
                             .padding(.vertical, 6)
-                            .background(Color.black.opacity(0.06))
+                            .background(Color.white.opacity(0.14))
                             .clipShape(Capsule())
                         }
+
+                        Text("Community")
+                            .font(.system(size: 24, weight: .bold))
+                            .foregroundColor(.white)
+                        
+                        Spacer()
                     }
                     .padding()
                     
@@ -92,6 +93,7 @@ struct CommunityView: View {
                         HStack {
                             Text("Friend Streaks")
                                 .font(.system(size: 20, weight: .bold))
+                                .foregroundColor(.black)
                             Spacer()
                             Button("Add Friend") {}
                                 .font(.system(size: 13, weight: .semibold))
@@ -104,6 +106,7 @@ struct CommunityView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(item.name)
                                         .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.black)
                                     Text("\(item.days) day streak together")
                                         .font(.system(size: 13))
                                         .foregroundColor(.black)
@@ -125,6 +128,7 @@ struct CommunityView: View {
                     VStack(alignment: .leading, spacing: 12) {
                         Text("Group Chats")
                             .font(.system(size: 20, weight: .bold))
+                            .foregroundColor(.black)
                             .padding(.horizontal)
 
                         ForEach(viewModel.groupChats) { room in
@@ -132,6 +136,7 @@ struct CommunityView: View {
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(room.name)
                                         .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.black)
                                     Text("\(room.members) members • \(room.topic)")
                                         .font(.system(size: 13))
                                         .foregroundColor(.black)

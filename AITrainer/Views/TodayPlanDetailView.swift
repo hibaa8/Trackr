@@ -598,7 +598,7 @@ private struct GuidedWorkoutPlayerView: View {
                 Text(currentStep.name)
                     .font(.system(size: 30, weight: .black))
                     .foregroundColor(.white)
-                Text("Sets/Reps: \(currentStep.setsReps)")
+                Text("Sets & reps: \(readableSetsReps(currentStep.setsReps))")
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundColor(.white.opacity(0.9))
                 Text("Difficulty: \(currentStep.rpe)")
@@ -693,6 +693,16 @@ private struct GuidedWorkoutPlayerView: View {
             elapsedSeconds = max(0, resumeState.elapsedSeconds)
             isPaused = resumeState.isPaused
         }
+    }
+
+    private func readableSetsReps(_ raw: String) -> String {
+        let normalized = raw.trimmingCharacters(in: .whitespacesAndNewlines).replacingOccurrences(of: "×", with: "x")
+        let parts = normalized.split(separator: "x", maxSplits: 1).map(String.init)
+        guard parts.count == 2 else { return normalized }
+        let sets = parts[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let reps = parts[1].trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !sets.isEmpty, !reps.isEmpty else { return normalized }
+        return "\(sets) sets x \(reps) reps"
     }
 
     private func goNext() {
