@@ -68,7 +68,10 @@ struct GymClassesView: View {
         }
         .onChange(of: locationManager.location) { location in
             if let location = location {
-                gymFinder.searchNearbyGyms(location: location, keyword: searchText.isEmpty ? nil : searchText)
+                gymFinder.searchNearbyGyms(
+                    location: location,
+                    keyword: searchText.isEmpty ? nil : searchText
+                )
             }
         }
         .onChange(of: searchText) { _ in
@@ -259,22 +262,28 @@ struct GymClassesView: View {
         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty {
             if let location = locationManager.location {
-                gymFinder.searchNearbyGyms(location: location, keyword: nil)
+                gymFinder.searchNearbyGyms(
+                    location: location,
+                    keyword: nil
+                )
             } else {
+                gymFinder.nearbyGyms = []
+                gymFinder.errorMessage = "Please enable location access to find nearby gyms."
                 locationManager.requestLocationPermission()
             }
             return
         }
 
-        if isLocationQuery(trimmed) {
-            gymFinder.searchGymsByText(query: trimmed, location: nil)
-            return
-        }
-
         if let location = locationManager.location {
-            gymFinder.searchNearbyGyms(location: location, keyword: trimmed)
+            if isLocationQuery(trimmed) {
+                gymFinder.searchGymsByText(query: trimmed, location: location)
+            } else {
+                gymFinder.searchNearbyGyms(location: location, keyword: trimmed)
+            }
         } else {
-            gymFinder.searchGymsByText(query: trimmed, location: nil)
+            gymFinder.nearbyGyms = []
+            gymFinder.errorMessage = "Please enable location access to search for local gyms."
+            locationManager.requestLocationPermission()
         }
     }
 

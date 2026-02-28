@@ -472,6 +472,25 @@ def _ensure_profile_schema() -> None:
         has_profile_image = cur.fetchone() is not None
         if not has_profile_image:
             cur.execute("ALTER TABLE users ADD COLUMN profile_image_base64 TEXT NULL")
+        user_columns = [
+            ("location_shared", "BOOLEAN NULL"),
+            ("location_latitude", "DOUBLE PRECISION NULL"),
+            ("location_longitude", "DOUBLE PRECISION NULL"),
+        ]
+        for col_name, col_type in user_columns:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'users'
+                  AND column_name = ?
+                """,
+                (col_name,),
+            )
+            has_col = cur.fetchone() is not None
+            if not has_col:
+                cur.execute(f"ALTER TABLE users ADD COLUMN {col_name} {col_type}")
         pref_columns = [
             ("allergies", "TEXT NULL"),
             ("preferred_workout_time", "TEXT NULL"),
@@ -1672,15 +1691,24 @@ class OnboardingCompletePayload(BaseModel):
     height_cm: Optional[float] = None
     age: Optional[int] = None
     goal_type: Optional[str] = None
+    target_weight_kg: Optional[float] = None
+    activity_level: Optional[str] = None
     timeframe_weeks: Optional[float] = None
     weekly_weight_change_kg: Optional[float] = None
     trainer_id: Optional[int] = None
     trainer: Optional[str] = None
     full_name: Optional[str] = None
+    storyline: Optional[str] = None
+    personality: Optional[str] = None
+    fitness_background: Optional[str] = None
     voice: Optional[str] = None
+    workout_preference: Optional[str] = None
     allergies: Optional[str] = None
     preferred_workout_time: Optional[str] = None
     menstrual_cycle_notes: Optional[str] = None
+    location_shared: Optional[bool] = None
+    location_latitude: Optional[float] = None
+    location_longitude: Optional[float] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -2116,14 +2144,44 @@ def get_video_details(video_id: str):
         raise HTTPException(status_code=500, detail=f"Error fetching video: {e}")
 
 
+def _resolve_gym_search_origin(
+    lat: Optional[float],
+    lng: Optional[float],
+    user_id: Optional[int],
+) -> tuple[Optional[float], Optional[float]]:
+    if lat is not None and lng is not None:
+        return lat, lng
+    if user_id is None:
+        return lat, lng
+
+    _ensure_profile_schema()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT location_latitude, location_longitude FROM users WHERE id = ? LIMIT 1",
+            (user_id,),
+        )
+        row = cur.fetchone()
+    if not row:
+        return lat, lng
+    saved_lat = float(row[0]) if row[0] is not None else None
+    saved_lng = float(row[1]) if row[1] is not None else None
+    return saved_lat, saved_lng
+
+
 @app.get("/gyms/nearby")
 def get_nearby_gyms(
-    lat: float = Query(..., description="Latitude"),
-    lng: float = Query(..., description="Longitude"),
+    lat: Optional[float] = Query(None, description="Latitude"),
+    lng: Optional[float] = Query(None, description="Longitude"),
     radius: int = Query(5000, ge=100, le=50000, description="Search radius in meters"),
     keyword: Optional[str] = Query(None, description="Optional keyword filter"),
+    user_id: Optional[int] = Query(None, description="Optional user ID for saved location fallback"),
 ):
     """Proxy to Google Places Nearby Search for gyms."""
+    lat, lng = _resolve_gym_search_origin(lat, lng, user_id)
+    if lat is None or lng is None:
+        raise HTTPException(status_code=400, detail="Latitude/longitude missing. Share location first.")
+
     params: Dict[str, str] = {
         "location": f"{lat},{lng}",
         "radius": str(radius),
@@ -2139,6 +2197,7 @@ def search_gyms(
     query: str = Query(..., description="Search text"),
     lat: Optional[float] = Query(None, description="Optional latitude"),
     lng: Optional[float] = Query(None, description="Optional longitude"),
+    user_id: Optional[int] = Query(None, description="Optional user ID for saved location fallback"),
 ):
     """Proxy to Google Places Text Search for gyms."""
     trimmed = query.strip()
@@ -2146,6 +2205,7 @@ def search_gyms(
         raise HTTPException(status_code=400, detail="Query must not be empty")
 
     params: Dict[str, str] = {"query": f"gym near {trimmed}"}
+    lat, lng = _resolve_gym_search_origin(lat, lng, user_id)
     if lat is not None and lng is not None:
         params["location"] = f"{lat},{lng}"
         params["radius"] = "10000"
@@ -3961,6 +4021,20 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
+    if payload.location_shared is not None:
+        fields.append("location_shared = ?")
+        values.append(bool(payload.location_shared))
+    if payload.location_latitude is not None:
+        fields.append("location_latitude = ?")
+        values.append(float(payload.location_latitude))
+    if payload.location_longitude is not None:
+        fields.append("location_longitude = ?")
+        values.append(float(payload.location_longitude))
+    if payload.location_shared is False:
+        fields.append("location_latitude = ?")
+        values.append(None)
+        fields.append("location_longitude = ?")
+        values.append(None)
 
     if fields:
         values.append(user_id)
@@ -3988,6 +4062,8 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         pref_updates["preferred_workout_time"] = payload.preferred_workout_time
     if payload.menstrual_cycle_notes is not None:
         pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
+    if payload.workout_preference is not None:
+        pref_updates["workout_preferences"] = payload.workout_preference
     if pref_updates:
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -4010,7 +4086,7 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         pref_updates.get("goal_type"),
                         pref_updates.get("target_weight_kg"),
                         None,
-                        None,
+                        pref_updates.get("workout_preferences"),
                         None,
                         created_at,
                         pref_updates.get("allergies"),

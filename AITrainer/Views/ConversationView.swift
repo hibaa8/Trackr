@@ -1,6 +1,7 @@
 import SwiftUI
 import UIKit
 import Combine
+import CoreLocation
 
 struct ConversationView: View {
     let coach: Coach
@@ -15,6 +16,7 @@ struct ConversationView: View {
     @State private var submitError: String?
     @State private var subscriptions = Set<AnyCancellable>()
     @State private var lastPersonaPhrase: String?
+    @StateObject private var onboardingLocationManager = LocationManager()
     
     private let questions = [
         OnboardingQuestion(
@@ -53,6 +55,11 @@ struct ConversationView: View {
             quickReplies: ["4 weeks", "8 weeks", "12 weeks", "No rush"]
         ),
         OnboardingQuestion(
+            id: "workout_days_per_week",
+            text: "How many days per week do you want to work out, or no preference?",
+            quickReplies: ["2 days", "3 days", "4 days", "No preference"]
+        ),
+        OnboardingQuestion(
             id: "preferred_workout_time",
             text: "What time do you usually like to work out? (e.g., 6:30 AM)",
             quickReplies: ["6:00 AM", "12:00 PM", "6:00 PM", "8:00 PM"]
@@ -66,6 +73,11 @@ struct ConversationView: View {
             id: "menstrual_cycle_notes",
             text: "Optional: if relevant, share cycle timing/preferences so I can lighten or push training appropriately.",
             quickReplies: ["Skip", "Light training during period", "Keep normal training"]
+        ),
+        OnboardingQuestion(
+            id: "share_location",
+            text: "Would you like to share your location with the app so we can find nearby gyms faster?",
+            quickReplies: ["Share Location", "Not Now"]
         )
     ]
     
@@ -99,7 +111,7 @@ struct ConversationView: View {
                                 if message.isFromCoach {
                                     CoachMessageView(message: message, coach: coach)
                                 } else {
-                                    UserMessageView(message: message)
+                                    UserMessageView(message: message, coach: coach)
                                 }
                             }
                             if let submitError = submitError {
@@ -220,7 +232,14 @@ struct ConversationView: View {
         )
         messages.append(userMessage)
         submitError = nil
+        let currentQuestion = questions[currentQuestionIndex]
         answers[questions[currentQuestionIndex].id] = text
+        if currentQuestion.id == "share_location" {
+            let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if lower.contains("share") || lower == "yes" || lower == "y" {
+                onboardingLocationManager.requestLocationPermission()
+            }
+        }
         
         // Move to next question or complete
         currentQuestionIndex += 1
@@ -349,6 +368,12 @@ struct ConversationView: View {
         let activity = mapActivityLevel(from: answers["activity"])
         let targetWeightKg = parseWeightKg(from: answers["target_weight"])
         let timeframeWeeks = parseTimeframeWeeks(from: answers["timeframe"])
+        let workoutPreference = normalizedOptional(answers["workout_days_per_week"])
+        let preferredWorkoutTime = normalizedOptional(answers["preferred_workout_time"])
+        let menstrualCycleNotes = normalizedOptional(answers["menstrual_cycle_notes"])
+        let allergies = normalizedOptional(answers["allergies"])
+        let shareLocation = parseShareLocation(from: answers["share_location"])
+        let currentLocation = onboardingLocationManager.location
         let weeklyDelta = computeWeeklyChangeKg(
             currentWeight: weightKg,
             targetWeight: targetWeightKg,
@@ -370,7 +395,14 @@ struct ConversationView: View {
             height_cm: heightCm,
             age: ageInt,
             fitness_background: answers["experience"],
-            full_name: fullName
+            full_name: fullName,
+            workout_preference: workoutPreference,
+            allergies: allergies,
+            preferred_workout_time: preferredWorkoutTime,
+            menstrual_cycle_notes: menstrualCycleNotes,
+            location_shared: shareLocation,
+            location_latitude: shareLocation == true ? currentLocation?.coordinate.latitude : nil,
+            location_longitude: shareLocation == true ? currentLocation?.coordinate.longitude : nil
         )
     }
     
@@ -396,7 +428,7 @@ struct ConversationView: View {
             goalWeight: goalWeightText,
             activityLevel: activity,
             dietPreference: answers["dietary"] ?? "",
-            workoutPreference: answers["workout_type"] ?? "",
+            workoutPreference: answers["workout_days_per_week"] ?? "",
             calorieTarget: calorieTarget
         )
     }
@@ -486,6 +518,20 @@ struct ConversationView: View {
         }
         if lower.contains("moderate") {
             return "moderate"
+        }
+        return nil
+    }
+
+    private func parseShareLocation(from text: String?) -> Bool? {
+        let lower = text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if lower.isEmpty {
+            return nil
+        }
+        if lower.contains("share") || lower == "yes" || lower == "y" {
+            return true
+        }
+        if lower.contains("not now") || lower.contains("skip") || lower == "no" || lower == "n" {
+            return false
         }
         return nil
     }
@@ -583,18 +629,28 @@ struct ConversationView: View {
     
     struct UserMessageView: View {
         let message: OnboardingChatMessage
+        let coach: Coach
         
         var body: some View {
-            HStack {
+            HStack(alignment: .top, spacing: 12) {
                 Spacer()
-                
+
                 Text(message.text)
                     .font(.system(size: 16, weight: .medium))
                     .foregroundColor(.white)
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
-                    .background(Color.blue)
+                    .background(Color(coach.primaryColor).opacity(0.9))
                     .cornerRadius(16, corners: [.topLeft, .topRight, .bottomLeft])
+
+                ZStack {
+                    Circle()
+                        .fill(Color.white.opacity(0.2))
+                        .frame(width: 32, height: 32)
+                    Image(systemName: "person.fill")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white)
+                }
             }
         }
     }

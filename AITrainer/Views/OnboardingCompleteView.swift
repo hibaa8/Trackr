@@ -2,6 +2,7 @@ import SwiftUI
 import Combine
 import UIKit
 import AVFoundation
+import CoreLocation
 
 struct OnboardingCompleteView: View {
     @EnvironmentObject private var appState: AppState
@@ -202,10 +203,13 @@ struct TrainerMainView: View {
     @State private var showStreakFreezePrompt = false
     @State private var streakFreezePromptMessage = ""
     @State private var speechSynth = AVSpeechSynthesizer()
+    @StateObject private var dashboardLocationManager = LocationManager()
     @AppStorage("coachVoicePreference") private var coachVoicePreference = ""
     @AppStorage("trainer.endOfDayPromptDate") private var lastEndOfDayPromptDate = ""
     @AppStorage("trainer.dailyChecklistPromptDate") private var lastChecklistPromptDate = ""
     @AppStorage("trainer.lastCoachGreetingDay") private var lastCoachGreetingDay = ""
+    @AppStorage("trainer.hasShownInitialLocationPrompt") private var hasShownInitialLocationPrompt = false
+    @State private var showDashboardLocationPrompt = false
     @State private var isLoadingPlan = false
     @State private var cancellables = Set<AnyCancellable>()
 
@@ -234,14 +238,14 @@ struct TrainerMainView: View {
 
                 VStack(spacing: 0) {
                     headerView(topInset: geometry.safeAreaInsets.top)
-                        .padding(.bottom, 30)
+                        .padding(.bottom, 16)
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             greetingSection
                                 .padding(.horizontal, 24)
                                 .padding(.bottom, 10)
 
-                            coachToolsRow
+                            quickLogActions
                                 .padding(.horizontal, 20)
                                 .padding(.bottom, 12)
 
@@ -290,6 +294,7 @@ struct TrainerMainView: View {
             checkStreakStatusOnOpen()
             speakMotivationalGreetingIfNeeded()
             maybePromptEndOfDayCheckin()
+            maybePromptForInitialLocationShare()
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
             refreshDashboardData()
@@ -378,6 +383,14 @@ struct TrainerMainView: View {
         } message: {
             Text(streakFreezePromptMessage)
         }
+        .confirmationDialog("Share your location?", isPresented: $showDashboardLocationPrompt, titleVisibility: .visible) {
+            Button("Share Location") {
+                dashboardLocationManager.requestLocationPermission()
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("Turn on location to use Find Gym and discover local gyms near you.")
+        }
     }
 
     private func headerView(topInset: CGFloat) -> some View {
@@ -452,19 +465,19 @@ struct TrainerMainView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, topInset + 12)
+        .padding(.top, topInset + 4)
         .frame(maxWidth: .infinity)
     }
 
     private var greetingSection: some View {
         VStack(spacing: 12) {
             Text(getGreeting())
-                .font(.system(size: 48, weight: .bold))
+                .font(.system(size: 38, weight: .bold))
                 .foregroundColor(.white)
                 .multilineTextAlignment(.center)
 
             Text("Ready to crush your goals today?")
-                .font(.system(size: 20, weight: .medium))
+                .font(.system(size: 17, weight: .medium))
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
         }
@@ -578,17 +591,8 @@ struct TrainerMainView: View {
     private var quickLogActions: some View {
         HStack(spacing: 10) {
             quickLogButton(
-                title: "Log Weight",
-                systemImage: "scalemass.fill"
-            ) {
-                chatLaunchMode = .text
-                chatInitialPrompt = "I want to log my weight. Please ask me for my weight in kg and the date of the weigh-in, then log it."
-                showVoiceChat = true
-            }
-
-            quickLogButton(
-                title: "Log Food",
-                systemImage: "fork.knife"
+                title: "Log Meal",
+                systemImage: "fork.knife.circle"
             ) {
                 chatLaunchMode = .text
                 chatInitialPrompt = "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
@@ -596,11 +600,11 @@ struct TrainerMainView: View {
             }
 
             quickLogButton(
-                title: "Log Workout",
-                systemImage: "figure.strengthtraining.traditional"
+                title: "Log Exercise",
+                systemImage: "figure.run.circle"
             ) {
                 chatLaunchMode = .text
-                chatInitialPrompt = "I want to log a workout. Please ask me for the workout type, duration, sets, reps, intensity, and any other details needed to estimate calories burned, then log it."
+                chatInitialPrompt = "I want to log an exercise session. Please ask me for exercise type, duration, intensity, and calories burned if available, then log it."
                 showVoiceChat = true
             }
         }
@@ -801,26 +805,6 @@ struct TrainerMainView: View {
     private var bottomInputBar: some View {
         HStack(spacing: 16) {
             Button(action: {
-                chatLaunchMode = .text
-                chatInitialPrompt = nil
-                showVoiceChat = true
-            }) {
-                HStack(spacing: 8) {
-                    Image(systemName: "bubble.left.and.bubble.right")
-                        .font(.system(size: 18, weight: .semibold))
-                    Text("Text")
-                        .font(.system(size: 16, weight: .semibold))
-                }
-                .foregroundColor(.white)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
-                .background(
-                    RoundedRectangle(cornerRadius: 24)
-                        .fill(Color.white.opacity(0.15))
-                )
-            }
-
-            Button(action: {
                 chatLaunchMode = .voice
                 chatInitialPrompt = nil
                 showVoiceChat = true
@@ -828,7 +812,7 @@ struct TrainerMainView: View {
                 HStack(spacing: 8) {
                     Image(systemName: "mic.fill")
                         .font(.system(size: 18, weight: .semibold))
-                    Text("Voice")
+                    Text("Talk to Trainer")
                         .font(.system(size: 16, weight: .semibold))
                 }
                 .foregroundColor(.white)
@@ -860,6 +844,14 @@ struct TrainerMainView: View {
             return "Good afternoon!"
         } else {
             return "Good evening!"
+        }
+    }
+
+    private func maybePromptForInitialLocationShare() {
+        guard !hasShownInitialLocationPrompt else { return }
+        hasShownInitialLocationPrompt = true
+        if dashboardLocationManager.authorizationStatus == .notDetermined {
+            showDashboardLocationPrompt = true
         }
     }
 
