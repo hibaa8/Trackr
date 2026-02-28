@@ -22,18 +22,14 @@ class GymFinderService: ObservableObject {
         isLoading = true
         errorMessage = nil
 
-        let lat = location.coordinate.latitude
-        let lng = location.coordinate.longitude
-
         var components = URLComponents(string: "\(baseURL)/gyms/nearby")
-        components?.queryItems = [
-            URLQueryItem(name: "lat", value: String(lat)),
-            URLQueryItem(name: "lng", value: String(lng)),
-            URLQueryItem(name: "radius", value: String(radius))
-        ]
+        var queryItems = [URLQueryItem(name: "radius", value: String(radius))]
+        queryItems.append(URLQueryItem(name: "lat", value: String(location.coordinate.latitude)))
+        queryItems.append(URLQueryItem(name: "lng", value: String(location.coordinate.longitude)))
         if let keyword = keyword, !keyword.isEmpty {
-            components?.queryItems?.append(URLQueryItem(name: "keyword", value: keyword))
+            queryItems.append(URLQueryItem(name: "keyword", value: keyword))
         }
+        components?.queryItems = queryItems
 
         guard let url = components?.url else {
             self.errorMessage = "Invalid URL"
@@ -67,7 +63,7 @@ class GymFinderService: ObservableObject {
             .store(in: &cancellables)
     }
 
-    func searchGymsByText(query: String, location: CLLocation?) {
+    func searchGymsByText(query: String, location: CLLocation) {
         isLoading = true
         errorMessage = nil
 
@@ -75,12 +71,10 @@ class GymFinderService: ObservableObject {
         var components = URLComponents(string: "\(baseURL)/gyms/search")
         var queryItems = [URLQueryItem(name: "query", value: trimmedQuery)]
 
-        if let location = location {
-            let lat = location.coordinate.latitude
-            let lng = location.coordinate.longitude
-            queryItems.append(URLQueryItem(name: "lat", value: String(lat)))
-            queryItems.append(URLQueryItem(name: "lng", value: String(lng)))
-        }
+        let lat = location.coordinate.latitude
+        let lng = location.coordinate.longitude
+        queryItems.append(URLQueryItem(name: "lat", value: String(lat)))
+        queryItems.append(URLQueryItem(name: "lng", value: String(lng)))
 
         components?.queryItems = queryItems
 

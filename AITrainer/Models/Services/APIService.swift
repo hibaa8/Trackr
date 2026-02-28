@@ -18,6 +18,27 @@ enum APIError: Error {
     case unauthorized
 }
 
+extension APIError: LocalizedError {
+    var errorDescription: String? {
+        switch self {
+        case .invalidURL:
+            return "Invalid API URL."
+        case .requestFailed(let error):
+            return "Request failed: \(error.localizedDescription)"
+        case .invalidResponse:
+            return "Invalid response from server."
+        case .decodingFailed:
+            return "Failed to parse server response."
+        case .serverErrorWithMessage(_, let message):
+            return message
+        case .serverError(let code):
+            return "Server error (HTTP \(code))."
+        case .unauthorized:
+            return "You are not authorized. Please sign in again."
+        }
+    }
+}
+
 class APIService {
     static let shared = APIService()
     
@@ -547,9 +568,16 @@ struct OnboardingCompletePayload: Codable {
     let age: Int?
     let fitness_background: String?
     let full_name: String?
+    let workout_preference: String?
+    let muscle_group_preferences: String?
+    let sports_preferences: String?
     let allergies: String?
     let preferred_workout_time: String?
     let menstrual_cycle_notes: String?
+    let location_context: String?
+    let location_shared: Bool?
+    let location_latitude: Double?
+    let location_longitude: Double?
 
     init(
         user_id: Int?,
@@ -567,9 +595,16 @@ struct OnboardingCompletePayload: Codable {
         age: Int?,
         fitness_background: String?,
         full_name: String?,
+        workout_preference: String? = nil,
+        muscle_group_preferences: String? = nil,
+        sports_preferences: String? = nil,
         allergies: String? = nil,
         preferred_workout_time: String? = nil,
-        menstrual_cycle_notes: String? = nil
+        menstrual_cycle_notes: String? = nil,
+        location_context: String? = nil,
+        location_shared: Bool? = nil,
+        location_latitude: Double? = nil,
+        location_longitude: Double? = nil
     ) {
         self.user_id = user_id
         self.goal_type = goal_type
@@ -586,9 +621,16 @@ struct OnboardingCompletePayload: Codable {
         self.age = age
         self.fitness_background = fitness_background
         self.full_name = full_name
+        self.workout_preference = workout_preference
+        self.muscle_group_preferences = muscle_group_preferences
+        self.sports_preferences = sports_preferences
         self.allergies = allergies
         self.preferred_workout_time = preferred_workout_time
         self.menstrual_cycle_notes = menstrual_cycle_notes
+        self.location_context = location_context
+        self.location_shared = location_shared
+        self.location_latitude = location_latitude
+        self.location_longitude = location_longitude
     }
 }
 

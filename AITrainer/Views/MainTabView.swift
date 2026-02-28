@@ -3,7 +3,7 @@ import Combine
 
 struct MainTabView: View {
     @EnvironmentObject var appState: AppState
-    @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
+    @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Explore, 3=Settings
 
     private var coach: Coach {
         appState.selectedCoach ?? appState.coaches.first ?? Coach.placeholder
@@ -14,20 +14,172 @@ struct MainTabView: View {
             // Progress Page
             ProgressPageView()
             .tag(0)
+            .tabItem {
+                Label("Progress", systemImage: "chart.line.uptrend.xyaxis")
+            }
 
             // Trainer Page (default)
             TrainerMainViewContent(coach: coach)
             .tag(1)
+            .tabItem {
+                Label("Home", systemImage: "house.fill")
+            }
+
+            // Explore Page
+            ExplorePageView(coach: coach)
+                .tag(2)
+                .tabItem {
+                    Label("Explore", systemImage: "safari.fill")
+                }
 
             // Settings Page
             SettingsPageView(coach: coach)
-            .tag(2)
+            .tag(3)
+            .tabItem {
+                Label("Settings", systemImage: "gearshape.fill")
+            }
         }
-        .tabViewStyle(PageTabViewStyle(indexDisplayMode: .never))
         .preferredColorScheme(.dark)
         .onReceive(NotificationCenter.default.publisher(for: .openDashboardTab)) { _ in
             selectedTab = 1
         }
+    }
+}
+
+struct ExplorePageView: View {
+    let coach: Coach
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
+    @State private var showVoiceChat = false
+    @State private var chatPrompt: String?
+    @State private var showRecipePlanner = false
+    @State private var showCommunity = false
+    @State private var showGymFinder = false
+    @State private var showGymLocationPrompt = false
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+
+                ScrollView(showsIndicators: false) {
+                    VStack(alignment: .leading, spacing: 18) {
+                        Text("Explore")
+                            .font(.system(size: 30, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.top, 22)
+
+                        Text("Discover more ways to improve your fitness.")
+                            .font(.system(size: 14, weight: .medium))
+                            .foregroundColor(.white.opacity(0.72))
+                            .padding(.bottom, 4)
+
+                        exploreButton(
+                            title: "Plan Meals",
+                            subtitle: "Build meal ideas and calorie-smart menus.",
+                            systemImage: "fork.knife.circle.fill"
+                        ) {
+                            showRecipePlanner = true
+                        }
+
+                        exploreButton(
+                            title: "Learn Exercise",
+                            subtitle: "Get coached on form, progressions, and mistakes.",
+                            systemImage: "figure.strengthtraining.functional"
+                        ) {
+                            chatPrompt = "Teach me an exercise with proper form. Ask which exercise I want to learn, then give setup cues, common mistakes, regressions, and progressions."
+                            showVoiceChat = true
+                        }
+
+                        exploreButton(
+                            title: "Community",
+                            subtitle: "Connect with the fitness community.",
+                            systemImage: "person.3.sequence.fill"
+                        ) {
+                            showCommunity = true
+                        }
+
+                        exploreButton(
+                            title: "Find Gym",
+                            subtitle: "Search nearby gyms and classes.",
+                            systemImage: "mappin.and.ellipse"
+                        ) {
+                            showGymLocationPrompt = true
+                        }
+
+                        Spacer(minLength: 80)
+                    }
+                    .padding(.horizontal, 20)
+                }
+            }
+            .navigationBarHidden(true)
+        }
+        .fullScreenCover(isPresented: $showVoiceChat) {
+            VoiceActiveView(
+                coach: coach,
+                autoFocus: true,
+                startRecording: false,
+                initialPrompt: chatPrompt ?? "Teach me an exercise with proper form."
+            )
+            .environmentObject(appState)
+            .environmentObject(authManager)
+        }
+        .fullScreenCover(isPresented: $showRecipePlanner) {
+            RecipeFinderView()
+        }
+        .fullScreenCover(isPresented: $showCommunity) {
+            CommunityView()
+        }
+        .fullScreenCover(isPresented: $showGymFinder) {
+            GymClassesView()
+        }
+        .confirmationDialog("Share location to find gyms", isPresented: $showGymLocationPrompt, titleVisibility: .visible) {
+            Button("Share Location") {
+                showGymFinder = true
+            }
+            Button("Not Now", role: .cancel) {}
+        } message: {
+            Text("We use your location to find nearby gyms. Without location, local gym search stays off.")
+        }
+    }
+
+    private func exploreButton(
+        title: String,
+        subtitle: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            HStack(spacing: 14) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 22, weight: .semibold))
+                    .foregroundColor(.blue.opacity(0.95))
+                    .frame(width: 30)
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(title)
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundColor(.white)
+                    Text(subtitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.white.opacity(0.68))
+                }
+                Spacer()
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+            .padding(16)
+            .background(
+                RoundedRectangle(cornerRadius: 16)
+                    .fill(Color.white.opacity(0.08))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16)
+                            .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                    )
+            )
+        }
+        .buttonStyle(.plain)
     }
 }
 
@@ -1589,7 +1741,7 @@ struct SettingsPageView: View {
                 reminders = items.sorted { $0.scheduled_at < $1.scheduled_at }
                 notificationManager.syncReminders(items, notificationsEnabled: notificationsEnabled)
             case .failure(let error):
-                reminderErrorMessage = "Unable to load reminders: \(error.localizedDescription)"
+                reminderErrorMessage = "Unable to load reminders: \(readableReminderError(error))"
             }
         }
     }

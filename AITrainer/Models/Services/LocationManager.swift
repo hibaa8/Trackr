@@ -24,10 +24,13 @@ class LocationManager: NSObject, ObservableObject {
         super.init()
         locationManager.delegate = self
         locationManager.desiredAccuracy = kCLLocationAccuracyBest
+        authorizationStatus = locationManager.authorizationStatus
     }
 
     func requestLocationPermission() {
-        switch authorizationStatus {
+        let currentStatus = locationManager.authorizationStatus
+        authorizationStatus = currentStatus
+        switch currentStatus {
         case .notDetermined:
             locationManager.requestWhenInUseAuthorization()
         case .denied, .restricted:
@@ -40,7 +43,9 @@ class LocationManager: NSObject, ObservableObject {
     }
 
     func getCurrentLocation() {
-        guard authorizationStatus == .authorizedWhenInUse || authorizationStatus == .authorizedAlways else {
+        let currentStatus = locationManager.authorizationStatus
+        authorizationStatus = currentStatus
+        guard currentStatus == .authorizedWhenInUse || currentStatus == .authorizedAlways else {
             requestLocationPermission()
             return
         }

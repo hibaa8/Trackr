@@ -17,19 +17,9 @@ struct ChatSetupView: View {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 0) {
-                    // Skip button
-                    HStack {
-                        Spacer()
-                        Button("Skip") {
-                            withAnimation(.easeInOut(duration: 0.3)) {
-                                showConversation = true
-                            }
-                        }
-                        .font(.system(size: 16, weight: .medium))
-                        .foregroundColor(.gray)
-                    }
-                    .padding(.horizontal, 24)
-                    .padding(.top, 60)
+                    // Keep top spacing aligned with previous header area.
+                    Color.clear
+                        .frame(height: 60)
 
                     Spacer()
 

@@ -139,11 +139,6 @@ private extension WelcomeView {
                 }
                 .disabled(authManager.isLoading)
 
-                if mode == .signIn {
-                    AuthSecondaryButton(title: "Skip to Demo") {
-                    authManager.signInDemo()
-                }
-                }
             }
             .padding(24)
         }
@@ -169,6 +164,10 @@ private extension WelcomeView {
         }
 
         if mode == .signUp {
+            if !trimmedEmail.contains("@") {
+                errorMessage = "For testing, sign-up email only needs an @ symbol."
+                return
+            }
             if password != confirmPassword {
                 errorMessage = "Passwords do not match."
                 return
