@@ -5,6 +5,7 @@ import UIKit
 struct CoachDetailView: View {
     let coach: Coach
     var onBack: (() -> Void)? = nil
+    var onChoose: (() -> Void)? = nil
     @State private var showChatSetup = false
     @Environment(\.presentationMode) var presentationMode
     @EnvironmentObject private var appState: AppState
@@ -155,8 +156,12 @@ struct CoachDetailView: View {
                                 // Choose Button
                                 Button(action: {
                                     appState.setSelectedCoach(coach)
-                                    withAnimation(.easeInOut(duration: 0.3)) {
-                                        showChatSetup = true
+                                    if let onChoose {
+                                        onChoose()
+                                    } else {
+                                        withAnimation(.easeInOut(duration: 0.3)) {
+                                            showChatSetup = true
+                                        }
                                     }
                                 }) {
                                     Text("Choose \(coach.name)")

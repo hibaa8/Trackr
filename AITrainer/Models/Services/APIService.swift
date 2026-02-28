@@ -295,6 +295,30 @@ class APIService {
         return request(endpoint: "/api/ashley/chat", method: "POST", body: jsonData)
     }
 
+    func completeAshleyOnboarding(
+        userId: Int,
+        coachId: Int? = nil,
+        coachSlug: String? = nil,
+        messagesHistory: [[String: String]]
+    ) -> AnyPublisher<OnboardingCompleteResponse, APIError> {
+        struct AshleyCompleteRequest: Codable {
+            let user_id: Int
+            let coach_id: Int?
+            let coach_slug: String?
+            let messages_history: [[String: String]]
+        }
+        let body = AshleyCompleteRequest(
+            user_id: userId,
+            coach_id: coachId,
+            coach_slug: coachSlug,
+            messages_history: messagesHistory
+        )
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/ashley/complete-onboarding", method: "POST", body: jsonData)
+    }
+
     // MARK: - Videos
 
     func getCategories() -> AnyPublisher<[String], APIError> {

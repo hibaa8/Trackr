@@ -1,42 +1,48 @@
 import SwiftUI
+import Combine
 
 enum OnboardingFlow {
     case intro
     case ashley
-    case browseCoaches
 }
 
 struct WelcomeOnboardingView: View {
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
+
     @State private var flow: OnboardingFlow = .intro
     @State private var contentOpacity = 0.0
     @State private var buttonOffset = 50.0
-    /// When returning from "Choose Your Coach", skip the video and show the chat directly.
-    @State private var skipAshleyVideoOnReturn = false
+    @State private var showCoachBrowser = false
+    @State private var ashleyMessages: [[String: String]] = []
+    @State private var subscriptions = Set<AnyCancellable>()
 
     var body: some View {
         switch flow {
         case .ashley:
             AshleyConversationView(
                 onBrowseAll: {
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        flow = .browseCoaches
-                    }
+                    showCoachBrowser = true
+                },
+                onCoachChosen: { coach, history in
+                    completeOnboardingWithCoach(coach, messages: history)
                 },
                 onBackToIntro: {
                     withAnimation(.easeInOut(duration: 0.3)) {
-                        skipAshleyVideoOnReturn = false
                         flow = .intro
                     }
                 },
-                startWithChat: skipAshleyVideoOnReturn
+                startWithChat: false,
+                onMessagesUpdated: { ashleyMessages = $0 }
             )
-        case .browseCoaches:
-            CoachSelectionView(onBack: {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    skipAshleyVideoOnReturn = true
-                    flow = .ashley
-                }
-            })
+            .fullScreenCover(isPresented: $showCoachBrowser) {
+                CoachSelectionView(
+                    onBack: { showCoachBrowser = false },
+                    onCoachSelectedFromAshley: { coach in
+                        completeOnboardingWithCoach(coach, messages: ashleyMessages)
+                    }
+                )
+            }
         case .intro:
             ZStack {
                 // Dark gradient background with blue accent
@@ -132,6 +138,26 @@ struct WelcomeOnboardingView: View {
             contentOpacity = 1.0
             buttonOffset = 0.0
         }
+    }
+
+    private func completeOnboardingWithCoach(_ coach: Coach, messages: [[String: String]]) {
+        guard let userId = authManager.effectiveUserId else { return }
+
+        APIService.shared.completeAshleyOnboarding(
+            userId: userId,
+            coachId: coach.id,
+            coachSlug: nil,
+            messagesHistory: messages
+        )
+        .receive(on: DispatchQueue.main)
+        .sink(
+            receiveCompletion: { _ in },
+            receiveValue: { _ in
+                appState.setSelectedCoach(coach)
+                authManager.completeOnboarding()
+            }
+        )
+        .store(in: &subscriptions)
     }
 }
 

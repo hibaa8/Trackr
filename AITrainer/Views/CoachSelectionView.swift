@@ -5,6 +5,8 @@ import AVKit
 struct CoachSelectionView: View {
     @EnvironmentObject private var appState: AppState
     var onBack: (() -> Void)? = nil
+    /// When provided (Ashley onboarding flow), onboarding completes when user taps "Choose Coach" in detail.
+    var onCoachSelectedFromAshley: ((Coach) -> Void)? = nil
 
     @State private var selectedCoach: Coach? = nil
     @State private var showCoachDetail = false
@@ -46,6 +48,11 @@ struct CoachSelectionView: View {
                     withAnimation(.easeInOut(duration: 0.25)) {
                         showCoachDetail = false
                         selectedCoach = nil
+                    }
+                },
+                onChoose: onCoachSelectedFromAshley.map { onCoachSelected in
+                    {
+                        onCoachSelected(coach)
                     }
                 }
             )
@@ -245,6 +252,7 @@ struct CoachIntroVideoView: View {
     let coach: Coach
     var onBack: (() -> Void)? = nil
     let onFinish: () -> Void
+    var dismissOnFinish: Bool = true
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
     @State private var endObserver: NSObjectProtocol?
@@ -315,7 +323,9 @@ struct CoachIntroVideoView: View {
 
     private func finishPlayback() {
         player.pause()
-        dismiss()
+        if dismissOnFinish {
+            dismiss()
+        }
         onFinish()
     }
 }

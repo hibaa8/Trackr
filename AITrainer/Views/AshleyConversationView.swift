@@ -14,16 +14,28 @@ struct AshleyConversationView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
     var onBrowseAll: () -> Void
+    /// Optional shared completion handler used by parent to finish onboarding consistently.
+    var onCoachChosen: ((Coach, [[String: String]]) -> Void)? = nil
     var onBackToIntro: (() -> Void)? = nil
     /// When true, skip the intro video and show the chat directly (e.g. when returning from "Choose Your Coach").
     var startWithChat: Bool = false
+    /// Called when messages change, so parent can store history for complete-onboarding.
+    var onMessagesUpdated: (([[String: String]]) -> Void)? = nil
 
     @State private var showVideoFirst: Bool
 
-    init(onBrowseAll: @escaping () -> Void, onBackToIntro: (() -> Void)? = nil, startWithChat: Bool = false) {
+    init(
+        onBrowseAll: @escaping () -> Void,
+        onCoachChosen: ((Coach, [[String: String]]) -> Void)? = nil,
+        onBackToIntro: (() -> Void)? = nil,
+        startWithChat: Bool = false,
+        onMessagesUpdated: (([[String: String]]) -> Void)? = nil
+    ) {
         self.onBrowseAll = onBrowseAll
+        self.onCoachChosen = onCoachChosen
         self.onBackToIntro = onBackToIntro
         self.startWithChat = startWithChat
+        self.onMessagesUpdated = onMessagesUpdated
         _showVideoFirst = State(initialValue: !startWithChat)
     }
 
@@ -73,9 +85,7 @@ struct AshleyConversationView: View {
                 if let coach = recommendedCoach {
                     AshleyRecommendationCard(
                         coach: coach,
-                        onMeetCoach: {
-                            coachToMeet = coach
-                        },
+                        onMeetCoach: { coachToMeet = coach },
                         onBrowseAll: onBrowseAll
                     )
                     .padding(.horizontal, 20)
@@ -118,36 +128,43 @@ struct AshleyConversationView: View {
 
                 Spacer()
 
-                // Input area (only when no recommendation yet)
-                if recommendedCoach == nil {
-                    HStack(spacing: 12) {
-                        TextField("Type your message...", text: $userInput)
-                            .font(.system(size: 16))
-                            .foregroundColor(.white)
-                            .padding(.horizontal, 16)
-                            .padding(.vertical, 12)
-                            .background(
-                                RoundedRectangle(cornerRadius: 24)
-                                    .fill(Color(red: 0.1, green: 0.1, blue: 0.1))
-                            )
-                            .submitLabel(.send)
+                // Keep chat input available even after recommendation,
+                // so user can continue talking with Ashley.
+                HStack(spacing: 12) {
+                    TextField("Type your message...", text: $userInput)
+                        .font(.system(size: 16))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 16)
+                        .padding(.vertical, 12)
+                        .background(
+                            RoundedRectangle(cornerRadius: 24)
+                                .fill(Color(red: 0.1, green: 0.1, blue: 0.1))
+                        )
+                        .submitLabel(.send)
 
-                        Button(action: sendMessage) {
-                            Image(systemName: "arrow.right.circle.fill")
-                                .font(.system(size: 28))
-                                .foregroundColor(userInput.isEmpty ? .gray : Color(ashley.primaryColor))
-                        }
-                        .disabled(userInput.isEmpty || isSubmitting)
+                    Button(action: sendMessage) {
+                        Image(systemName: "arrow.right.circle.fill")
+                            .font(.system(size: 28))
+                            .foregroundColor(userInput.isEmpty ? .gray : Color(ashley.primaryColor))
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.bottom, 40)
+                    .disabled(userInput.isEmpty || isSubmitting)
                 }
+                .padding(.horizontal, 20)
+                .padding(.bottom, 40)
             }
         }
+        .onChange(of: messages.count) { _, _ in
+            onMessagesUpdated?(messagesHistoryForAPI())
+        }
         .fullScreenCover(item: $coachToMeet) { coach in
-            MeetCoachFlowView(coach: coach, showBackToAshley: true) {
-                coachToMeet = nil
-            }
+            MeetCoachFlowView(
+                coach: coach,
+                showBackToAshley: true,
+                onBack: { coachToMeet = nil },
+                onChooseCoach: {
+                    completeOnboardingWithCoach(coach)
+                }
+            )
         }
         .onAppear {
             loadCoachesIfNeeded()
@@ -155,13 +172,57 @@ struct AshleyConversationView: View {
                 showInitialGreeting = false
                 let greeting = AshleyMessage(
                     id: UUID().uuidString,
-                    text: "Hey! I'm Ashley, your AI fitness receptionist. I'd love to learn a bit about you so I can match you with the perfect coach. What brings you here today?",
+                    text: "Hey! I'm Ashley, your Vaylo Fitness guide. I'd love to learn a bit about you so I can match you with the perfect coach. What brings you here today?",
                     isFromAshley: true,
                     timestamp: Date()
                 )
                 messages.append(greeting)
             }
+            onMessagesUpdated?(messagesHistoryForAPI())
         }
+    }
+
+    private func messagesHistoryForAPI() -> [[String: String]] {
+        messages.map { msg in
+            [
+                "role": msg.isFromAshley ? "assistant" : "user",
+                "content": msg.text
+            ]
+        }
+    }
+
+    private func completeOnboardingWithCoach(_ coach: Coach) {
+        let history = messagesHistoryForAPI()
+        coachToMeet = nil
+        if let onCoachChosen {
+            onCoachChosen(coach, history)
+            return
+        }
+
+        guard let userId = authManager.effectiveUserId else {
+            submitError = "Please sign in to continue."
+            return
+        }
+        submitError = nil
+
+        APIService.shared.completeAshleyOnboarding(
+            userId: userId,
+            coachId: coach.id,
+            messagesHistory: history
+        )
+        .receive(on: DispatchQueue.main)
+        .sink(
+            receiveCompletion: { completion in
+                if case .failure(let error) = completion {
+                    submitError = "Failed to complete setup: \(error.localizedDescription)"
+                }
+            },
+            receiveValue: { _ in
+                appState.setSelectedCoach(coach)
+                authManager.completeOnboarding()
+            }
+        )
+        .store(in: &subscriptions)
     }
 
     private func loadCoachesIfNeeded() {
@@ -478,6 +539,7 @@ struct MeetCoachFlowView: View {
     let coach: Coach
     var showBackToAshley: Bool = false
     var onBack: (() -> Void)?
+    var onChooseCoach: (() -> Void)? = nil
 
     @State private var showDetail = false
 
@@ -487,12 +549,14 @@ struct MeetCoachFlowView: View {
             if showDetail {
                 CoachDetailView(
                     coach: coach,
-                    onBack: showBackToAshley ? onBack : nil
+                    onBack: showBackToAshley ? onBack : nil,
+                    onChoose: onChooseCoach
                 )
             } else {
                 CoachIntroVideoView(
                     coach: coach,
-                    onBack: showBackToAshley ? onBack : nil
+                    onBack: showBackToAshley ? onBack : nil,
+                    dismissOnFinish: !showBackToAshley
                 ) {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         showDetail = true

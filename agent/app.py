@@ -478,6 +478,8 @@ def _ensure_profile_schema() -> None:
             ("allergies", "TEXT NULL"),
             ("preferred_workout_time", "TEXT NULL"),
             ("menstrual_cycle_notes", "TEXT NULL"),
+            ("trainer_gender_preference", "TEXT NULL"),
+            ("trainer_style_preference", "TEXT NULL"),
             ("muscle_group_preferences", "TEXT NULL"),
             ("sports_preferences", "TEXT NULL"),
             ("location_context", "TEXT NULL"),
@@ -1427,6 +1429,13 @@ class AshleyChatResponse(BaseModel):
     coach_recommendation_slug: Optional[str] = None
 
 
+class AshleyCompleteOnboardingRequest(BaseModel):
+    user_id: int
+    coach_id: Optional[int] = None
+    coach_slug: Optional[str] = None  # e.g. marcus_hayes
+    messages_history: List[Dict[str, str]]  # [{"role":"user"|"assistant","content":"..."}]
+
+
 class CoachItemResponse(BaseModel):
     id: int
     slug: str
@@ -1718,6 +1727,9 @@ class OnboardingCompletePayload(BaseModel):
     fitness_background: Optional[str] = None
     voice: Optional[str] = None
     workout_preference: Optional[str] = None
+    dietary_preferences: Optional[str] = None
+    trainer_gender_preference: Optional[str] = None
+    trainer_style_preference: Optional[str] = None
     muscle_group_preferences: Optional[str] = None
     sports_preferences: Optional[str] = None
     allergies: Optional[str] = None
@@ -2614,6 +2626,137 @@ def ashley_chat(payload: AshleyChatRequest):
         thread_id=thread_id,
         coach_recommendation_slug=coach_slug,
     )
+
+
+def _extract_onboarding_from_ashley_conversation(messages_history: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Extract structured onboarding fields from Ashley chat history."""
+    from langchain_openai import ChatOpenAI
+    import json
+
+    conv_text = "\n".join(
+        f"{h.get('role', 'user')}: {h.get('content', '')}"
+        for h in (messages_history or [])
+    )
+    if not conv_text.strip():
+        return {}
+
+    prompt = """Given this fitness onboarding conversation between Ashley (receptionist) and the user, extract structured fields.
+Return a JSON object with these keys (use null for missing):
+- full_name (string)
+- age (integer)
+- height_cm (number, convert inches to cm if needed: 1 in = 2.54 cm)
+- current_weight_kg (number, convert lbs to kg if needed: 1 lb = 0.453592 kg)
+- target_weight_kg (number)
+- goal_type: "lose_weight" | "build_muscle" | "get_fit" | null
+- activity_level: "sedentary" | "light" | "moderate" | "active" | "very_active" | null
+- fitness_background: "beginner" | "some_experience" | "intermediate" | "advanced" | null
+- timeframe_weeks (number, e.g. 12 for "12 weeks")
+- workout_preference (string, e.g. "3 days" or "strength")
+- muscle_group_preferences (string or null)
+- sports_preferences (string or null)
+- preferred_workout_time (string or null)
+- allergies (string or null)
+- menstrual_cycle_notes (string or null)
+- dietary_preferences (string or null)
+- trainer_gender_preference (string, e.g. "female", "male", "non-binary", "no preference")
+- trainer_style_preference (string, e.g. "strict", "gentle", "hype", "technical", or null)
+
+Conversation:
+"""
+    prompt += conv_text
+    prompt += "\n\nReturn ONLY valid JSON, no markdown."
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=1)
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        content = response.content if hasattr(response, "content") else str(response)
+        # Strip markdown code blocks if present
+        if "```" in content:
+            content = re.sub(r"```\w*\n?", "", content).strip()
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+@app.post("/api/ashley/complete-onboarding")
+def ashley_complete_onboarding(payload: AshleyCompleteOnboardingRequest):
+    """Complete onboarding using Ashley's conversation. Extracts structured data and creates plan."""
+    user_id = payload.user_id
+    extracted = _extract_onboarding_from_ashley_conversation(payload.messages_history)
+
+    # Resolve coach
+    trainer_id: Optional[int] = None
+    if payload.coach_id:
+        trainer_id = payload.coach_id
+    elif payload.coach_slug:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM coaches WHERE slug = ? LIMIT 1", (payload.coach_slug,))
+            row = cur.fetchone()
+        if row:
+            trainer_id = int(row[0])
+
+    if not trainer_id:
+        raise HTTPException(status_code=400, detail="coach_id or coach_slug required")
+
+    # Fetch coach for storyline/personality
+    storyline, personality, voice = None, None, None
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT philosophy, personality FROM coaches WHERE id = ? LIMIT 1",
+            (trainer_id,),
+        )
+        row = cur.fetchone()
+    if row:
+        storyline = str(row[0]) if row[0] else None
+        personality = str(row[1]) if row[1] else None
+    voice = _default_voice_for_agent(trainer_id)
+
+    # Build OnboardingCompletePayload
+    goal_type = extracted.get("goal_type")
+    current_weight = extracted.get("current_weight_kg")
+    target_weight = extracted.get("target_weight_kg")
+    timeframe = extracted.get("timeframe_weeks")
+    weekly_delta = None
+    if current_weight is not None and target_weight is not None and timeframe:
+        if goal_type == "lose_weight" and current_weight > target_weight:
+            weekly_delta = (target_weight - current_weight) / float(timeframe)
+        elif goal_type == "build_muscle" and target_weight > current_weight:
+            weekly_delta = (target_weight - current_weight) / float(timeframe)
+        elif goal_type == "get_fit":
+            weekly_delta = 0.0
+
+    payload_obj = OnboardingCompletePayload(
+        user_id=user_id,
+        current_weight_kg=extracted.get("current_weight_kg"),
+        height_cm=extracted.get("height_cm"),
+        age=extracted.get("age"),
+        goal_type=goal_type,
+        target_weight_kg=target_weight,
+        activity_level=extracted.get("activity_level"),
+        timeframe_weeks=float(timeframe) if timeframe else None,
+        weekly_weight_change_kg=weekly_delta,
+        trainer_id=trainer_id,
+        storyline=storyline,
+        personality=personality,
+        voice=voice,
+        full_name=extracted.get("full_name"),
+        fitness_background=extracted.get("fitness_background"),
+        workout_preference=extracted.get("workout_preference"),
+        dietary_preferences=extracted.get("dietary_preferences"),
+        trainer_gender_preference=extracted.get("trainer_gender_preference"),
+        trainer_style_preference=extracted.get("trainer_style_preference"),
+        muscle_group_preferences=extracted.get("muscle_group_preferences"),
+        sports_preferences=extracted.get("sports_preferences"),
+        allergies=extracted.get("allergies"),
+        preferred_workout_time=extracted.get("preferred_workout_time"),
+        menstrual_cycle_notes=extracted.get("menstrual_cycle_notes"),
+    )
+    return complete_onboarding(payload_obj)
 
 
 @app.post("/coach/feedback", response_model=CoachFeedbackResponse)
@@ -4137,6 +4280,12 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
     if payload.workout_preference is not None:
         pref_updates["workout_preferences"] = payload.workout_preference
+    if payload.dietary_preferences is not None:
+        pref_updates["dietary_preferences"] = payload.dietary_preferences
+    if payload.trainer_gender_preference is not None:
+        pref_updates["trainer_gender_preference"] = payload.trainer_gender_preference
+    if payload.trainer_style_preference is not None:
+        pref_updates["trainer_style_preference"] = payload.trainer_style_preference
     if payload.muscle_group_preferences is not None:
         pref_updates["muscle_group_preferences"] = payload.muscle_group_preferences
     if payload.sports_preferences is not None:
@@ -4156,8 +4305,9 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
                         dietary_preferences, workout_preferences, timezone, created_at,
                         allergies, preferred_workout_time, menstrual_cycle_notes,
+                        trainer_gender_preference, trainer_style_preference,
                         muscle_group_preferences, sports_preferences, location_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_id,
@@ -4165,13 +4315,15 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         pref_updates.get("activity_level"),
                         pref_updates.get("goal_type"),
                         pref_updates.get("target_weight_kg"),
-                        None,
+                        pref_updates.get("dietary_preferences"),
                         pref_updates.get("workout_preferences"),
                         None,
                         created_at,
                         pref_updates.get("allergies"),
                         pref_updates.get("preferred_workout_time"),
                         pref_updates.get("menstrual_cycle_notes"),
+                        pref_updates.get("trainer_gender_preference"),
+                        pref_updates.get("trainer_style_preference"),
                         pref_updates.get("muscle_group_preferences"),
                         pref_updates.get("sports_preferences"),
                         pref_updates.get("location_context"),
