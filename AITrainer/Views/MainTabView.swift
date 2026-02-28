@@ -6,7 +6,7 @@ struct MainTabView: View {
     @State private var selectedTab = 1 // 0=Progress, 1=Trainer, 2=Settings
 
     private var coach: Coach {
-        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.placeholder
     }
 
     var body: some View {
@@ -164,7 +164,7 @@ struct ProgressPageView: View {
                     .fill(Color.black.opacity(0.3))
                     .frame(height: 100)
 
-                if weightSeries.count >= 2 {
+                if weightSeries.count >= 1 {
                     GeometryReader { proxy in
                         let rect = CGRect(origin: .zero, size: proxy.size)
                         ZStack {
@@ -178,6 +178,12 @@ struct ProgressPageView: View {
                                 )
                             weightLinePath(in: rect)
                                 .stroke(Color.blue, lineWidth: 2)
+                            if weightSeries.count == 1, let onlyPoint = weightChartPoints(in: rect).first {
+                                Circle()
+                                    .fill(Color.blue)
+                                    .frame(width: 8, height: 8)
+                                    .position(onlyPoint)
+                            }
                         }
                     }
                 } else {
@@ -202,6 +208,22 @@ struct ProgressPageView: View {
                     .foregroundColor(.white)
 
                 Spacer()
+
+                NavigationLink(
+                    destination: NetCaloriesDetailView(
+                        data: netCaloriesSeries,
+                        periodLabel: periods[selectedPeriod]
+                    )
+                ) {
+                    HStack(spacing: 6) {
+                        Text("Net Details")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                        Image(systemName: "chevron.right")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.blue)
+                    }
+                }
             }
 
             // Detailed bar chart matching mockup
@@ -556,13 +578,18 @@ struct ProgressPageView: View {
 
     private func weightChartPoints(in rect: CGRect) -> [CGPoint] {
         let values = weightSeries
-        guard values.count >= 2 else { return [] }
+        guard !values.isEmpty else { return [] }
         let minValue = values.min() ?? 0
         let maxValue = values.max() ?? 1
-        let range = max(maxValue - minValue, 1)
+        let range = maxValue - minValue
         return values.enumerated().map { index, value in
             let x = rect.width * CGFloat(index) / CGFloat(max(values.count - 1, 1))
-            let y = rect.height - rect.height * CGFloat((value - minValue) / range)
+            let y: CGFloat
+            if range <= 0 {
+                y = rect.height * 0.5
+            } else {
+                y = rect.height - rect.height * CGFloat((value - minValue) / range)
+            }
             return CGPoint(x: x, y: y)
         }
     }
@@ -616,6 +643,34 @@ struct ProgressPageView: View {
     private var latestCaloriesText: String {
         guard let latest = weeklyCalories.last else { return "—" }
         return "\(latest) kcal"
+    }
+
+    private var netCaloriesSeries: [(day: String, intake: Int, burned: Int, net: Int)] {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let calendar = Calendar.current
+        let days = (0..<selectedPeriodDayWindow).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
+        var intakeByDay: [String: Int] = [:]
+        var burnedByDay: [String: Int] = [:]
+
+        for meal in progress?.meals ?? [] {
+            guard let loggedAt = meal.logged_at else { continue }
+            let dayKey = String(loggedAt.prefix(10))
+            intakeByDay[dayKey, default: 0] += meal.calories ?? 0
+        }
+
+        for workout in progress?.workouts ?? [] {
+            guard workout.completed == true, let rawDate = workout.date else { continue }
+            let dayKey = String(rawDate.prefix(10))
+            burnedByDay[dayKey, default: 0] += workout.calories_burned ?? 0
+        }
+
+        return days.reversed().map { day in
+            let key = formatter.string(from: day)
+            let intake = intakeByDay[key, default: 0]
+            let burned = burnedByDay[key, default: 0]
+            return (day: key, intake: intake, burned: burned, net: intake - burned)
+        }
     }
 
     private var workoutCompletionRatio: Double {
@@ -720,6 +775,208 @@ struct WorkoutLogsHistoryView: View {
     }
 }
 
+private struct NetCaloriesDetailView: View {
+    let data: [(day: String, intake: Int, burned: Int, net: Int)]
+    let periodLabel: String
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+
+            VStack(spacing: 14) {
+                HStack {
+                    Button(action: { dismiss() }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(10)
+                            .background(Color.white.opacity(0.12))
+                            .clipShape(Circle())
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 16)
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Net Calories")
+                        .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.white)
+                    Text("\(periodLabel) view • intake - burned")
+                        .font(.system(size: 14, weight: .medium))
+                        .foregroundColor(.white.opacity(0.68))
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 20)
+
+                ScrollView {
+                    VStack(spacing: 10) {
+                        ForEach(Array(data.enumerated()), id: \.offset) { _, item in
+                            HStack {
+                                Text(item.day)
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.82))
+                                Spacer()
+                                Text("+\(item.intake)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.orange)
+                                Text("-\(item.burned)")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundColor(.green)
+                                Text("\(item.net) kcal")
+                                    .font(.system(size: 15, weight: .bold))
+                                    .foregroundColor(item.net <= 0 ? .green : .white)
+                                    .frame(minWidth: 80, alignment: .trailing)
+                            }
+                            .padding(14)
+                            .background(
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.white.opacity(0.08))
+                            )
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.bottom, 20)
+                }
+            }
+        }
+        .navigationBarBackButtonHidden(true)
+        .navigationBarHidden(true)
+    }
+}
+
+private struct HealthDataImpactView: View {
+    let userId: Int
+    @Environment(\.dismiss) private var dismiss
+    @State private var response: HealthActivityImpactResponse?
+    @State private var isLoading = false
+    @State private var errorMessage: String?
+    @State private var cancellables = Set<AnyCancellable>()
+
+    var body: some View {
+        NavigationView {
+            ZStack {
+                Color.black.ignoresSafeArea()
+                if isLoading {
+                    ProgressView("Loading Apple Health impact...")
+                        .tint(.white)
+                        .foregroundColor(.white)
+                } else if let errorMessage {
+                    VStack(spacing: 12) {
+                        Text("Could not load data")
+                            .font(.system(size: 18, weight: .bold))
+                            .foregroundColor(.white)
+                        Text(errorMessage)
+                            .font(.system(size: 14))
+                            .foregroundColor(.white.opacity(0.75))
+                            .multilineTextAlignment(.center)
+                    }
+                    .padding(20)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 14) {
+                            Text("Health Data & Plan Impact")
+                                .font(.system(size: 24, weight: .bold))
+                                .foregroundColor(.white)
+                            Text("Daily view of Apple Health metrics versus plan targets.")
+                                .font(.system(size: 14))
+                                .foregroundColor(.white.opacity(0.72))
+
+                            ForEach(response?.items ?? []) { item in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    Text(formatDay(item.date))
+                                        .font(.system(size: 16, weight: .semibold))
+                                        .foregroundColor(.white)
+                                    HStack {
+                                        Text("Steps: \(item.steps)")
+                                        Spacer()
+                                        Text("Burn: \(item.health_calories_burned) kcal")
+                                    }
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.86))
+
+                                    HStack {
+                                        Text("Exercise: \(item.active_minutes) min")
+                                        Spacer()
+                                        if let intakeTarget = item.meal_target {
+                                            Text("Meals: \(item.meal_intake)/\(intakeTarget) kcal")
+                                        } else {
+                                            Text("Meals: \(item.meal_intake) kcal")
+                                        }
+                                    }
+                                    .font(.system(size: 13, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.86))
+
+                                    if let expected = item.workout_expected_burn {
+                                        Text("Calorie burn: actual \(item.health_calories_burned) / planned \(expected) kcal")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.78))
+                                    } else {
+                                        Text("Calorie burn: actual \(item.health_calories_burned) kcal")
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(.white.opacity(0.78))
+                                    }
+                                    if !item.workouts_summary.isEmpty {
+                                        Text("Workout source: \(item.workouts_summary)")
+                                            .font(.system(size: 12))
+                                            .foregroundColor(.white.opacity(0.72))
+                                    }
+                                }
+                                .padding(14)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(Color.white.opacity(0.08))
+                                )
+                            }
+                        }
+                        .padding(20)
+                    }
+                }
+            }
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .topBarLeading) {
+                    Button("Close") { dismiss() }
+                }
+                ToolbarItem(placement: .topBarTrailing) {
+                    Button("Refresh") { load() }
+                }
+            }
+        }
+        .onAppear { load() }
+    }
+
+    private func load() {
+        isLoading = true
+        errorMessage = nil
+        APIService.shared.getHealthActivityImpact(userId: userId, days: 7)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    isLoading = false
+                    if case .failure(let error) = completion {
+                        errorMessage = String(describing: error)
+                    }
+                },
+                receiveValue: { payload in
+                    response = payload
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func formatDay(_ value: String) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        guard let date = formatter.date(from: value) else { return value }
+        formatter.dateFormat = "EEE, MMM d"
+        return formatter.string(from: date)
+    }
+
+}
+
 private struct WorkoutLogSmallCard: View {
     let workout: ProgressWorkoutResponse
 
@@ -779,23 +1036,32 @@ private struct WorkoutLogSmallCard: View {
 
 // Settings Page matching screen 11 mockup
 struct SettingsPageView: View {
+    private let coachChangeCooldownDays = 2
     let coach: Coach
     @EnvironmentObject private var authManager: AuthenticationManager
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var notificationManager: NotificationManager
+    @EnvironmentObject private var healthKitManager: HealthKitManager
     @Environment(\.openURL) private var openURL
     @AppStorage("enableNotifications") private var notificationsEnabled = true
     @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
-    @State private var healthSyncEnabled = false
+    @AppStorage("enableHealthSync") private var healthSyncEnabled = false
     @State private var profileUser: ProfileUserResponse?
     @State private var showManagePlan = false
     @State private var showHelp = false
     @State private var showPrivacyPolicy = false
     @State private var showEditProfile = false
     @State private var showCoachSelection = false
+    @State private var showHealthImpact = false
+    @State private var showReminderManager = false
     @State private var isCreatingCheckout = false
     @State private var billingErrorMessage: String?
+    @State private var healthSyncMessage: String?
+    @State private var reminderErrorMessage: String?
+    @State private var reminders: [ReminderItemResponse] = []
+    @State private var remindersLoading = false
+    @State private var reminderBusyIds: Set<Int> = []
     @State private var cancellables = Set<AnyCancellable>()
 
     var body: some View {
@@ -827,6 +1093,9 @@ struct SettingsPageView: View {
         .onAppear {
             notificationManager.checkAuthorizationStatus()
             loadProfileData()
+            if let userId = authManager.effectiveUserId {
+                loadRemindersForSettings(userId: userId)
+            }
         }
         .onReceive(backendConnector.$profile) { response in
             if let response {
@@ -840,6 +1109,13 @@ struct SettingsPageView: View {
                 syncReminderNotifications(userId: userId)
             } else {
                 notificationManager.cancelReminderNotifications()
+            }
+        }
+        .onChange(of: healthSyncEnabled) { _, isEnabled in
+            guard let userId = authManager.effectiveUserId else { return }
+            if isEnabled {
+                healthKitManager.requestAuthorization()
+                syncHealthDataFromHealthKit(userId: userId, days: 7)
             }
         }
         .sheet(isPresented: $showManagePlan) {
@@ -874,6 +1150,7 @@ struct SettingsPageView: View {
                     userId: userId,
                     onCoachChanged: { newCoach in
                         appState.selectedCoach = newCoach
+                        loadProfileData()
                         showCoachSelection = false
                     }
                 )
@@ -891,6 +1168,32 @@ struct SettingsPageView: View {
                 privacyPolicyView
             }
         }
+        .sheet(isPresented: $showHealthImpact) {
+            if let userId = authManager.effectiveUserId {
+                HealthDataImpactView(userId: userId)
+            }
+        }
+        .sheet(isPresented: $showReminderManager) {
+            if let userId = authManager.effectiveUserId {
+                NavigationView {
+                    ReminderManagementView(
+                        reminders: reminders,
+                        isLoading: remindersLoading,
+                        busyReminderIds: reminderBusyIds,
+                        notificationsEnabled: notificationsEnabled,
+                        onRefresh: {
+                            loadRemindersForSettings(userId: userId)
+                        },
+                        onToggleReminder: { reminder, isEnabled in
+                            updateReminderStatus(userId: userId, reminder: reminder, isEnabled: isEnabled)
+                        },
+                        onDeleteReminder: { reminder in
+                            deleteReminder(userId: userId, reminder: reminder)
+                        }
+                    )
+                }
+            }
+        }
         .alert(
             "Billing Error",
             isPresented: Binding(
@@ -902,6 +1205,32 @@ struct SettingsPageView: View {
             },
             message: {
                 Text(billingErrorMessage ?? "Unable to open checkout.")
+            }
+        )
+        .alert(
+            "Apple Health Sync",
+            isPresented: Binding(
+                get: { healthSyncMessage != nil },
+                set: { if !$0 { healthSyncMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { healthSyncMessage = nil }
+            },
+            message: {
+                Text(healthSyncMessage ?? "")
+            }
+        )
+        .alert(
+            "Reminder Update",
+            isPresented: Binding(
+                get: { reminderErrorMessage != nil },
+                set: { if !$0 { reminderErrorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { reminderErrorMessage = nil }
+            },
+            message: {
+                Text(reminderErrorMessage ?? "")
             }
         )
     }
@@ -1032,9 +1361,28 @@ struct SettingsPageView: View {
         return "--"
     }
 
+    private var coachChangeCooldownDaysRemaining: Int {
+        guard let raw = profileUser?.last_agent_change_at,
+              let changedAt = parseISODate(raw) else {
+            return 0
+        }
+        let nextAllowed = changedAt.addingTimeInterval(TimeInterval(coachChangeCooldownDays * 24 * 60 * 60))
+        let secondsLeft = nextAllowed.timeIntervalSince(Date())
+        if secondsLeft <= 0 {
+            return 0
+        }
+        return max(1, Int(ceil(secondsLeft / 86400)))
+    }
+
+    private var canChangeCoach: Bool {
+        coachChangeCooldownDaysRemaining == 0
+    }
+
     private var currentCoachCard: some View {
         Button(action: {
-            showCoachSelection = true
+            if canChangeCoach {
+                showCoachSelection = true
+            }
         }) {
             VStack(spacing: 16) {
                 HStack {
@@ -1045,13 +1393,13 @@ struct SettingsPageView: View {
                     Spacer()
 
                     HStack(spacing: 4) {
-                        Text("Change")
+                        Text(canChangeCoach ? "Change" : "Locked")
                             .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.blue)
+                            .foregroundColor(canChangeCoach ? .blue : .white.opacity(0.55))
 
                         Image(systemName: "chevron.right")
                             .font(.system(size: 12, weight: .semibold))
-                            .foregroundColor(.blue)
+                            .foregroundColor(canChangeCoach ? .blue : .white.opacity(0.55))
                     }
                 }
 
@@ -1106,6 +1454,12 @@ struct SettingsPageView: View {
                                     )
                             }
                         }
+
+                        if !canChangeCoach {
+                            Text("Coach change available in \(coachChangeCooldownDaysRemaining) day(s)")
+                                .font(.system(size: 11, weight: .semibold))
+                                .foregroundColor(.yellow.opacity(0.9))
+                        }
                     }
 
                     Spacer()
@@ -1119,6 +1473,26 @@ struct SettingsPageView: View {
             )
         }
         .buttonStyle(PlainButtonStyle())
+        .disabled(!canChangeCoach)
+        .opacity(canChangeCoach ? 1.0 : 0.9)
+    }
+
+    private func parseISODate(_ raw: String) -> Date? {
+        let isoWithFraction = ISO8601DateFormatter()
+        isoWithFraction.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoWithFraction.date(from: raw) {
+            return date
+        }
+        let iso = ISO8601DateFormatter()
+        iso.formatOptions = [.withInternetDateTime]
+        if let date = iso.date(from: raw) {
+            return date
+        }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.timeZone = TimeZone(secondsFromGMT: 0)
+        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        return fallback.date(from: raw)
     }
 
     private var settingsList: some View {
@@ -1127,6 +1501,12 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
+            SettingsRow(title: "Manage Notification Reminders") {
+                showReminderManager = true
+            }
+            SettingsRow(title: "Health Data & Plan Impact") {
+                showHealthImpact = true
+            }
             SettingsRow(
                 title: "Manage Plan",
                 value: selectedPlanTier == "premium" ? "$14.99 Premium" : "Free",
@@ -1149,15 +1529,125 @@ struct SettingsPageView: View {
         }
     }
 
+    private func syncHealthDataFromHealthKit(userId: Int, days: Int) {
+        healthKitManager.collectDailySnapshots(lastDays: days) { snapshots in
+            guard !snapshots.isEmpty else {
+                healthSyncMessage = "No Apple Health data available yet."
+                return
+            }
+
+            let publishers = snapshots.map { snapshot in
+                APIService.shared.logHealthActivity(
+                    HealthActivityLogRequest(
+                        user_id: userId,
+                        date: snapshot.date,
+                        steps: snapshot.steps,
+                        calories_burned: snapshot.caloriesBurned,
+                        active_minutes: snapshot.activeMinutes,
+                        workouts_summary: snapshot.workoutsSummary,
+                        source: "apple_health"
+                    )
+                )
+                .map { _ in true }
+                .replaceError(with: false)
+                .eraseToAnyPublisher()
+            }
+
+            Publishers.MergeMany(publishers)
+                .collect()
+                .receive(on: DispatchQueue.main)
+                .sink { results in
+                    let successCount = results.filter { $0 }.count
+                    if successCount > 0 {
+                        healthSyncMessage = "Synced \(successCount)/\(snapshots.count) day(s) from Apple Health."
+                    } else {
+                        healthSyncMessage = "Sync failed. Please try again."
+                    }
+                }
+                .store(in: &cancellables)
+        }
+    }
+
     private func syncReminderNotifications(userId: Int) {
         backendConnector.loadReminders(userId: userId) { result in
             switch result {
             case .success(let reminders):
+                self.reminders = reminders
                 notificationManager.syncReminders(reminders, notificationsEnabled: notificationsEnabled)
             case .failure(let error):
                 print("Failed to load reminders for settings sync: \(error)")
             }
         }
+    }
+
+    private func loadRemindersForSettings(userId: Int) {
+        remindersLoading = true
+        backendConnector.loadReminders(userId: userId) { result in
+            remindersLoading = false
+            switch result {
+            case .success(let items):
+                reminders = items.sorted { $0.scheduled_at < $1.scheduled_at }
+                notificationManager.syncReminders(items, notificationsEnabled: notificationsEnabled)
+            case .failure(let error):
+                reminderErrorMessage = "Unable to load reminders: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func updateReminderStatus(userId: Int, reminder: ReminderItemResponse, isEnabled: Bool) {
+        guard !reminderBusyIds.contains(reminder.id) else { return }
+        reminderBusyIds.insert(reminder.id)
+        let payload = ReminderUpdateRequest(
+            user_id: userId,
+            status: isEnabled ? "pending" : "cancelled",
+            scheduled_at: nil
+        )
+        backendConnector.updateReminder(reminderId: reminder.id, payload: payload) { result in
+            reminderBusyIds.remove(reminder.id)
+            switch result {
+            case .success:
+                loadRemindersForSettings(userId: userId)
+            case .failure(let error):
+                if let apiError = error as? APIError,
+                   case .serverErrorWithMessage(let code, let message) = apiError,
+                   code == 404 {
+                    loadRemindersForSettings(userId: userId)
+                    reminderErrorMessage = "That reminder was already removed. Refreshed the list."
+                    return
+                }
+                reminderErrorMessage = "Unable to update reminder: \(readableReminderError(error))"
+            }
+        }
+    }
+
+    private func deleteReminder(userId: Int, reminder: ReminderItemResponse) {
+        guard !reminderBusyIds.contains(reminder.id) else { return }
+        reminderBusyIds.insert(reminder.id)
+        backendConnector.deleteReminder(reminderId: reminder.id, userId: userId) { result in
+            reminderBusyIds.remove(reminder.id)
+            switch result {
+            case .success:
+                loadRemindersForSettings(userId: userId)
+            case .failure(let error):
+                reminderErrorMessage = "Unable to delete reminder: \(readableReminderError(error))"
+            }
+        }
+    }
+
+    private func readableReminderError(_ error: Error) -> String {
+        if let apiError = error as? APIError {
+            switch apiError {
+            case .serverErrorWithMessage(_, let message):
+                return message
+            case .serverError(let code):
+                return "Server error (HTTP \(code))."
+            case .unauthorized:
+                return "You are not authorized. Please sign in again."
+            default:
+                return "\(apiError)"
+            }
+        }
+        return error.localizedDescription
     }
 
     private func startPremiumCheckout() {
@@ -1369,6 +1859,161 @@ struct SettingsRow: View {
     }
 }
 
+struct ReminderManagementView: View {
+    let reminders: [ReminderItemResponse]
+    let isLoading: Bool
+    let busyReminderIds: Set<Int>
+    let notificationsEnabled: Bool
+    let onRefresh: () -> Void
+    let onToggleReminder: (ReminderItemResponse, Bool) -> Void
+    let onDeleteReminder: (ReminderItemResponse) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 14) {
+                HStack {
+                    Text("Notification Reminders")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
+                    Spacer()
+                    Button("Close") { dismiss() }
+                        .foregroundColor(.white.opacity(0.85))
+                }
+                .padding(.top, 8)
+
+                if !notificationsEnabled {
+                    Text("Enable Notifications in Settings to receive reminder alerts.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundColor(.yellow.opacity(0.9))
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(12)
+                        .background(RoundedRectangle(cornerRadius: 10).fill(Color.yellow.opacity(0.14)))
+                }
+
+                if isLoading {
+                    ProgressView("Loading reminders...")
+                        .tint(.white)
+                        .foregroundColor(.white.opacity(0.8))
+                        .padding(.top, 30)
+                    Spacer()
+                } else if reminders.isEmpty {
+                    VStack(spacing: 10) {
+                        Image(systemName: "bell.slash")
+                            .font(.system(size: 24))
+                            .foregroundColor(.white.opacity(0.6))
+                        Text("No reminders set")
+                            .foregroundColor(.white.opacity(0.7))
+                    }
+                    .padding(.top, 30)
+                    Spacer()
+                } else {
+                    List {
+                        ForEach(reminders, id: \.id) { reminder in
+                            reminderRow(reminder)
+                                .listRowBackground(Color.clear)
+                        }
+                    }
+                    .scrollContentBackground(.hidden)
+                    .listStyle(.plain)
+                }
+            }
+            .padding(18)
+        }
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: onRefresh) {
+                    Image(systemName: "arrow.clockwise")
+                }
+                .foregroundColor(.white)
+            }
+        }
+    }
+
+    private func reminderRow(_ reminder: ReminderItemResponse) -> some View {
+        let isEnabled = reminder.status.lowercased() != "cancelled"
+        let isBusy = busyReminderIds.contains(reminder.id)
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text(reminderTitle(reminder.reminder_type))
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                Spacer()
+                Toggle("", isOn: Binding(
+                    get: { isEnabled },
+                    set: { onToggleReminder(reminder, $0) }
+                ))
+                .labelsHidden()
+                .disabled(isBusy)
+            }
+
+            Text(formattedReminderDate(reminder.scheduled_at))
+                .font(.system(size: 13, weight: .medium))
+                .foregroundColor(.white.opacity(0.72))
+
+            HStack {
+                Text(isEnabled ? "Enabled" : "Disabled")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(isEnabled ? .green.opacity(0.9) : .red.opacity(0.9))
+                Spacer()
+                Button(role: .destructive) {
+                    onDeleteReminder(reminder)
+                } label: {
+                    Text(isBusy ? "Updating..." : "Delete")
+                        .font(.system(size: 12, weight: .semibold))
+                }
+                .disabled(isBusy)
+            }
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.08))
+        )
+        .padding(.vertical, 4)
+    }
+
+    private func reminderTitle(_ type: String) -> String {
+        let normalized = type.lowercased()
+        if normalized.contains("coach_checkin") || normalized.contains("daily_checkin") {
+            return "Daily Coach Check-In"
+        }
+        if normalized.contains("workout") {
+            return "Workout Reminder"
+        }
+        if normalized.contains("meal") {
+            return "Meal Reminder"
+        }
+        return type.replacingOccurrences(of: "_", with: " ").capitalized
+    }
+
+    private func formattedReminderDate(_ raw: String) -> String {
+        let isoFormatter = ISO8601DateFormatter()
+        if let date = isoFormatter.date(from: raw) {
+            return formatDate(date)
+        }
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: raw) {
+            return formatDate(date)
+        }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        if let date = fallback.date(from: raw) {
+            return formatDate(date)
+        }
+        return raw
+    }
+
+    private func formatDate(_ date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        return formatter.string(from: date)
+    }
+}
+
 struct ManagePlanView: View {
     let selectedPlanTier: String
     let isLoadingPremiumCheckout: Bool
@@ -1479,6 +2124,7 @@ struct CoachChangeView: View {
     @EnvironmentObject var backendConnector: FrontendBackendConnector
     @State private var selectedCoach: Coach?
     @State private var isUpdating = false
+    @State private var errorMessage: String?
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
 
@@ -1550,6 +2196,19 @@ struct CoachChangeView: View {
         .onAppear {
             selectedCoach = currentCoach
         }
+        .alert(
+            "Unable to Change Coach",
+            isPresented: Binding(
+                get: { errorMessage != nil },
+                set: { if !$0 { errorMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { errorMessage = nil }
+            },
+            message: {
+                Text(errorMessage ?? "Please try again later.")
+            }
+        )
     }
 
     private func changeCoachButton(_ coach: Coach) -> some View {
@@ -1599,23 +2258,30 @@ struct CoachChangeView: View {
 
         isUpdating = true
 
-        // Update UI immediately for better UX
-        onCoachChanged(newCoach)
-
-        // Success haptic
-        let successFeedback = UINotificationFeedbackGenerator()
-        successFeedback.notificationOccurred(.success)
-
-        dismiss()
-
         // Call backend API to sync the change
         backendConnector.changeCoach(userId: userId, newCoachId: newCoach.id) { result in
+            isUpdating = false
             switch result {
             case .success:
+                onCoachChanged(newCoach)
+                let successFeedback = UINotificationFeedbackGenerator()
+                successFeedback.notificationOccurred(.success)
                 print("✅ Coach change synced with backend")
+                dismiss()
             case .failure(let error):
                 print("❌ Failed to sync coach change with backend: \(error)")
-                // Note: UI already updated, so user sees the change even if backend fails
+                if let apiError = error as? APIError {
+                    switch apiError {
+                    case .serverErrorWithMessage(_, let message):
+                        errorMessage = message
+                    case .serverError(let code):
+                        errorMessage = "Coach change failed (HTTP \(code))."
+                    default:
+                        errorMessage = "Coach change failed. Please try again."
+                    }
+                } else {
+                    errorMessage = error.localizedDescription
+                }
             }
         }
     }

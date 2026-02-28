@@ -309,6 +309,12 @@ struct WorkoutVideoPlayer: View {
 
 struct YouTubePlayerView: UIViewRepresentable {
     let videoId: String
+    var autoplay: Bool = false
+    var muted: Bool = false
+    var loopPlayback: Bool = false
+    var showControls: Bool = true
+    var startSeconds: Int = 0
+    var endSeconds: Int? = nil
     let onError: (() -> Void)?
 
     func makeUIView(context: Context) -> YTPlayerView {
@@ -319,14 +325,32 @@ struct YouTubePlayerView: UIViewRepresentable {
 
     func updateUIView(_ uiView: YTPlayerView, context: Context) {
         guard !videoId.isEmpty else { return }
-        if context.coordinator.currentVideoId != videoId {
-            context.coordinator.currentVideoId = videoId
+        let playbackKey = "\(videoId)|\(autoplay)|\(muted)|\(loopPlayback)|\(showControls)|\(startSeconds)|\(endSeconds ?? -1)"
+        context.coordinator.playbackConfig = PlaybackConfig(
+            autoplay: autoplay,
+            muted: muted
+        )
+        if context.coordinator.currentPlaybackKey != playbackKey {
+            context.coordinator.currentPlaybackKey = playbackKey
             let vars: [String: Any] = [
                 "playsinline": 1,
                 "modestbranding": 1,
-                "rel": 0
+                "rel": 0,
+                "autoplay": autoplay ? 1 : 0,
+                "mute": muted ? 1 : 0,
+                "controls": showControls ? 1 : 0,
+                "fs": 0,
+                "iv_load_policy": 3,
+                "disablekb": 1,
+                "start": max(0, startSeconds),
+                "loop": loopPlayback ? 1 : 0,
+                "playlist": loopPlayback ? videoId : ""
             ]
-            uiView.load(withVideoId: videoId, playerVars: vars)
+            var resolvedVars = vars
+            if let endSeconds {
+                resolvedVars["end"] = max(startSeconds + 1, endSeconds)
+            }
+            uiView.load(withVideoId: videoId, playerVars: resolvedVars)
         }
     }
 
@@ -334,12 +358,24 @@ struct YouTubePlayerView: UIViewRepresentable {
         Coordinator(onError: onError)
     }
 
+    struct PlaybackConfig {
+        let autoplay: Bool
+        let muted: Bool
+    }
+
     class Coordinator: NSObject, YTPlayerViewDelegate {
         let onError: (() -> Void)?
-        var currentVideoId: String?
+        var currentPlaybackKey: String?
+        var playbackConfig = PlaybackConfig(autoplay: false, muted: false)
 
         init(onError: (() -> Void)?) {
             self.onError = onError
+        }
+
+        func playerViewDidBecomeReady(_ playerView: YTPlayerView) {
+            if playbackConfig.autoplay {
+                playerView.playVideo()
+            }
         }
 
         func playerView(_ playerView: YTPlayerView, receivedError error: YTPlayerError) {

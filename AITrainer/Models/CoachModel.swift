@@ -56,6 +56,29 @@ extension Coach {
         "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/\(name)-Intro.mp4"
     }
 
+    static let placeholder = Coach(
+        id: 0,
+        slug: "default_coach",
+        name: "Your Coach",
+        nickname: nil,
+        title: "AI Fitness Coach",
+        age: 30,
+        ethnicity: "Unknown",
+        gender: "Unknown",
+        pronouns: "",
+        philosophy: "Consistency beats perfection.",
+        backgroundStory: "Your coach profile is loading.",
+        personality: "Supportive",
+        speakingStyle: "Clear and encouraging",
+        expertise: ["Fitness"],
+        commonPhrases: ["Let's keep going."],
+        tags: ["coach"],
+        primaryColor: "blue",
+        secondaryColor: "navy",
+        imageURLString: nil,
+        videoURLString: nil
+    )
+
     static let allCoaches: [Coach] = [
         Coach(
             id: 1,
@@ -311,17 +334,24 @@ extension Coach {
         )
     ]
 
-    var imageURL: URL? {
-        guard let imageURLString, let url = URL(string: imageURLString) else {
+    private func normalizedURL(from rawValue: String?) -> URL? {
+        guard let rawValue else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if let url = URL(string: trimmed) {
+            return url
+        }
+        guard let encoded = trimmed.addingPercentEncoding(withAllowedCharacters: .urlFragmentAllowed) else {
             return nil
         }
-        return url
+        return URL(string: encoded)
+    }
+
+    var imageURL: URL? {
+        normalizedURL(from: imageURLString)
     }
 
     var videoURL: URL? {
-        guard let videoURLString, let url = URL(string: videoURLString) else {
-            return nil
-        }
-        return url
+        normalizedURL(from: videoURLString)
     }
 }

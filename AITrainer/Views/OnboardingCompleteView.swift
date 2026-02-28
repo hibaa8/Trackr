@@ -10,7 +10,7 @@ struct OnboardingCompleteView: View {
     @State private var showMainApp = false
 
     private var coach: Coach {
-        appState.selectedCoach ?? appState.coaches.first ?? Coach.allCoaches[0]
+        appState.selectedCoach ?? appState.coaches.first ?? Coach.placeholder
     }
     @State private var confettiOpacity = 0.0
     @State private var checkmarkScale = 0.0
@@ -158,24 +158,54 @@ struct ConfettiPiece: View {
 
 // Main trainer interface matching screen 08 mockup
 struct TrainerMainView: View {
+    private enum ChatLaunchMode {
+        case text
+        case voice
+    }
+
     let coach: Coach
     @EnvironmentObject var appState: AppState
+    @EnvironmentObject private var backendConnector: FrontendBackendConnector
     @EnvironmentObject private var authManager: AuthenticationManager
     @State private var currentTime = Date()
     @State private var showVoiceChat = false
-    @State private var focusChatOnOpen = false
+    @State private var chatLaunchMode: ChatLaunchMode = .text
+    @State private var chatInitialPrompt: String?
     @State private var showingWorkoutDetail = false
     @State private var showLogFoodOptions = false
     @State private var showMealLogging = false
     @State private var showManualLogging = false
     @State private var showPlanDetail = false
     @State private var showCalorieDetail = false
+    @State private var showRecipePlanner = false
+    @State private var showCommunity = false
+    @State private var showGymFinder = false
     @State private var showGamificationSheet = false
     @State private var todayPlan: PlanDayResponse?
     @State private var gamification: GamificationResponse?
     @State private var lastKnownPoints: Int?
+    @State private var lastKnownLevel: Int?
     @State private var xpGainToastText: String?
     @State private var showXPGainToast = false
+    @State private var showDailyCompletionGraffiti = false
+    @State private var showLevelUpGraffiti = false
+    @State private var leveledTo = 1
+    @State private var lastCelebratedDayKey: String?
+    @State private var lastMealLogCount = 0
+    @State private var lastWorkoutLogCount = 0
+    @State private var lastWeightLogCount = 0
+    @State private var hasSeededDailyCounts = false
+    @State private var showEndOfDayPrompt = false
+    @State private var todayCheckinCount = 0
+    @State private var checklistCompleteToday = false
+    @State private var showChecklistReminder = false
+    @State private var showStreakFreezePrompt = false
+    @State private var streakFreezePromptMessage = ""
+    @State private var speechSynth = AVSpeechSynthesizer()
+    @AppStorage("coachVoicePreference") private var coachVoicePreference = ""
+    @AppStorage("trainer.endOfDayPromptDate") private var lastEndOfDayPromptDate = ""
+    @AppStorage("trainer.dailyChecklistPromptDate") private var lastChecklistPromptDate = ""
+    @AppStorage("trainer.lastCoachGreetingDay") private var lastCoachGreetingDay = ""
     @State private var isLoadingPlan = false
     @State private var cancellables = Set<AnyCancellable>()
 
@@ -190,23 +220,59 @@ struct TrainerMainView: View {
                 Color.black.opacity(0.4)
                     .ignoresSafeArea()
 
+                // Extra shader to improve foreground legibility over photos.
+                LinearGradient(
+                    colors: [
+                        Color.black.opacity(0.18),
+                        Color.black.opacity(0.36),
+                        Color.black.opacity(0.58)
+                    ],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+
                 VStack(spacing: 0) {
                     headerView(topInset: geometry.safeAreaInsets.top)
                         .padding(.bottom, 30)
+                    ScrollView(showsIndicators: false) {
+                        VStack(spacing: 0) {
+                            greetingSection
+                                .padding(.horizontal, 24)
+                                .padding(.bottom, 10)
 
-                    greetingSection
-                        .padding(.horizontal, 24)
-                        .padding(.bottom, 30)
+                            coachToolsRow
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 12)
 
-                    VStack(spacing: 15) {
-                        todaysPlanCard
-                        calorieBalanceCard
+                            dailyChecklistCard
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 12)
+
+                            HStack(alignment: .top, spacing: 12) {
+                                todaysPlanCard
+                                    .frame(maxWidth: .infinity, minHeight: 176)
+                                calorieBalanceCard
+                                    .frame(maxWidth: .infinity, minHeight: 176)
+                            }
+                            .padding(.horizontal, 20)
+                            .padding(.bottom, 120)
+                        }
                     }
-                    .padding(.horizontal, 20)
-
-                    Spacer()
                 }
                 .frame(maxWidth: .infinity, alignment: .center)
+
+                if showDailyCompletionGraffiti {
+                    DailyCompletionGraffitiOverlay()
+                        .transition(.opacity.combined(with: .scale))
+                        .zIndex(10)
+                }
+
+                if showLevelUpGraffiti {
+                    LevelUpGraffitiOverlay(level: leveledTo)
+                        .transition(.opacity.combined(with: .scale))
+                        .zIndex(11)
+                }
             }
         }
         .onReceive(timer) { _ in
@@ -220,13 +286,23 @@ struct TrainerMainView: View {
             }
             refreshDashboardData()
             loadGamification(trackGain: false)
+            loadProgressForXPTracking(trackChanges: false)
+            checkStreakStatusOnOpen()
+            speakMotivationalGreetingIfNeeded()
+            maybePromptEndOfDayCheckin()
         }
         .onReceive(NotificationCenter.default.publisher(for: .dataDidUpdate)) { _ in
             refreshDashboardData()
+            loadProgressForXPTracking(trackChanges: true)
             loadGamification(trackGain: true)
         }
         .sheet(isPresented: $showVoiceChat) {
-            VoiceActiveView(coach: coach, autoFocus: focusChatOnOpen, startRecording: !focusChatOnOpen)
+            VoiceActiveView(
+                coach: coach,
+                autoFocus: chatLaunchMode == .text,
+                startRecording: chatLaunchMode == .voice,
+                initialPrompt: chatInitialPrompt
+            )
         }
         .safeAreaInset(edge: .bottom) {
             bottomInputBar
@@ -250,6 +326,15 @@ struct TrainerMainView: View {
         .fullScreenCover(isPresented: $showCalorieDetail) {
             CalorieBalanceDetailView()
         }
+        .fullScreenCover(isPresented: $showRecipePlanner) {
+            RecipeFinderView()
+        }
+        .fullScreenCover(isPresented: $showCommunity) {
+            CommunityView()
+        }
+        .fullScreenCover(isPresented: $showGymFinder) {
+            GymClassesView()
+        }
         .confirmationDialog("Log Food", isPresented: $showLogFoodOptions, titleVisibility: .visible) {
             Button("Log Food") {
                 showMealLogging = true
@@ -258,16 +343,40 @@ struct TrainerMainView: View {
         }
         .sheet(isPresented: $showGamificationSheet) {
             if let gamification {
-                GamificationSheetView(
-                    summary: gamification,
-                    onUseFreeze: { useFreezeStreak() }
-                )
+                GamificationSheetView(summary: gamification)
             }
         }
         .onChange(of: showGamificationSheet) { _, isShown in
             if isShown {
                 loadGamification(trackGain: false)
             }
+        }
+        .alert("Daily Check-In", isPresented: $showEndOfDayPrompt) {
+            Button("Chat now") {
+                openCoachChat(with: "Let's do my end-of-day check-in. Run the detailed status check against today's plan/checkpoints, compare meals/workouts/weight logs, ask how I felt today, and propose concrete adjustments if needed.")
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Want a quick status chat with your coach for today?")
+        }
+        .alert("Today's Checklist", isPresented: $showChecklistReminder) {
+            Button("Open coach chat") {
+                openCoachChat(with: "Let's do my daily check-in now. Run the detailed daily status check and confirm checklist progress for meals, workout, and check-in.")
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text("Complete 3 meals, 1 workout, and 1 daily check-in to finish today and earn +10 XP.")
+        }
+        .alert("Streak Freeze", isPresented: $showStreakFreezePrompt) {
+            Button("Use Freeze") {
+                submitStreakDecision(useFreeze: true)
+            }
+            Button("Reset Streak", role: .destructive) {
+                submitStreakDecision(useFreeze: false)
+            }
+            Button("Later", role: .cancel) {}
+        } message: {
+            Text(streakFreezePromptMessage)
         }
     }
 
@@ -328,7 +437,10 @@ struct TrainerMainView: View {
                         Text("Lv \(gamification?.level ?? 1)")
                             .font(.system(size: 14, weight: .bold))
                             .foregroundColor(.white)
-                        Text("\(gamification?.points ?? 0) XP")
+                        Text("🔥 \(gamification?.streak_days ?? 0)d")
+                            .font(.system(size: 12, weight: .semibold))
+                            .foregroundColor(.orange.opacity(0.95))
+                        Text("\(gamification?.next_level_points ?? 0) to next")
                             .font(.system(size: 13, weight: .medium))
                             .foregroundColor(.white.opacity(0.8))
                     }
@@ -356,6 +468,64 @@ struct TrainerMainView: View {
                 .foregroundColor(.white.opacity(0.9))
                 .multilineTextAlignment(.center)
         }
+    }
+
+    private var dailyChecklistCard: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Text("Today's Checklist")
+                    .font(.system(size: 16, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text(checklistCompleteToday ? "Complete" : "In progress")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(checklistCompleteToday ? .green : .orange)
+            }
+            checklistRow(
+                title: "Log 3 meals",
+                current: lastMealLogCount,
+                target: 3,
+                prompt: "I need to complete today's meal logging checklist task. Please help me log my meals one by one with calories and macros, then confirm what's still missing for today."
+            )
+            checklistRow(
+                title: "Log workout",
+                current: lastWorkoutLogCount,
+                target: 1,
+                prompt: "I need to complete today's workout logging checklist task. Please collect my workout details and log it, then confirm if my workout checklist requirement is complete."
+            )
+            checklistRow(
+                title: "Daily check-in",
+                current: todayCheckinCount,
+                target: 1,
+                prompt: "Let's do my daily check-in now. Run the detailed daily status check against today's plan/checkpoints, compare meals/workouts/weight logs, ask how I felt today, and suggest specific adjustments or reminder updates. Then confirm the daily check-in task."
+            )
+        }
+        .padding(14)
+        .background(Color.white.opacity(0.12))
+        .clipShape(RoundedRectangle(cornerRadius: 14))
+    }
+
+    private func checklistRow(title: String, current: Int, target: Int, prompt: String) -> some View {
+        let done = current >= target
+        return Button {
+            openCoachChat(with: prompt)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .foregroundColor(done ? .green : .white.opacity(0.7))
+                Text(title)
+                    .font(.system(size: 14, weight: .medium))
+                    .foregroundColor(.white.opacity(0.9))
+                Spacer()
+                Text("\(min(current, target))/\(target)")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(done ? .green : .orange)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.white.opacity(0.45))
+            }
+        }
+        .buttonStyle(.plain)
     }
 
     private var todaysPlanCard: some View {
@@ -405,6 +575,105 @@ struct TrainerMainView: View {
         .contentShape(RoundedRectangle(cornerRadius: 20))
     }
 
+    private var quickLogActions: some View {
+        HStack(spacing: 10) {
+            quickLogButton(
+                title: "Log Weight",
+                systemImage: "scalemass.fill"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log my weight. Please ask me for my weight in kg and the date of the weigh-in, then log it."
+                showVoiceChat = true
+            }
+
+            quickLogButton(
+                title: "Log Food",
+                systemImage: "fork.knife"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log a meal. Please ask me for the food, quantity, time, and any other details needed to calculate calories, then log it."
+                showVoiceChat = true
+            }
+
+            quickLogButton(
+                title: "Log Workout",
+                systemImage: "figure.strengthtraining.traditional"
+            ) {
+                chatLaunchMode = .text
+                chatInitialPrompt = "I want to log a workout. Please ask me for the workout type, duration, sets, reps, intensity, and any other details needed to estimate calories burned, then log it."
+                showVoiceChat = true
+            }
+        }
+    }
+
+    private var coachToolsRow: some View {
+        VStack(spacing: 10) {
+            HStack(spacing: 10) {
+                quickLogButton(
+                    title: "Plan Meals",
+                    systemImage: "fork.knife.circle"
+                ) {
+                    showRecipePlanner = true
+                }
+                quickLogButton(
+                    title: "Learn Exercise",
+                    systemImage: "figure.strengthtraining.functional"
+                ) {
+                    openCoachChat(with: "Teach me an exercise with proper form. Ask which exercise I want to learn, then give setup cues, common mistakes, regressions, and progressions.")
+                }
+            }
+            HStack(spacing: 10) {
+                quickLogButton(
+                    title: "Community",
+                    systemImage: "person.3.sequence.fill"
+                ) {
+                    showCommunity = true
+                }
+                quickLogButton(
+                    title: "Find Gyms",
+                    systemImage: "mappin.and.ellipse"
+                ) {
+                    openCoachChat(with: "Help me find nearby gyms or classes. Ask my location, schedule, budget, and preferred class style, then suggest options and a plan to pick one.")
+                }
+            }
+        }
+    }
+
+    private func openCoachChat(with prompt: String) {
+        chatLaunchMode = .text
+        chatInitialPrompt = prompt
+        showVoiceChat = true
+    }
+
+    private func quickLogButton(
+        title: String,
+        systemImage: String,
+        action: @escaping () -> Void
+    ) -> some View {
+        Button(action: action) {
+            VStack(spacing: 6) {
+                Image(systemName: systemImage)
+                    .font(.system(size: 16, weight: .semibold))
+                Text(title)
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+            }
+            .foregroundColor(.white)
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 12)
+            .background(
+                RoundedRectangle(cornerRadius: 14)
+                    .fill(Color.black.opacity(0.38))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 14)
+                            .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    )
+            )
+            .shadow(color: .black.opacity(0.22), radius: 8, x: 0, y: 4)
+        }
+        .buttonStyle(.plain)
+    }
+
     private var calorieBalanceCard: some View {
         let caloriesConsumed = appState.caloriesIn
         let caloriesGoal = activePlan?.calorie_target ?? appState.userData?.calorieTarget ?? 2000
@@ -414,16 +683,16 @@ struct TrainerMainView: View {
         return Button(action: {
             showCalorieDetail = true
         }) {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 14) {
                 Text("Calorie Balance")
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.white)
 
-                HStack(spacing: 20) {
+                HStack(spacing: 12) {
                     ZStack {
                         Circle()
                             .stroke(Color.white.opacity(0.12), lineWidth: 8)
-                            .frame(width: 80, height: 80)
+                            .frame(width: 68, height: 68)
 
                         Circle()
                             .trim(from: 0, to: progress)
@@ -434,38 +703,35 @@ struct TrainerMainView: View {
                                 ),
                                 style: StrokeStyle(lineWidth: 8, lineCap: .round)
                             )
-                            .frame(width: 80, height: 80)
+                            .frame(width: 68, height: 68)
                             .rotationEffect(.degrees(-90))
 
                         VStack(spacing: 2) {
                             Text("\(caloriesConsumed)")
-                                .font(.system(size: 16, weight: .bold))
+                                .font(.system(size: 13, weight: .bold))
                                 .foregroundColor(.white)
                             Text("of \(caloriesGoal)")
-                                .font(.system(size: 10, weight: .medium))
+                                .font(.system(size: 9, weight: .medium))
                                 .foregroundColor(.white.opacity(0.7))
                         }
                     }
 
                     VStack(alignment: .leading, spacing: 4) {
                         Text("\(remaining) kcal")
-                            .font(.system(size: 18, weight: .bold))
+                            .font(.system(size: 15, weight: .bold))
                             .foregroundColor(.white)
 
                         Text("remaining")
-                            .font(.system(size: 14, weight: .medium))
-                            .foregroundColor(.white.opacity(0.7))
-
-                        Spacer()
-
-                        Text("Tap for details")
                             .font(.system(size: 12, weight: .medium))
+                            .foregroundColor(.white.opacity(0.7))
+                        Text("Tap for details")
+                            .font(.system(size: 11, weight: .medium))
                             .foregroundColor(.white.opacity(0.7))
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(20)
+            .padding(16)
             .background(glassCardBackground)
         }
         .buttonStyle(PlainButtonStyle())
@@ -474,11 +740,11 @@ struct TrainerMainView: View {
 
     private var glassCardBackground: some View {
         RoundedRectangle(cornerRadius: 20)
-            .fill(.ultraThinMaterial.opacity(0.9))
-            .background(Color.black.opacity(0.25))
+            .fill(.ultraThinMaterial.opacity(0.94))
+            .background(Color.black.opacity(0.42))
             .overlay(
                 RoundedRectangle(cornerRadius: 20)
-                    .stroke(Color.white.opacity(0.08), lineWidth: 1)
+                    .stroke(Color.white.opacity(0.12), lineWidth: 1)
             )
     }
 
@@ -498,6 +764,8 @@ struct TrainerMainView: View {
                     .frame(width: geometry.size.width, height: geometry.size.height)
                     .clipped()
                     .scaleEffect(1.1)
+                    .saturation(0.72)
+                    .brightness(-0.06)
                     .position(x: geometry.size.width / 2, y: geometry.size.height / 2)
                 }
             } else {
@@ -533,7 +801,8 @@ struct TrainerMainView: View {
     private var bottomInputBar: some View {
         HStack(spacing: 16) {
             Button(action: {
-                focusChatOnOpen = true
+                chatLaunchMode = .text
+                chatInitialPrompt = nil
                 showVoiceChat = true
             }) {
                 HStack(spacing: 8) {
@@ -552,7 +821,8 @@ struct TrainerMainView: View {
             }
 
             Button(action: {
-                focusChatOnOpen = false
+                chatLaunchMode = .voice
+                chatInitialPrompt = nil
                 showVoiceChat = true
             }) {
                 HStack(spacing: 8) {
@@ -635,27 +905,127 @@ struct TrainerMainView: View {
                 receiveCompletion: { _ in },
                 receiveValue: { summary in
                     let previousPoints = self.lastKnownPoints
+                    let previousLevel = self.lastKnownLevel
                     self.gamification = summary
                     self.lastKnownPoints = summary.points
-                    guard trackGain, let previousPoints, summary.points > previousPoints else { return }
-                    let gained = summary.points - previousPoints
-                    showXPGainToast(message: "Coach: +\(gained) XP")
+                    self.lastKnownLevel = summary.level
+                    if trackGain, let previousPoints, summary.points > previousPoints {
+                        let gained = summary.points - previousPoints
+                        let encouragement = randomEncouragement(for: gained)
+                        showXPGainToast(
+                            message: "+\(gained) XP • \(summary.next_level_points) to next level • \(encouragement)"
+                        )
+                        speak(encouragement)
+                    }
+                    if trackGain, let previousLevel, summary.level > previousLevel {
+                        leveledTo = summary.level
+                        showXPGainToast(
+                            message: "Level up! +1 streak freeze unlocked"
+                        )
+                        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
+                            showLevelUpGraffiti = true
+                        }
+                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
+                            withAnimation(.easeInOut(duration: 0.2)) {
+                                showLevelUpGraffiti = false
+                            }
+                        }
+                    }
                 }
             )
             .store(in: &cancellables)
     }
 
-    private func useFreezeStreak() {
+    private func loadProgressForXPTracking(trackChanges: Bool) {
         guard let userId = authManager.effectiveUserId else { return }
-        APIService.shared.useFreezeStreak(userId: userId)
+        APIService.shared.getProgress(userId: userId)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { _ in },
-                receiveValue: { summary in
-                    self.gamification = summary
+                receiveValue: { progress in
+                    let todayKey = dayKey(from: Date())
+                    let checklist = progress.daily_checklist
+                    let mealCount = checklist?.meals_logged ?? progress.meals.filter { item in
+                        dayKey(fromRaw: item.logged_at) == todayKey
+                    }.count
+                    let workoutCount = checklist?.workouts_logged ?? progress.workouts.filter { item in
+                        item.completed == true && dayKey(fromRaw: item.date) == todayKey
+                    }.count
+                    let checkinCount = checklist?.checkin_done == true
+                        ? 1
+                        : progress.checkins.filter { item in dayKey(fromRaw: item.date) == todayKey }.count
+
+                    triggerDailyCompletionGraffitiIfNeeded(
+                        mealCount: mealCount,
+                        workoutCount: workoutCount,
+                        checkinCount: checkinCount,
+                        dayKey: todayKey
+                    )
+                    lastMealLogCount = mealCount
+                    lastWorkoutLogCount = workoutCount
+                    lastWeightLogCount = checkinCount
+                    todayCheckinCount = checkinCount
+                    checklistCompleteToday = checklist?.checklist_done ?? (mealCount >= 3 && workoutCount >= 1 && checkinCount >= 1)
+                    maybePromptDailyChecklist()
+                    hasSeededDailyCounts = true
                 }
             )
             .store(in: &cancellables)
+    }
+
+    private func triggerDailyCompletionGraffitiIfNeeded(mealCount: Int, workoutCount: Int, checkinCount: Int, dayKey: String) {
+        guard mealCount >= 3, workoutCount >= 1, checkinCount >= 1, lastCelebratedDayKey != dayKey else { return }
+        lastCelebratedDayKey = dayKey
+        withAnimation(.spring(response: 0.5, dampingFraction: 0.8)) {
+            showDailyCompletionGraffiti = true
+        }
+        let quote = completionQuote()
+        showXPGainToast(message: "Checklist complete! +10 XP • \(quote)")
+        speak("Checklist complete. Great job today. \(quote)")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.0) {
+            withAnimation(.easeInOut(duration: 0.25)) {
+                showDailyCompletionGraffiti = false
+            }
+        }
+    }
+
+    private func dayKey(from date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        return formatter.string(from: date)
+    }
+
+    private func dayKey(fromRaw value: String?) -> String? {
+        guard let raw = value?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return nil
+        }
+        let lower = raw.lowercased()
+        let calendar = Calendar.current
+        if lower == "today" || lower == "now" {
+            return dayKey(from: Date())
+        }
+        if lower == "yesterday", let date = calendar.date(byAdding: .day, value: -1, to: Date()) {
+            return dayKey(from: date)
+        }
+        if raw.count >= 10 {
+            let prefix = String(raw.prefix(10))
+            let chars = Array(prefix)
+            if chars.count >= 10, chars[4] == "-", chars[7] == "-" {
+                return prefix
+            }
+        }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: raw) {
+            return dayKey(from: date)
+        }
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        if let date = formatter.date(from: raw) {
+            return dayKey(from: date)
+        }
+        return nil
     }
 
     private func showXPGainToast(message: String) {
@@ -668,6 +1038,184 @@ struct TrainerMainView: View {
                 showXPGainToast = false
             }
         }
+    }
+
+    private func maybePromptEndOfDayCheckin() {
+        let now = Date()
+        let hour = Calendar.current.component(.hour, from: now)
+        guard hour >= 20 else { return }
+        let today = dayKey(from: now)
+        guard lastEndOfDayPromptDate != today else { return }
+        lastEndOfDayPromptDate = today
+        showEndOfDayPrompt = true
+    }
+
+    private func maybePromptDailyChecklist() {
+        let today = dayKey(from: Date())
+        guard !checklistCompleteToday else { return }
+        guard lastChecklistPromptDate != today else { return }
+        lastChecklistPromptDate = today
+        showChecklistReminder = true
+    }
+
+    private func checkStreakStatusOnOpen() {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.notifyAppOpen(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    self.gamification = response.gamification
+                    if response.freeze_prompt_required {
+                        self.streakFreezePromptMessage = response.message
+                        self.showStreakFreezePrompt = true
+                    } else if response.streak_reset {
+                        self.showXPGainToast(message: response.message)
+                    }
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func submitStreakDecision(useFreeze: Bool) {
+        guard let userId = authManager.effectiveUserId else { return }
+        APIService.shared.submitStreakDecision(userId: userId, useFreeze: useFreeze)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { response in
+                    self.gamification = response.gamification
+                    self.showXPGainToast(message: response.message)
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func randomEncouragement(for gained: Int) -> String {
+        if gained >= 10 {
+            return completionQuote()
+        }
+        let lines = [
+            "Nice work. Keep stacking wins.",
+            "Strong move. Stay consistent.",
+            "Great logging discipline today.",
+            "You are building momentum.",
+            "One rep, one meal, one win at a time."
+        ]
+        return lines.randomElement() ?? "Great job."
+    }
+
+    private func completionQuote() -> String {
+        let quotes = [
+            "Consistency beats intensity over time.",
+            "Small wins compound into big results.",
+            "Discipline today builds confidence tomorrow.",
+            "You are proving it to yourself.",
+            "Progress is earned one day at a time."
+        ]
+        return quotes.randomElement() ?? "You crushed it."
+    }
+
+    private func speak(_ text: String) {
+        let utterance = AVSpeechUtterance(string: text)
+        let voiceHint = backendConnector.profile?.user?.coach_voice
+        if let voiceHint, !voiceHint.isEmpty, coachVoicePreference != voiceHint {
+            coachVoicePreference = voiceHint
+        }
+        CoachVoiceProfile.configure(
+            utterance: utterance,
+            coach: coach,
+            preferredVoiceHint: voiceHint ?? coachVoicePreference
+        )
+        speechSynth.speak(utterance)
+    }
+
+    private func speakMotivationalGreetingIfNeeded() {
+        let today = dayKey(from: Date())
+        guard lastCoachGreetingDay != today else { return }
+        lastCoachGreetingDay = today
+        let phrase = coach.commonPhrases.randomElement() ?? "Let's get after it."
+        let text = "\(phrase) Ready to make progress today."
+        speak(text)
+    }
+}
+
+private struct DailyCompletionGraffitiOverlay: View {
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.25)
+                .ignoresSafeArea()
+
+            Circle()
+                .fill(Color.pink.opacity(0.35))
+                .frame(width: 260, height: 260)
+                .offset(x: -70, y: -30)
+            Circle()
+                .fill(Color.cyan.opacity(0.3))
+                .frame(width: 220, height: 220)
+                .offset(x: 90, y: 30)
+            Circle()
+                .fill(Color.green.opacity(0.25))
+                .frame(width: 180, height: 180)
+                .offset(x: 10, y: -100)
+
+            Text("DAY CRUSHED")
+                .font(.system(size: 42, weight: .black, design: .rounded))
+                .foregroundStyle(
+                    LinearGradient(
+                        colors: [.yellow, .orange, .pink],
+                        startPoint: .leading,
+                        endPoint: .trailing
+                    )
+                )
+                .rotationEffect(.degrees(-8))
+                .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 6)
+
+            Text("Meals + workouts complete")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
+                .offset(y: 56)
+        }
+        .allowsHitTesting(false)
+    }
+}
+
+private struct LevelUpGraffitiOverlay: View {
+    let level: Int
+
+    var body: some View {
+        ZStack {
+            Color.black.opacity(0.28)
+                .ignoresSafeArea()
+
+            Circle()
+                .fill(Color.orange.opacity(0.34))
+                .frame(width: 280, height: 280)
+                .offset(x: -75, y: -40)
+            Circle()
+                .fill(Color.purple.opacity(0.3))
+                .frame(width: 230, height: 230)
+                .offset(x: 95, y: 25)
+
+            VStack(spacing: 8) {
+                Text("LEVEL UP")
+                    .font(.system(size: 44, weight: .black, design: .rounded))
+                    .foregroundStyle(
+                        LinearGradient(
+                            colors: [.yellow, .orange, .red],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .rotationEffect(.degrees(-7))
+                    .shadow(color: .black.opacity(0.4), radius: 10, x: 0, y: 6)
+
+                Text("Level \(level) • +1 Streak Freeze")
+                    .font(.system(size: 17, weight: .bold))
+                    .foregroundColor(.white)
+            }
+        }
+        .allowsHitTesting(false)
     }
 }
 
@@ -693,6 +1241,7 @@ struct VoiceActiveView: View {
     @State private var audioRecorder: AVAudioRecorder?
     @State private var didSendInitialPrompt = false
     @Environment(\.dismiss) private var dismiss
+    @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
     @FocusState private var inputFocused: Bool
 
@@ -867,10 +1416,26 @@ struct VoiceActiveView: View {
  
     private func loadWelcomeMessage() {
         if messages.isEmpty {
+            let examples = """
+            Try asking me things like:
+            - "My current plan feels too difficult. Can you adjust it?"
+            - "I'm unmotivated and missed workouts this week."
+            - "I'm going on vacation next week. Please adapt my plan."
+            - "Plan a good meal for today with what I have."
+            - "Teach me a new exercise with proper form."
+            - "I need quick, high-protein meals under 30 minutes."
+            """
             messages = [
                 VoiceMessage(
                     id: UUID(),
                     text: "Hi! I'm \(coach.name). Ask me anything about workouts, nutrition, or your plan.",
+                    isFromCoach: true,
+                    timestamp: Date(),
+                    image: nil
+                ),
+                VoiceMessage(
+                    id: UUID(),
+                    text: examples,
                     isFromCoach: true,
                     timestamp: Date(),
                     image: nil
@@ -939,7 +1504,7 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(coachMessage)
-                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                    refreshPlanAndBroadcast(userId: userId)
                 case .failure:
                     let errorMessage = VoiceMessage(
                         id: UUID(),
@@ -949,9 +1514,27 @@ struct VoiceActiveView: View {
                         image: nil
                     )
                     self.messages.append(errorMessage)
+                    // Even when chat fails, refresh listeners in case server-side tools partially completed.
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 }
             }
         }
+    }
+
+    private func refreshPlanAndBroadcast(userId: Int) {
+        // Pull latest plan directly after coach actions so UI reflects plan patches quickly.
+        APIService.shared.getTodayPlan(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                },
+                receiveValue: { plan in
+                    appState.todayPlan = plan
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private func startVoiceRecording() {
@@ -1167,23 +1750,43 @@ private struct VoiceImagePicker: UIViewControllerRepresentable {
 
 private struct GamificationSheetView: View {
     let summary: GamificationResponse
-    let onUseFreeze: () -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationView {
-            VStack(spacing: 18) {
+            ZStack {
+                LinearGradient(
+                    colors: [Color.black, Color(red: 0.06, green: 0.08, blue: 0.14)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+
+                VStack(spacing: 18) {
                 VStack(spacing: 6) {
                     Text("Level \(summary.level)")
                         .font(.system(size: 28, weight: .bold))
+                        .foregroundColor(.white)
                     Text("\(summary.points) XP")
                         .font(.system(size: 18, weight: .semibold))
-                        .foregroundColor(.blue)
+                        .foregroundColor(.cyan)
                     Text("\(summary.next_level_points) XP to next level")
                         .font(.system(size: 13, weight: .medium))
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.white.opacity(0.75))
                 }
                 .padding(.top, 4)
+                .frame(maxWidth: .infinity)
+                .padding(16)
+                .background(
+                    RoundedRectangle(cornerRadius: 16)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.blue.opacity(0.28), Color.cyan.opacity(0.22)],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                )
 
                 xpProgressBar
 
@@ -1193,26 +1796,22 @@ private struct GamificationSheetView: View {
                 }
                 HStack(spacing: 12) {
                     statCard(title: "Freeze", value: "\(summary.freeze_streaks)")
-                    statCard(title: "Unlocked", value: "\(summary.unlocked_freeze_streaks)")
+                    statCard(title: "Streak Freeze Used", value: "\(summary.used_freeze_streaks)")
                 }
-
-                Button(action: { onUseFreeze() }) {
-                    Text("Use freeze to save your streak")
-                        .font(.system(size: 15, weight: .semibold))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 12)
-                        .background(Color.blue.opacity(0.18))
-                        .clipShape(RoundedRectangle(cornerRadius: 12))
-                }
-                .disabled(summary.freeze_streaks <= 0)
-                .opacity(summary.freeze_streaks <= 0 ? 0.5 : 1)
 
                 ShareLink(item: summary.share_text) {
                     Text("Share streak with friends")
                         .font(.system(size: 15, weight: .semibold))
+                        .foregroundColor(.white)
                         .frame(maxWidth: .infinity)
                         .padding(.vertical, 12)
-                        .background(Color.green.opacity(0.18))
+                        .background(
+                            LinearGradient(
+                                colors: [Color.blue.opacity(0.9), Color.cyan.opacity(0.85)],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                         .clipShape(RoundedRectangle(cornerRadius: 12))
                 }
 
@@ -1220,37 +1819,48 @@ private struct GamificationSheetView: View {
             }
             .padding(20)
             .navigationTitle("XP & Streaks")
+            .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Done") { dismiss() }
+                        .foregroundColor(.white)
                 }
+            }
             }
         }
     }
 
     private var xpProgressBar: some View {
-        let total = max(1, summary.next_level_points)
-        let progress = min(1.0, max(0.0, Double(summary.points) / Double(total)))
+        let required = max(1, 60 + ((summary.level - 1) * 5))
+        let toNext = max(0, summary.next_level_points)
+        let inLevel = max(0, required - toNext)
+        let progress = min(1.0, max(0.0, Double(inLevel) / Double(required)))
 
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("Progress to next level")
                     .font(.system(size: 13, weight: .medium))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.78))
                 Spacer()
-                Text("\(summary.points)/\(summary.next_level_points)")
+                Text("\(inLevel)/\(required)")
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundColor(.secondary)
+                    .foregroundColor(.white.opacity(0.88))
             }
 
             GeometryReader { geo in
                 ZStack(alignment: .leading) {
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.primary.opacity(0.08))
+                        .fill(Color.white.opacity(0.12))
                         .frame(height: 10)
 
                     RoundedRectangle(cornerRadius: 6)
-                        .fill(Color.blue)
+                        .fill(
+                            LinearGradient(
+                                colors: [Color.cyan, Color.blue],
+                                startPoint: .leading,
+                                endPoint: .trailing
+                            )
+                        )
                         .frame(width: geo.size.width * progress, height: 10)
                 }
             }
@@ -1263,13 +1873,21 @@ private struct GamificationSheetView: View {
         VStack(spacing: 6) {
             Text(title)
                 .font(.system(size: 13, weight: .medium))
-                .foregroundColor(.secondary)
+                .foregroundColor(.white.opacity(0.75))
             Text(value)
                 .font(.system(size: 16, weight: .semibold))
+                .foregroundColor(.white)
         }
         .frame(maxWidth: .infinity)
         .padding(.vertical, 12)
-        .background(Color.primary.opacity(0.06))
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.white.opacity(0.12))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.1), lineWidth: 1)
+                )
+        )
         .clipShape(RoundedRectangle(cornerRadius: 12))
     }
 }

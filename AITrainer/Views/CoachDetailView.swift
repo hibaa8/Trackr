@@ -4,6 +4,7 @@ import UIKit
 
 struct CoachDetailView: View {
     let coach: Coach
+    var onBack: (() -> Void)? = nil
     @State private var showChatSetup = false
     @Environment(\.presentationMode) var presentationMode
     @EnvironmentObject private var appState: AppState
@@ -29,7 +30,11 @@ struct CoachDetailView: View {
                     // Navigation Header
                     HStack {
                         Button(action: {
-                            presentationMode.wrappedValue.dismiss()
+                            if let onBack {
+                                onBack()
+                            } else {
+                                presentationMode.wrappedValue.dismiss()
+                            }
                         }) {
                             Image(systemName: "arrow.left")
                                 .font(.system(size: 20, weight: .medium))

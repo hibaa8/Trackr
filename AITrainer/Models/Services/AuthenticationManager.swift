@@ -126,7 +126,8 @@ class AuthenticationManager: ObservableObject {
         Task {
             do {
                 let response = try await backendSignUp(email: email, password: password, name: "New User")
-                setAuthenticated(email: response.email, onboardingCompleted: response.onboarding_completed)
+                // Product rule: signup always routes to onboarding first.
+                setAuthenticated(email: response.email, onboardingCompleted: false)
                 setCurrentUserId(response.user_id)
                 userDefaults.set(response.name, forKey: "currentUserName")
                 isLoading = false
@@ -198,30 +199,22 @@ class AuthenticationManager: ObservableObject {
 
                 let email = session.user.email ?? ""
                 let name = session.user.userMetadata["full_name"] as? String ?? "Google User"
-                let existingUser = try await fetchUserRecord(email: email)
-                if existingUser == nil {
-                    let insert = UserInsert(
-                        email: email,
-                        name: name,
-                        gender: nil,
-                        birthdate: nil,
-                        height_cm: nil,
-                        weight_kg: nil,
-                        created_at: isoFormatter.string(from: Date())
-                    )
-                    _ = try await supabase.from("users").insert(insert).execute()
-                    setAuthenticated(email: email, onboardingCompleted: false)
-                } else {
-                    setAuthenticated(email: email, onboardingCompleted: true)
-                }
-                if let record = try await fetchUserRecord(email: email) {
-                    setCurrentUserId(record.id)
-                } else {
-                    resolveAndStoreUserId(email: email)
-                }
-                userDefaults.set(name, forKey: "currentUserName")
+                let callbackResponse = try await backendOAuthCallback(
+                    accessToken: session.accessToken,
+                    fallbackEmail: email,
+                    fallbackName: name
+                )
+                setAuthenticated(
+                    email: callbackResponse.email,
+                    onboardingCompleted: callbackResponse.onboarding_completed
+                )
+                setCurrentUserId(callbackResponse.user_id)
+                userDefaults.set(callbackResponse.name, forKey: "currentUserName")
                 isLoading = false
             } catch {
+                isAuthenticated = false
+                currentUser = nil
+                currentUserId = nil
                 authErrorMessage = error.localizedDescription
                 isLoading = false
             }
@@ -301,6 +294,35 @@ class AuthenticationManager: ObservableObject {
         guard (200...299).contains(http.statusCode) else {
             let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
             throw NSError(domain: "Auth", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail ?? "Sign up failed"])
+        }
+        return try JSONDecoder().decode(BackendAuthResponse.self, from: data)
+    }
+
+    private func backendOAuthCallback(
+        accessToken: String,
+        fallbackEmail: String,
+        fallbackName: String
+    ) async throws -> BackendAuthResponse {
+        guard let url = URL(string: "\(BackendConfig.baseURL)/auth/callback") else {
+            throw URLError(.badURL)
+        }
+        let payload: [String: Any] = [
+            "access_token": accessToken,
+            "email": fallbackEmail,
+            "name": fallbackName
+        ]
+        let body = try JSONSerialization.data(withJSONObject: payload)
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let http = response as? HTTPURLResponse else {
+            throw URLError(.badServerResponse)
+        }
+        guard (200...299).contains(http.statusCode) else {
+            let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
+            throw NSError(domain: "Auth", code: http.statusCode, userInfo: [NSLocalizedDescriptionKey: detail ?? "Google sign in failed"])
         }
         return try JSONDecoder().decode(BackendAuthResponse.self, from: data)
     }

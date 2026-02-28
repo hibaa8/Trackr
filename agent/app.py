@@ -9,7 +9,6 @@ import hashlib
 import io
 import os
 import re
-import hashlib
 import hmac
 import secrets
 import ssl
@@ -22,8 +21,8 @@ from dotenv import load_dotenv
 # Load environment variables from .env file
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=dotenv_path, override=True)
-from datetime import date, datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, List, Optional, Union
 
 _ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _ROOT_DIR not in sys.path:
@@ -37,10 +36,9 @@ import urllib.parse
 import urllib.request
 import stripe
 
-from dotenv import load_dotenv
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from googleapiclient.discovery import build
 import google.generativeai as genai
 from langchain_core.messages import HumanMessage, ToolMessage
@@ -50,7 +48,7 @@ from openai import OpenAI
 
 from agent.state import SESSION_CACHE
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
-from config.constants import DB_PATH, CACHE_TTL_LONG
+from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key, _draft_reminders_key
 from agent.db.connection import get_db_conn
 from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
@@ -124,6 +122,7 @@ _AGENT_RAG_INIT = None
 _PENDING_PLANS: Dict[str, Dict[str, Any]] = {}
 _GEMINI_MODEL = None
 _OPENAI_CLIENT = None
+COACH_CHANGE_COOLDOWN_DAYS = 2
 
 
 def _get_agent_graph():
@@ -364,6 +363,7 @@ def _extract_og_image(url: str) -> Optional[str]:
 
 
 def _store_meal_log(payload: FoodLogRequest) -> None:
+    _ensure_meal_log_schema()
     def _idempotency_key() -> str:
         if payload.idempotency_key and payload.idempotency_key.strip():
             return payload.idempotency_key.strip()
@@ -375,6 +375,9 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
                 "protein_g": item.protein_g,
                 "carbs_g": item.carbs_g,
                 "fat_g": item.fat_g,
+                "fiber_g": item.fiber_g,
+                "sugar_g": item.sugar_g,
+                "sodium_mg": item.sodium_mg,
             }
             for item in payload.items
         ]
@@ -384,6 +387,9 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             "protein_g": payload.protein_g,
             "carbs_g": payload.carbs_g,
             "fat_g": payload.fat_g,
+            "fiber_g": payload.fiber_g,
+            "sugar_g": payload.sugar_g,
+            "sodium_mg": payload.sodium_mg,
             "items": item_payload,
             "logged_at": payload.logged_at or "",
         }
@@ -404,8 +410,8 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             """
             INSERT INTO meal_logs (
                 user_id, logged_at, photo_path, description, calories,
-                protein_g, carbs_g, fat_g, confidence, confirmed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, confidence, confirmed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.user_id,
@@ -416,15 +422,19 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
                 int(payload.protein_g),
                 int(payload.carbs_g),
                 int(payload.fat_g),
+                float(payload.fiber_g or 0),
+                float(payload.sugar_g or 0),
+                float(payload.sodium_mg or 0),
                 max((item.confidence for item in payload.items), default=0.6),
                 1,
             ),
         )
         conn.commit()
-    _redis_delete(f"user:{payload.user_id}:meal_logs")
-    _redis_delete(f"daily_intake:{payload.user_id}:{day_key}")
+    _invalidate_user_activity_cache(payload.user_id, day=day_key)
     _award_points(payload.user_id, 5, f"meal_log:{logged_at}")
     _maybe_award_daily_calorie_target_bonus(payload.user_id, logged_at[:10])
+    _apply_daily_checklist_completion_bonus(payload.user_id, logged_at[:10])
+    _ensure_daily_coach_checkin_reminder(payload.user_id)
     _redis_set_json(idem_cache_key, {"ok": True}, ttl_seconds=600)
 
 
@@ -462,7 +472,51 @@ def _ensure_profile_schema() -> None:
         has_profile_image = cur.fetchone() is not None
         if not has_profile_image:
             cur.execute("ALTER TABLE users ADD COLUMN profile_image_base64 TEXT NULL")
-            conn.commit()
+        pref_columns = [
+            ("allergies", "TEXT NULL"),
+            ("preferred_workout_time", "TEXT NULL"),
+            ("menstrual_cycle_notes", "TEXT NULL"),
+        ]
+        for col_name, col_type in pref_columns:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'user_preferences'
+                  AND column_name = ?
+                """,
+                (col_name,),
+            )
+            has_col = cur.fetchone() is not None
+            if not has_col:
+                cur.execute(f"ALTER TABLE user_preferences ADD COLUMN {col_name} {col_type}")
+        conn.commit()
+
+
+def _ensure_meal_log_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        meal_columns = [
+            ("fiber_g", "DOUBLE PRECISION NULL"),
+            ("sugar_g", "DOUBLE PRECISION NULL"),
+            ("sodium_mg", "DOUBLE PRECISION NULL"),
+        ]
+        for col_name, col_type in meal_columns:
+            cur.execute(
+                """
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'meal_logs'
+                  AND column_name = ?
+                """,
+                (col_name,),
+            )
+            has_col = cur.fetchone() is not None
+            if not has_col:
+                cur.execute(f"ALTER TABLE meal_logs ADD COLUMN {col_name} {col_type}")
+        conn.commit()
 
 
 def _supabase_url() -> Optional[str]:
@@ -521,9 +575,99 @@ def _ensure_coach_schema() -> None:
         if not has_agent_id:
             cur.execute("ALTER TABLE users ADD COLUMN agent_id BIGINT NULL")
 
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'coach_voice'
+            """
+        )
+        has_coach_voice = cur.fetchone() is not None
+        if not has_coach_voice:
+            cur.execute("ALTER TABLE users ADD COLUMN coach_voice TEXT NULL")
+
+        cur.execute(
+            """
+            SELECT 1
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'users'
+              AND column_name = 'last_agent_change_at'
+            """
+        )
+        has_last_agent_change_at = cur.fetchone() is not None
+        if not has_last_agent_change_at:
+            cur.execute("ALTER TABLE users ADD COLUMN last_agent_change_at TEXT NULL")
+
         # Default to Marcus (id=1) when missing.
         cur.execute("UPDATE users SET agent_id = 1 WHERE agent_id IS NULL")
+        cur.execute(
+            """
+            UPDATE users
+            SET coach_voice = CASE
+                WHEN agent_id = 1 THEN 'onyx'
+                WHEN agent_id = 2 THEN 'shimmer'
+                WHEN agent_id = 3 THEN 'sage'
+                WHEN agent_id = 4 THEN 'nova'
+                WHEN agent_id = 5 THEN 'echo'
+                WHEN agent_id = 6 THEN 'alloy'
+                WHEN agent_id = 7 THEN 'nova'
+                WHEN agent_id = 8 THEN 'echo'
+                WHEN agent_id = 9 THEN 'shimmer'
+                WHEN agent_id = 10 THEN 'nova'
+                WHEN agent_id = 11 THEN 'alloy'
+                ELSE 'alloy'
+            END
+            WHERE coach_voice IS NULL OR coach_voice = ''
+            """
+        )
         conn.commit()
+
+
+def _default_voice_for_agent(agent_id: Optional[int]) -> str:
+    mapping = {
+        1: "onyx",
+        2: "shimmer",
+        3: "sage",
+        4: "nova",
+        5: "echo",
+        6: "alloy",
+        7: "nova",
+        8: "echo",
+        9: "shimmer",
+        10: "nova",
+        11: "alloy",
+    }
+    if agent_id is None:
+        return "alloy"
+    return mapping.get(int(agent_id), "alloy")
+
+
+def _agent_change_cooldown_state(last_changed_at: Any) -> Dict[str, Any]:
+    last_changed = _coerce_to_datetime(last_changed_at)
+    if not last_changed:
+        return {
+            "blocked": False,
+            "next_change_available_at": None,
+            "retry_after_days": 0,
+        }
+    next_allowed = last_changed + timedelta(days=COACH_CHANGE_COOLDOWN_DAYS)
+    now_utc = datetime.now(timezone.utc)
+    if now_utc >= next_allowed:
+        return {
+            "blocked": False,
+            "next_change_available_at": next_allowed.isoformat(),
+            "retry_after_days": 0,
+        }
+    seconds_left = max(0, int((next_allowed - now_utc).total_seconds()))
+    retry_after_days = max(1, int((seconds_left + 86399) / 86400))
+    return {
+        "blocked": True,
+        "next_change_available_at": next_allowed.isoformat(),
+        "retry_after_days": retry_after_days,
+    }
 
 
 def _hash_password(password: str) -> str:
@@ -555,9 +699,34 @@ def _verify_password(password: str, stored: Optional[str]) -> bool:
         return False
 
 
+def _user_has_active_plan(user_id: int) -> bool:
+    try:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT 1
+                FROM plan_templates
+                WHERE user_id = ? AND status = 'active'
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            return cur.fetchone() is not None
+    except Exception:
+        return False
+
+
 def _onboarding_completed_from_row(row: tuple) -> bool:
     # row: id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id
-    return bool(row[4] is not None and row[5] is not None and row[6] is not None and row[7] is not None)
+    # Treat onboarding as complete if core profile exists OR user already has an active plan.
+    has_profile_basics = bool(row[4] is not None and row[5] is not None and row[6] is not None)
+    if has_profile_basics:
+        return True
+    user_id = int(row[0]) if row and row[0] is not None else None
+    if user_id is None:
+        return False
+    return _user_has_active_plan(user_id)
 
 
 def _coerce_to_date(value: Any) -> Optional[date]:
@@ -577,6 +746,31 @@ def _coerce_to_date(value: Any) -> Optional[date]:
         return datetime.fromisoformat(text).date()
     except ValueError:
         return None
+
+
+def _coerce_to_datetime(value: Any) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, date):
+        return datetime.combine(value, datetime.min.time(), tzinfo=timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "+00:00")
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S",):
+        try:
+            parsed = datetime.strptime(text, fmt)
+            return parsed.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+    return None
 
 
 def _award_points(user_id: int, points: int, reason: str) -> None:
@@ -613,6 +807,76 @@ def _total_points(user_id: int) -> int:
         cur.execute("SELECT COALESCE(SUM(points), 0) FROM points WHERE user_id = ?", (user_id,))
         row = cur.fetchone()
         return int(row[0] or 0) if row else 0
+
+
+def _level_progress_from_points(points: int) -> Dict[str, int]:
+    # Progressive thresholds: 60, 65, 70, 75, ...
+    remaining = max(0, int(points))
+    level = 1
+    required = 60
+    while remaining >= required:
+        remaining -= required
+        level += 1
+        required += 5
+    return {
+        "level": level,
+        "xp_in_level": remaining,
+        "xp_for_next_level": required,
+        "xp_to_next_level": required - remaining,
+    }
+
+
+def _invalidate_user_activity_cache(user_id: int, day: Optional[str] = None) -> None:
+    _redis_delete(f"session_hydration:{user_id}")
+    _redis_delete(f"user:{user_id}:meal_logs")
+    if day:
+        _redis_delete(f"daily_intake:{user_id}:{day}")
+
+
+def _ensure_daily_coach_checkin_reminder(user_id: int) -> None:
+    # Schedule today's check-in if upcoming; otherwise schedule for tomorrow.
+    now = datetime.now()
+    target = now.replace(hour=20, minute=0, second=0, microsecond=0)
+    if target <= now:
+        target = target + timedelta(days=1)
+    scheduled_at = target.isoformat(timespec="seconds")
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reminders (
+                user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            ON CONFLICT (user_id, reminder_type, scheduled_at) DO NOTHING
+            """,
+            (user_id, "daily_coach_checkin", scheduled_at, "pending", "ios", None),
+        )
+        conn.commit()
+    _invalidate_reminders_cache(user_id)
+
+
+def _invalidate_health_activity_cache(user_id: int) -> None:
+    _redis_delete(_draft_health_activity_key(user_id))
+    _redis_delete(f"session_hydration:{user_id}")
+
+
+def _invalidate_reminders_cache(user_id: int) -> None:
+    _redis_delete(_draft_reminders_key(user_id))
+    _redis_delete(f"session_hydration:{user_id}")
+
+
+def _ensure_app_open_schema() -> None:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS app_open_events (
+                user_id INTEGER PRIMARY KEY,
+                last_open_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.commit()
 
 
 def _daily_intake_and_target(user_id: int, target_day: str) -> tuple[int, Optional[int]]:
@@ -685,8 +949,11 @@ def _update_login_streak(user_id: int) -> Dict[str, int]:
             return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
         if last_dt == (today_dt - timedelta(days=1)):
             current_count = int(current_count) + 1
-        else:
+        elif last_dt is None:
             current_count = 1
+        else:
+            # Preserve streak until user decides freeze vs reset after inactivity.
+            return {"current_count": int(current_count), "best_count": int(best_count), "last_date": str(last_date)}
         best_count = max(int(best_count), int(current_count))
         cur.execute(
             "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE id = ?",
@@ -694,6 +961,91 @@ def _update_login_streak(user_id: int) -> Dict[str, int]:
         )
         conn.commit()
         return {"current_count": int(current_count), "best_count": int(best_count), "last_date": today_str}
+
+
+def _set_streak_for_today(user_id: int, keep_count: bool) -> None:
+    today_str = date.today().isoformat()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, current_count, best_count FROM streaks WHERE user_id = ? AND streak_type = ? LIMIT 1",
+            (user_id, "login"),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute(
+                """
+                INSERT INTO streaks (user_id, streak_type, current_count, best_count, last_date)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (user_id, "login", 1, 1, today_str),
+            )
+            conn.commit()
+            return
+        streak_id, current_count, best_count = row
+        if keep_count:
+            new_count = max(1, int(current_count or 1))
+            new_best = max(int(best_count or 0), new_count)
+        else:
+            new_count = 1
+            new_best = max(int(best_count or 0), 1)
+        cur.execute(
+            "UPDATE streaks SET current_count = ?, best_count = ?, last_date = ? WHERE id = ?",
+            (new_count, new_best, today_str, int(streak_id)),
+        )
+        conn.commit()
+
+
+def _apply_daily_checklist_completion_bonus(user_id: int, target_day: str) -> None:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?",
+            (user_id, start, end),
+        )
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute(
+            "SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?",
+            (user_id, target_day),
+        )
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute(
+            "SELECT COUNT(*) FROM checkins WHERE user_id = ? AND checkin_date = ?",
+            (user_id, target_day),
+        )
+        checkin_count = int((cur.fetchone() or [0])[0] or 0)
+    if meal_count < 3 or workout_count < 1 or checkin_count < 1:
+        return
+    reason = f"daily_checklist_complete:{target_day}"
+    if _has_points_reason(user_id, reason):
+        return
+    _award_points(user_id, 10, reason)
+
+
+def _daily_checklist_status(user_id: int, target_day: str) -> Dict[str, Any]:
+    start = f"{target_day}T00:00:00"
+    end = f"{target_day}T23:59:59"
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM meal_logs WHERE user_id = ? AND logged_at BETWEEN ? AND ?", (user_id, start, end))
+        meal_count = int((cur.fetchone() or [0])[0] or 0)
+        cur.execute("SELECT COUNT(*) FROM workout_sessions WHERE user_id = ? AND completed = 1 AND date = ?", (user_id, target_day))
+        workout_count = int((cur.fetchone() or [0])[0] or 0)
+    checkin_done = _has_points_reason(user_id, f"checkin_log:{target_day}")
+    checklist_reason = f"daily_checklist_complete:{target_day}"
+    checklist_done = _has_points_reason(user_id, checklist_reason)
+    return {
+        "day": target_day,
+        "meals_logged": meal_count,
+        "workouts_logged": workout_count,
+        "checkin_done": checkin_done,
+        "meals_done": meal_count >= 3,
+        "workout_done": workout_count >= 1,
+        "checklist_done": checklist_done,
+        "xp_awarded": 10 if checklist_done else 0,
+    }
 
 
 def _maybe_award_biweekly_target_bonus(user_id: int) -> None:
@@ -745,8 +1097,9 @@ def _gamification_summary(user_id: int) -> Dict[str, Any]:
     _maybe_award_biweekly_target_bonus(user_id)
 
     points = _total_points(user_id)
-    level = max(1, (points // 100) + 1)
-    next_level_points = max(0, level * 100 - points)
+    progress = _level_progress_from_points(points)
+    level = progress["level"]
+    next_level_points = progress["xp_to_next_level"]
     unlocked_freezes = max(0, level - 1)
     used_freezes = _count_points_reason_like(user_id, "freeze_used:%")
     available_freezes = max(0, unlocked_freezes - used_freezes)
@@ -782,6 +1135,8 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "age_years": row[6],
             "agent_id": row[7],
             "profile_image_base64": row[8],
+            "coach_voice": row[9],
+            "last_agent_change_at": row[10],
         }
 
     def _map_prefs(row: Optional[tuple]) -> Optional[Dict[str, Any]]:
@@ -796,6 +1151,9 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
             "workout_preferences": row[5],
             "timezone": row[6],
             "created_at": row[7],
+            "allergies": row[8] if len(row) > 8 else None,
+            "preferred_workout_time": row[9] if len(row) > 9 else None,
+            "menstrual_cycle_notes": row[10] if len(row) > 10 else None,
         }
 
     try:
@@ -810,6 +1168,50 @@ def _load_user_profile(user_id: int) -> Dict[str, Any]:
         return {"user": _map_user(user_row), "preferences": _map_prefs(pref_row)}
     except Exception:
         return {"user": None, "preferences": None}
+
+
+def _as_string_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value if item is not None]
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if item is not None]
+        except Exception:
+            pass
+        return [part.strip() for part in stripped.split(",") if part.strip()]
+    return []
+
+
+def _resolve_coach_slug(agent_id: Optional[Union[int, str]]) -> Optional[str]:
+    if agent_id is None:
+        return None
+    if isinstance(agent_id, str):
+        normalized = agent_id.strip().lower()
+        if not normalized:
+            return None
+        if normalized.isdigit():
+            agent_id = int(normalized)
+        else:
+            return normalized
+    if isinstance(agent_id, int):
+        try:
+            with get_db_conn() as conn:
+                cur = conn.cursor()
+                cur.execute("SELECT slug FROM coaches WHERE id = ? LIMIT 1", (agent_id,))
+                row = cur.fetchone()
+                if row and row[0]:
+                    return str(row[0]).strip().lower()
+        except Exception:
+            return str(agent_id)
+        return str(agent_id)
+    return str(agent_id).strip().lower()
 
 
 def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
@@ -832,6 +1234,46 @@ def _list_checkins(user_id: int) -> List[Dict[str, Any]]:
         ]
     except Exception:
         return []
+
+
+def _upsert_daily_weight_checkin(user_id: int, weight_kg: float, conn=None) -> None:
+    """Persist the latest user weight to checkins for charting."""
+    own_conn = False
+    if conn is None:
+        conn = get_db_conn()
+        own_conn = True
+    try:
+        cur = conn.cursor()
+        today = datetime.now().date().isoformat()
+        cur.execute(
+            """
+            SELECT id
+            FROM checkins
+            WHERE user_id = ? AND checkin_date = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (user_id, today),
+        )
+        existing = cur.fetchone()
+        if existing and existing[0]:
+            cur.execute(
+                "UPDATE checkins SET weight_kg = ? WHERE id = ?",
+                (weight_kg, int(existing[0])),
+            )
+        else:
+            cur.execute(
+                """
+                INSERT INTO checkins (user_id, checkin_date, weight_kg, mood, notes)
+                VALUES (?, ?, ?, NULL, NULL)
+                """,
+                (user_id, today, weight_kg),
+            )
+        if own_conn:
+            conn.commit()
+    finally:
+        if own_conn:
+            conn.close()
 
 
 def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
@@ -870,12 +1312,14 @@ def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
 
 
 def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
+    _ensure_meal_log_schema()
     try:
         with get_db_conn() as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g, confidence, confirmed
+                SELECT id, logged_at, photo_path, description, calories, protein_g, carbs_g, fat_g,
+                       fiber_g, sugar_g, sodium_mg, confidence, confirmed
                 FROM meal_logs
                 WHERE user_id = ?
                 ORDER BY logged_at DESC
@@ -896,8 +1340,11 @@ def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
                     "protein_g": row[5],
                     "carbs_g": row[6],
                     "fat_g": row[7],
-                    "confidence": row[8],
-                    "confirmed": bool(row[9]),
+                    "fiber_g": float(row[8] or 0),
+                    "sugar_g": float(row[9] or 0),
+                    "sodium_mg": float(row[10] or 0),
+                    "confidence": row[11],
+                    "confirmed": bool(row[12]),
                 }
             )
         return meals
@@ -925,7 +1372,7 @@ class CoachChatRequest(BaseModel):
     message: str
     user_id: int
     thread_id: Optional[str] = None
-    agent_id: Optional[int] = None
+    agent_id: Optional[Union[int, str]] = None
     image_base64: Optional[str] = None
 
 
@@ -946,6 +1393,29 @@ class CoachFeedbackResponse(BaseModel):
     thread_id: str
 
 
+class CoachItemResponse(BaseModel):
+    id: int
+    slug: str
+    name: str
+    nickname: Optional[str] = None
+    title: str
+    age: int
+    ethnicity: str
+    gender: str
+    pronouns: str
+    philosophy: str
+    background_story: str
+    personality: str
+    speaking_style: str
+    expertise: List[str]
+    common_phrases: List[str]
+    tags: List[str]
+    primary_color: str
+    secondary_color: str
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
+
+
 class FoodScanItem(BaseModel):
     name: str
     amount: str
@@ -953,6 +1423,9 @@ class FoodScanItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     category: Optional[str] = None
     confidence: float
 
@@ -963,6 +1436,9 @@ class FoodScanResponse(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     confidence: float
     items: List[FoodScanItem]
 
@@ -974,6 +1450,9 @@ class FoodLogRequest(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     items: List[FoodScanItem]
     logged_at: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -985,6 +1464,9 @@ class DailyIntakeResponse(BaseModel):
     total_protein_g: float
     total_carbs_g: float
     total_fat_g: float
+    total_fiber_g: float
+    total_sugar_g: float
+    total_sodium_mg: float
     meals_count: int
     daily_calorie_target: Optional[int] = None
 
@@ -995,6 +1477,9 @@ class MealLogItem(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0.0
+    sugar_g: float = 0.0
+    sodium_mg: float = 0.0
     logged_at: str
 
 
@@ -1010,6 +1495,50 @@ class ReminderItemResponse(BaseModel):
     status: str
     channel: str
     related_plan_override_id: Optional[int] = None
+
+
+class ReminderCreateRequest(BaseModel):
+    user_id: int
+    reminder_type: str
+    scheduled_at: str
+    status: str = "pending"
+    channel: str = "ios"
+
+
+class ReminderUpdateRequest(BaseModel):
+    user_id: int
+    status: Optional[str] = None
+    scheduled_at: Optional[str] = None
+
+
+class HealthActivityLogRequest(BaseModel):
+    user_id: int
+    date: Optional[str] = None
+    steps: int = 0
+    calories_burned: int = 0
+    active_minutes: int = 0
+    workouts_summary: Optional[str] = None
+    source: str = "apple_health"
+
+
+class HealthActivityImpactItemResponse(BaseModel):
+    date: str
+    steps: int
+    health_calories_burned: int
+    active_minutes: int
+    workouts_summary: str
+    source: str
+    meal_intake: int
+    meal_target: Optional[int] = None
+    workout_expected_burn: Optional[int] = None
+    burn_delta: Optional[int] = None
+    intake_delta: Optional[int] = None
+
+
+class HealthActivityImpactResponse(BaseModel):
+    start_day: str
+    end_day: str
+    items: List[HealthActivityImpactItemResponse]
 
 
 class SessionHydrationResponse(BaseModel):
@@ -1034,6 +1563,12 @@ class AuthSignUpRequest(BaseModel):
     name: Optional[str] = None
 
 
+class AuthCallbackRequest(BaseModel):
+    access_token: str
+    email: Optional[str] = None
+    name: Optional[str] = None
+
+
 class AuthResponse(BaseModel):
     user_id: int
     email: str
@@ -1049,6 +1584,18 @@ class CoachChangeRequest(BaseModel):
 class CoachChangeResponse(BaseModel):
     success: bool
     message: Optional[str] = None
+    next_change_available_at: Optional[str] = None
+    retry_after_days: Optional[int] = None
+
+
+class LocalWorkoutVideoResponse(BaseModel):
+    key: str
+    base_filename: str
+    base_url: str
+    base_local_path: Optional[str] = None
+    reps_filename: Optional[str] = None
+    reps_url: Optional[str] = None
+    reps_local_path: Optional[str] = None
 
 
 class ProfileUpdateRequest(BaseModel):
@@ -1066,6 +1613,9 @@ class ProfileUpdateRequest(BaseModel):
     target_weight_kg: Optional[float] = None
     dietary_preferences: Optional[str] = None
     workout_preferences: Optional[str] = None
+    allergies: Optional[str] = None
+    preferred_workout_time: Optional[str] = None
+    menstrual_cycle_notes: Optional[str] = None
 
 
 class BillingCheckoutRequest(BaseModel):
@@ -1108,6 +1658,7 @@ class RecipeSuggestion(BaseModel):
     ingredients: List[str]
     steps: List[str]
     tags: List[str] = []
+    source_links: List[str] = []
 
 
 class RecipeSuggestResponse(BaseModel):
@@ -1126,6 +1677,10 @@ class OnboardingCompletePayload(BaseModel):
     trainer_id: Optional[int] = None
     trainer: Optional[str] = None
     full_name: Optional[str] = None
+    voice: Optional[str] = None
+    allergies: Optional[str] = None
+    preferred_workout_time: Optional[str] = None
+    menstrual_cycle_notes: Optional[str] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -1167,6 +1722,19 @@ class GamificationResponse(BaseModel):
 
 class UseFreezeRequest(BaseModel):
     user_id: int
+
+
+class StreakDecisionRequest(BaseModel):
+    user_id: int
+    use_freeze: bool
+
+
+class AppOpenStreakResponse(BaseModel):
+    freeze_prompt_required: bool
+    inactivity_hours: float
+    streak_reset: bool
+    message: str
+    gamification: GamificationResponse
 
 
 class RecipeImageRequest(BaseModel):
@@ -1362,6 +1930,100 @@ def _places_request(path: str, params: Dict[str, str]) -> Dict:
 def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "ai-trainer-youtube-api"}
+
+
+def _local_workout_videos_dir() -> str:
+    return os.path.join(os.path.dirname(__file__), "videos")
+
+
+def _safe_local_video_path(file_name: str) -> str:
+    videos_dir = os.path.abspath(_local_workout_videos_dir())
+    candidate = os.path.abspath(os.path.join(videos_dir, file_name))
+    if not candidate.startswith(videos_dir + os.sep):
+        raise HTTPException(status_code=400, detail="Invalid video filename")
+    return candidate
+
+
+def _group_local_workout_videos() -> Dict[str, Dict[str, str]]:
+    videos_dir = _local_workout_videos_dir()
+    if not os.path.isdir(videos_dir):
+        return {}
+    grouped: Dict[str, Dict[str, str]] = {}
+    allowed_ext = {".mp4", ".mov", ".m4v"}
+
+    def _normalized_key(raw_stem: str) -> str:
+        lowered = raw_stem.strip().lower()
+        for suffix in ("_intro", "_reps", "-intro", "-reps", " intro", " reps"):
+            if lowered.endswith(suffix):
+                lowered = lowered[: -len(suffix)]
+                break
+        lowered = re.sub(r"[^a-z0-9]+", "_", lowered).strip("_")
+        return lowered or "video"
+
+    for entry in os.listdir(videos_dir):
+        path = os.path.join(videos_dir, entry)
+        if not os.path.isfile(path):
+            continue
+        stem, ext = os.path.splitext(entry)
+        if ext.lower() not in allowed_ext:
+            continue
+        stem_lower = stem.lower().strip()
+        is_intro = stem_lower.endswith("_intro") or stem_lower.endswith("-intro") or stem_lower.endswith(" intro")
+        is_reps = stem_lower.endswith("_reps") or stem_lower.endswith("-reps") or stem_lower.endswith(" reps")
+        key = _normalized_key(stem)
+        slot = grouped.setdefault(key, {})
+        if is_intro:
+            slot["base"] = entry
+        elif is_reps:
+            slot["reps"] = entry
+        else:
+            # Fallback for files that don't carry explicit suffix.
+            if "base" not in slot:
+                slot["base"] = entry
+            elif "reps" not in slot:
+                slot["reps"] = entry
+    return {k: v for k, v in grouped.items() if v.get("base")}
+
+
+@app.get("/api/workout-local-videos", response_model=List[LocalWorkoutVideoResponse])
+def get_local_workout_videos(request: Request):
+    grouped = _group_local_workout_videos()
+    base_url = str(request.base_url).rstrip("/")
+    rows: List[LocalWorkoutVideoResponse] = []
+    for key in sorted(grouped.keys()):
+        files = grouped[key]
+        base_name = files.get("base")
+        reps_name = files.get("reps")
+        if not base_name:
+            continue
+        rows.append(
+            LocalWorkoutVideoResponse(
+                key=key,
+                base_filename=base_name,
+                base_url=f"{base_url}/api/workout-local-videos/file/{urllib.parse.quote(base_name)}",
+                base_local_path=os.path.abspath(os.path.join(_local_workout_videos_dir(), base_name)),
+                reps_filename=reps_name,
+                reps_url=(
+                    f"{base_url}/api/workout-local-videos/file/{urllib.parse.quote(reps_name)}"
+                    if reps_name
+                    else None
+                ),
+                reps_local_path=(
+                    os.path.abspath(os.path.join(_local_workout_videos_dir(), reps_name))
+                    if reps_name
+                    else None
+                ),
+            )
+        )
+    return rows
+
+
+@app.get("/api/workout-local-videos/file/{file_name:path}")
+def get_local_workout_video_file(file_name: str):
+    full_path = _safe_local_video_path(file_name)
+    if not os.path.exists(full_path):
+        raise HTTPException(status_code=404, detail="Workout video file not found")
+    return FileResponse(full_path, media_type="video/mp4", filename=os.path.basename(full_path))
 
 
 @app.get("/categories")
@@ -1584,6 +2246,87 @@ def auth_signin(payload: AuthSignInRequest):
     )
 
 
+def _fetch_supabase_oauth_user(access_token: str) -> Dict[str, Any]:
+    base = _supabase_url()
+    if not base:
+        raise HTTPException(status_code=500, detail="SUPABASE_URL is not configured")
+
+    apikey = (
+        os.environ.get("SUPABASE_ANON_KEY")
+        or os.environ.get("SUPABASE_SERVICE_ROLE_KEY")
+        or ""
+    ).strip()
+    if not apikey:
+        raise HTTPException(status_code=500, detail="Missing Supabase API key for auth callback")
+
+    request = urllib.request.Request(
+        f"{base}/auth/v1/user",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "apikey": apikey,
+        },
+        method="GET",
+    )
+    ssl_context = ssl.create_default_context(cafile=certifi.where())
+    try:
+        with urllib.request.urlopen(request, timeout=20, context=ssl_context) as response:
+            body = response.read().decode("utf-8")
+            return json.loads(body) if body else {}
+    except Exception as exc:
+        raise HTTPException(status_code=401, detail=f"Invalid OAuth callback token: {exc}") from exc
+
+
+@app.post("/auth/callback", response_model=AuthResponse)
+def auth_callback(payload: AuthCallbackRequest):
+    access_token = (payload.access_token or "").strip()
+    if not access_token:
+        raise HTTPException(status_code=400, detail="access_token is required")
+
+    oauth_user = _fetch_supabase_oauth_user(access_token)
+    oauth_email = str(oauth_user.get("email") or "").strip().lower()
+    if not oauth_email:
+        oauth_email = str(payload.email or "").strip().lower()
+    if not oauth_email:
+        raise HTTPException(status_code=400, detail="OAuth user email is missing")
+
+    metadata = oauth_user.get("user_metadata") or {}
+    oauth_name = (
+        str(metadata.get("full_name") or metadata.get("name") or "").strip()
+        or str(payload.name or "").strip()
+        or "Google User"
+    )
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO users (email, name, created_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT (email) DO NOTHING
+            """,
+            (oauth_email, oauth_name, datetime.now().isoformat(timespec="seconds")),
+        )
+        cur.execute(
+            """
+            SELECT id, email, name, password_hash, height_cm, weight_kg, age_years, agent_id, profile_image_base64
+            FROM users
+            WHERE email = ?
+            LIMIT 1
+            """,
+            (oauth_email,),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=500, detail="Unable to resolve user after OAuth callback")
+
+    return AuthResponse(
+        user_id=int(row[0]),
+        email=str(row[1]),
+        name=str(row[2] or oauth_name),
+        onboarding_completed=_onboarding_completed_from_row(row),
+    )
+
+
 @app.post("/api/billing/checkout-session", response_model=BillingCheckoutResponse)
 def create_checkout_session(payload: BillingCheckoutRequest):
     if payload.plan_tier.lower() != "premium":
@@ -1692,8 +2435,9 @@ def coach_chat(payload: CoachChatRequest):
     thread_id = payload.thread_id or f"user:{payload.user_id}"
     config = {"configurable": {"thread_id": thread_id}}
 
-    if payload.agent_id:
-        SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = payload.agent_id
+    resolved_agent = _resolve_coach_slug(payload.agent_id)
+    if resolved_agent:
+        SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = resolved_agent
 
     if thread_id not in _AGENT_PRELOADED:
         preload_fn(payload.user_id)
@@ -1858,7 +2602,7 @@ def suggest_recipes(payload: RecipeSuggestRequest):
     workout_label = plan_context.get("workout_plan") or "Unknown"
 
     prompt = (
-        "You are a nutrition coach and recipe creator. Generate 3 healthy recipes. "
+        "You are a nutrition coach and recipe creator. Generate exactly 1 healthy recipe. "
         "Return strictly valid JSON with this schema:\n"
         "{"
         "\"recipes\":[{"
@@ -1871,7 +2615,8 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         "\"fat_g\":number,"
         "\"ingredients\":[string],"
         "\"steps\":[string],"
-        "\"tags\":[string]"
+        "\"tags\":[string],"
+        "\"source_links\":[string]"
         "}],"
         "\"detected_ingredients\":[string]"
         "}\n"
@@ -1884,21 +2629,54 @@ def suggest_recipes(payload: RecipeSuggestRequest):
         f"Dietary preferences: {', '.join(payload.dietary) if payload.dietary else 'None'}. "
         f"Available ingredients: {', '.join(combined) if combined else 'None provided'}."
     )
+    fallback_recipe = {
+        "id": str(uuid.uuid4()),
+        "name": "Trainer Suggestion",
+        "summary": "Balanced, high-protein bowl tailored to your current plan and ingredients.",
+        "calories": int(per_meal_target),
+        "protein_g": max(25, int(per_meal_target * 0.25 / 4)),
+        "carbs_g": max(30, int(per_meal_target * 0.45 / 4)),
+        "fat_g": max(10, int(per_meal_target * 0.30 / 9)),
+        "ingredients": combined[:8] if combined else ["lean protein", "rice", "mixed vegetables", "olive oil", "seasoning"],
+        "steps": [
+            "Prep ingredients and season protein.",
+            "Cook protein until done and set aside.",
+            "Cook carbs base and warm vegetables.",
+            "Assemble bowl and finish with healthy fats.",
+        ],
+        "tags": ["balanced", "high-protein", payload.cuisine or "any-cuisine"],
+        "source_links": [
+            "https://www.eatright.org/fitness/sports-and-performance/fueling-your-workout",
+            "https://www.health.harvard.edu/staying-healthy/healthy-eating-plate",
+        ],
+    }
 
-    content = _gemini_generate_content(prompt, temperature=0.3)
-    payload_json = _safe_parse_json(content)
-    recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
-    recipes = []
-    for item in recipes_raw:
-        if not isinstance(item, dict):
-            continue
-        item["id"] = item.get("id") or str(uuid.uuid4())
-        recipes.append(item)
-
-    return RecipeSuggestResponse(
-        recipes=[RecipeSuggestion(**item) for item in recipes],
-        detected_ingredients=payload_json.get("detected_ingredients", []) or detected_ingredients,
-    )
+    try:
+        content = _gemini_generate_content(prompt, temperature=0.3)
+        payload_json = _safe_parse_json(content)
+        recipes_raw = payload_json.get("recipes", []) if isinstance(payload_json, dict) else []
+        recipes = []
+        for item in recipes_raw[:1]:
+            if not isinstance(item, dict):
+                continue
+            item["id"] = item.get("id") or str(uuid.uuid4())
+            item["name"] = "Trainer Suggestion"
+            source_links = item.get("source_links")
+            if not isinstance(source_links, list) or not source_links:
+                item["source_links"] = fallback_recipe["source_links"]
+            recipes.append(item)
+        if not recipes:
+            recipes = [fallback_recipe]
+        detected = payload_json.get("detected_ingredients", []) if isinstance(payload_json, dict) else []
+        return RecipeSuggestResponse(
+            recipes=[RecipeSuggestion(**item) for item in recipes],
+            detected_ingredients=detected or detected_ingredients,
+        )
+    except Exception:
+        return RecipeSuggestResponse(
+            recipes=[RecipeSuggestion(**fallback_recipe)],
+            detected_ingredients=detected_ingredients,
+        )
 
 
 @app.post("/recipes/search", response_model=RecipeSearchResponse)
@@ -2005,6 +2783,7 @@ async def transcribe_audio(file: UploadFile = File(...)):
 @app.get("/food/intake", response_model=DailyIntakeResponse)
 def get_daily_intake(user_id: int, day: Optional[str] = None):
     """Return daily calorie intake totals for a user."""
+    _ensure_meal_log_schema()
     target_day = day or date.today().isoformat()
     cache_key = f"daily_intake:{user_id}:{target_day}"
     cached = _redis_get_json(cache_key)
@@ -2019,7 +2798,7 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT calories, protein_g, carbs_g, fat_g
+            SELECT calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg
             FROM meal_logs
             WHERE user_id = ? AND logged_at BETWEEN ? AND ?
             """,
@@ -2030,6 +2809,9 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
     total_protein = sum(row[1] for row in rows)
     total_carbs = sum(row[2] for row in rows)
     total_fat = sum(row[3] for row in rows)
+    total_fiber = sum(float(row[4] or 0) for row in rows)
+    total_sugar = sum(float(row[5] or 0) for row in rows)
+    total_sodium = sum(float(row[6] or 0) for row in rows)
     daily_target = None
     try:
         from agent.tools.plan_tools import _get_active_plan_bundle_data
@@ -2051,6 +2833,9 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
         total_protein_g=total_protein,
         total_carbs_g=total_carbs,
         total_fat_g=total_fat,
+        total_fiber_g=total_fiber,
+        total_sugar_g=total_sugar,
+        total_sodium_mg=total_sodium,
         meals_count=len(rows),
         daily_calorie_target=daily_target,
     )
@@ -2061,6 +2846,7 @@ def get_daily_intake(user_id: int, day: Optional[str] = None):
 @app.get("/food/logs", response_model=DailyMealLogsResponse)
 def get_food_logs(user_id: int, day: Optional[str] = None):
     """Return logged meals for a specific day."""
+    _ensure_meal_log_schema()
     target_day = day or date.today().isoformat()
     bucket_key = f"user:{user_id}:meal_logs"
     cached_bucket = _redis_get_json(bucket_key)
@@ -2077,7 +2863,7 @@ def get_food_logs(user_id: int, day: Optional[str] = None):
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT description, calories, protein_g, carbs_g, fat_g, logged_at
+            SELECT description, calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, logged_at
             FROM meal_logs
             WHERE user_id = ? AND logged_at BETWEEN ? AND ?
             ORDER BY logged_at DESC
@@ -2092,7 +2878,10 @@ def get_food_logs(user_id: int, day: Optional[str] = None):
             protein_g=row[2],
             carbs_g=row[3],
             fat_g=row[4],
-            logged_at=row[5],
+            fiber_g=float(row[5] or 0),
+            sugar_g=float(row[6] or 0),
+            sodium_mg=float(row[7] or 0),
+            logged_at=row[8],
         )
         for row in rows
     ]
@@ -2141,10 +2930,58 @@ def get_profile(user_id: int):
     return _load_user_profile(user_id)
 
 
+@app.get("/api/coaches", response_model=List[CoachItemResponse])
+def get_coaches():
+    _ensure_coach_schema()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT id, slug, name, nickname, title, age, ethnicity, gender, pronouns,
+                   philosophy, background_story, personality, speaking_style,
+                   expertise, common_phrases, tags,
+                   primary_color, secondary_color, image_url, video_url
+            FROM coaches
+            ORDER BY id ASC
+            """
+        )
+        rows = cur.fetchall()
+
+    coaches: List[CoachItemResponse] = []
+    for row in rows:
+        coaches.append(
+            CoachItemResponse(
+                id=int(row[0]),
+                slug=str(row[1] or ""),
+                name=str(row[2] or ""),
+                nickname=str(row[3]) if row[3] is not None else None,
+                title=str(row[4] or "Coach"),
+                age=int(row[5]) if row[5] is not None else 30,
+                ethnicity=str(row[6] or "Unknown"),
+                gender=str(row[7] or "Unknown"),
+                pronouns=str(row[8] or ""),
+                philosophy=str(row[9] or ""),
+                background_story=str(row[10] or ""),
+                personality=str(row[11] or ""),
+                speaking_style=str(row[12] or ""),
+                expertise=_as_string_list(row[13]),
+                common_phrases=_as_string_list(row[14]),
+                tags=_as_string_list(row[15]),
+                primary_color=str(row[16] or "blue"),
+                secondary_color=str(row[17] or "navy"),
+                image_url=str(row[18]) if row[18] is not None else None,
+                video_url=str(row[19]) if row[19] is not None else None,
+            )
+        )
+    return coaches
+
+
 @app.put("/api/profile")
 def update_profile(payload: ProfileUpdateRequest):
     _ensure_profile_schema()
+    _ensure_coach_schema()
     user_fields: Dict[str, Any] = {}
+    weight_updated = False
     if payload.name is not None:
         user_fields["name"] = payload.name
     if payload.birthdate is not None:
@@ -2153,12 +2990,11 @@ def update_profile(payload: ProfileUpdateRequest):
         user_fields["height_cm"] = payload.height_cm
     if payload.weight_kg is not None:
         user_fields["weight_kg"] = payload.weight_kg
+        weight_updated = True
     if payload.gender is not None:
         user_fields["gender"] = payload.gender
     if payload.age_years is not None:
         user_fields["age_years"] = payload.age_years
-    if payload.agent_id is not None:
-        user_fields["agent_id"] = payload.agent_id
     if payload.profile_image_base64 is not None:
         user_fields["profile_image_base64"] = payload.profile_image_base64
 
@@ -2173,15 +3009,44 @@ def update_profile(payload: ProfileUpdateRequest):
         pref_fields["dietary_preferences"] = payload.dietary_preferences
     if payload.workout_preferences is not None:
         pref_fields["workout_preferences"] = payload.workout_preferences
-    if payload.dietary_preferences is not None:
-        pref_fields["dietary_preferences"] = payload.dietary_preferences
+    if payload.allergies is not None:
+        pref_fields["allergies"] = payload.allergies
+    if payload.preferred_workout_time is not None:
+        pref_fields["preferred_workout_time"] = payload.preferred_workout_time
+    if payload.menstrual_cycle_notes is not None:
+        pref_fields["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
 
     with get_db_conn() as conn:
         cur = conn.cursor()
+        if payload.agent_id is not None:
+            cur.execute("SELECT agent_id, last_agent_change_at FROM users WHERE id = ? LIMIT 1", (payload.user_id,))
+            current_row = cur.fetchone()
+            if not current_row:
+                raise HTTPException(status_code=404, detail="User not found")
+            current_agent_id = int(current_row[0]) if current_row[0] is not None else None
+            if payload.agent_id != current_agent_id:
+                cooldown_state = _agent_change_cooldown_state(current_row[1])
+                if cooldown_state["blocked"]:
+                    raise HTTPException(
+                        status_code=429,
+                        detail=(
+                            f"You can change coaches once every {COACH_CHANGE_COOLDOWN_DAYS} days. "
+                            f"Try again in about {cooldown_state['retry_after_days']} day(s)."
+                        ),
+                    )
+                user_fields["last_agent_change_at"] = datetime.now(timezone.utc).isoformat()
+            user_fields["agent_id"] = payload.agent_id
+            user_fields["coach_voice"] = _default_voice_for_agent(payload.agent_id)
         if user_fields:
             set_clause = ", ".join(f"{key} = ?" for key in user_fields.keys())
             params = list(user_fields.values()) + [payload.user_id]
             cur.execute(f"UPDATE users SET {set_clause} WHERE id = ?", params)
+            if weight_updated and payload.weight_kg is not None:
+                _upsert_daily_weight_checkin(payload.user_id, float(payload.weight_kg), conn=conn)
+                reason = f"checkin_log:{date.today().isoformat()}"
+                if not _has_points_reason(payload.user_id, reason):
+                    _award_points(payload.user_id, 5, reason)
+                _apply_daily_checklist_completion_bonus(payload.user_id, date.today().isoformat())
 
         if pref_fields:
             cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (payload.user_id,))
@@ -2192,8 +3057,9 @@ def update_profile(payload: ProfileUpdateRequest):
                     """
                     INSERT INTO user_preferences (
                         user_id, weekly_weight_change_kg, activity_level, goal_type,
-                        target_weight_kg, dietary_preferences, workout_preferences, timezone, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        target_weight_kg, dietary_preferences, workout_preferences, timezone, created_at,
+                        allergies, preferred_workout_time, menstrual_cycle_notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         payload.user_id,
@@ -2202,9 +3068,12 @@ def update_profile(payload: ProfileUpdateRequest):
                         pref_fields.get("goal_type"),
                         pref_fields.get("target_weight_kg"),
                         pref_fields.get("dietary_preferences"),
-                        None,
+                        pref_fields.get("workout_preferences"),
                         None,
                         created_at,
+                        pref_fields.get("allergies"),
+                        pref_fields.get("preferred_workout_time"),
+                        pref_fields.get("menstrual_cycle_notes"),
                     ),
                 )
             else:
@@ -2213,6 +3082,8 @@ def update_profile(payload: ProfileUpdateRequest):
                 cur.execute(f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?", params)
         conn.commit()
 
+    if weight_updated:
+        _invalidate_user_activity_cache(payload.user_id, day=date.today().isoformat())
     _refresh_profile_cache(payload.user_id)
     return _load_user_profile(payload.user_id)
 
@@ -2233,9 +3104,22 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
         cur = conn.cursor()
 
         # Check if user exists
-        cur.execute("SELECT id FROM users WHERE id = ?", (payload.user_id,))
-        if not cur.fetchone():
+        cur.execute("SELECT id, agent_id, last_agent_change_at FROM users WHERE id = ?", (payload.user_id,))
+        user_row = cur.fetchone()
+        if not user_row:
             raise HTTPException(status_code=404, detail="User not found")
+        current_agent_id = int(user_row[1]) if user_row[1] is not None else None
+        cooldown_state = _agent_change_cooldown_state(user_row[2])
+        if current_agent_id == payload.new_coach_id:
+            return CoachChangeResponse(success=True, message="Coach already selected")
+        if cooldown_state["blocked"]:
+            raise HTTPException(
+                status_code=429,
+                detail=(
+                    f"You can change coaches once every {COACH_CHANGE_COOLDOWN_DAYS} days. "
+                    f"Try again in about {cooldown_state['retry_after_days']} day(s)."
+                ),
+            )
 
         # Validate coach exists
         cur.execute("SELECT id FROM coaches WHERE id = ? LIMIT 1", (payload.new_coach_id,))
@@ -2243,9 +3127,15 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
             raise HTTPException(status_code=400, detail=f"Invalid coach ID: {payload.new_coach_id}")
 
         # Update the user's coach assignment
+        changed_at = datetime.now(timezone.utc).isoformat()
         cur.execute(
-            "UPDATE users SET agent_id = ? WHERE id = ?",
-            (payload.new_coach_id, payload.user_id)
+            "UPDATE users SET agent_id = ?, coach_voice = ?, last_agent_change_at = ? WHERE id = ?",
+            (
+                payload.new_coach_id,
+                _default_voice_for_agent(payload.new_coach_id),
+                changed_at,
+                payload.user_id,
+            )
         )
 
         # user_preferences does not store coach_id; agent_name lives on users
@@ -2256,7 +3146,12 @@ def change_user_coach(payload: CoachChangeRequest) -> CoachChangeResponse:
     _refresh_profile_cache(payload.user_id)
     _redis_delete(f"session_hydration:{payload.user_id}")
 
-    return CoachChangeResponse(success=True, message=f"Coach successfully changed to {payload.new_coach_id}")
+    return CoachChangeResponse(
+        success=True,
+        message=f"Coach successfully changed to {payload.new_coach_id}",
+        next_change_available_at=(datetime.now(timezone.utc) + timedelta(days=COACH_CHANGE_COOLDOWN_DAYS)).isoformat(),
+        retry_after_days=COACH_CHANGE_COOLDOWN_DAYS,
+    )
 
 
 @app.get("/api/voice")
@@ -2361,12 +3256,282 @@ def get_progress(user_id: int):
         "plan": plan,
         "meals": _list_meal_logs(user_id),
         "workouts": _list_workout_sessions(user_id),
+        "daily_checklist": _daily_checklist_status(user_id, date.today().isoformat()),
     }
+
+
+@app.post("/api/health-activity/log")
+def log_health_activity(payload: HealthActivityLogRequest):
+    target_day_date = _coerce_to_date(payload.date) or date.today()
+    target_day = target_day_date.isoformat()
+    source = (payload.source or "apple_health").strip() or "apple_health"
+    workouts_summary = (payload.workouts_summary or "").strip()
+    if payload.active_minutes > 0:
+        suffix = f"active_minutes={int(payload.active_minutes)}"
+        workouts_summary = f"{workouts_summary}; {suffix}" if workouts_summary else suffix
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            DELETE FROM health_activity
+            WHERE user_id = ? AND date = ? AND source = ?
+            """,
+            (payload.user_id, target_day, source),
+        )
+        cur.execute(
+            """
+            INSERT INTO health_activity (user_id, date, steps, calories_burned, workouts_summary, source)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.user_id,
+                target_day,
+                max(0, int(payload.steps)),
+                max(0, int(payload.calories_burned)),
+                workouts_summary or None,
+                source,
+            ),
+        )
+        conn.commit()
+
+    _invalidate_health_activity_cache(payload.user_id)
+    return {"ok": True, "date": target_day}
+
+
+@app.get("/api/health-activity/impact", response_model=HealthActivityImpactResponse)
+def get_health_activity_impact(
+    user_id: int,
+    start_day: Optional[str] = None,
+    end_day: Optional[str] = None,
+    days: int = 7,
+):
+    from agent.tools.activity_utils import _estimate_workout_calories
+
+    range_end = _coerce_to_date(end_day) or date.today()
+    default_start = range_end - timedelta(days=max(1, min(31, int(days))) - 1)
+    range_start = _coerce_to_date(start_day) or default_start
+    if range_start > range_end:
+        range_start, range_end = range_end, range_start
+
+    day_cursor = range_start
+    day_keys: List[str] = []
+    while day_cursor <= range_end:
+        day_keys.append(day_cursor.isoformat())
+        day_cursor += timedelta(days=1)
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT date, steps, calories_burned, workouts_summary, source
+            FROM health_activity
+            WHERE user_id = ? AND date >= ? AND date <= ?
+            ORDER BY date ASC
+            """,
+            (user_id, range_start.isoformat(), range_end.isoformat()),
+        )
+        activity_rows = cur.fetchall()
+
+    activity_by_day: Dict[str, Dict[str, Any]] = {}
+    for row in activity_rows:
+        day = str(row[0])
+        activity_by_day[day] = {
+            "steps": int(row[1] or 0),
+            "calories_burned": int(row[2] or 0),
+            "workouts_summary": str(row[3] or ""),
+            "source": str(row[4] or "unknown"),
+        }
+
+    meals_by_day: Dict[str, int] = {}
+    for meal in _list_meal_logs(user_id):
+        logged_at = str(meal.get("logged_at") or "")
+        day_value = _coerce_to_date(logged_at)
+        if not day_value:
+            continue
+        day_key = day_value.isoformat()
+        if day_key not in day_keys:
+            continue
+        meals_by_day[day_key] = meals_by_day.get(day_key, 0) + int(meal.get("calories") or 0)
+
+    plan_days_by_date: Dict[str, Dict[str, Any]] = {}
+    weight_kg = 70.0
+    try:
+        profile = _load_user_profile(user_id)
+        weight_kg = float(profile.get("user", {}).get("weight_kg") or 70.0)
+    except Exception:
+        pass
+    try:
+        from agent.tools.plan_tools import _get_active_plan_bundle_data
+
+        bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+        for plan_day in bundle.get("plan_days", []):
+            day_key = str(plan_day.get("date") or "")
+            if day_key:
+                plan_days_by_date[day_key] = plan_day
+    except Exception:
+        plan_days_by_date = {}
+
+    def _extract_minutes(label: str) -> int:
+        lowered = label.lower()
+        match = re.search(r"(\d{1,3})\s*min", lowered)
+        if match:
+            try:
+                return max(10, int(match.group(1)))
+            except Exception:
+                return 30
+        return 30
+
+    items: List[HealthActivityImpactItemResponse] = []
+    for day_key in day_keys:
+        activity = activity_by_day.get(day_key, {})
+        meal_intake = int(meals_by_day.get(day_key, 0))
+        plan_day = plan_days_by_date.get(day_key, {})
+        meal_target = plan_day.get("calorie_target")
+        workout_label = str(plan_day.get("workout_plan") or "").strip()
+        expected_burn: Optional[int] = None
+        if workout_label and workout_label.lower() != "rest day":
+            estimated = _estimate_workout_calories(
+                max(35.0, weight_kg),
+                [{"name": workout_label, "duration_min": _extract_minutes(workout_label)}],
+                _extract_minutes(workout_label),
+            )
+            expected_burn = int(max(0, estimated))
+
+        health_burn = int(activity.get("calories_burned", 0))
+        burn_delta = (health_burn - expected_burn) if expected_burn is not None else None
+        intake_delta = (meal_intake - int(meal_target)) if meal_target is not None else None
+
+        active_minutes = 0
+        summary_text = str(activity.get("workouts_summary") or "")
+        active_match = re.search(r"active_minutes=(\d+)", summary_text)
+        if active_match:
+            try:
+                active_minutes = int(active_match.group(1))
+            except Exception:
+                active_minutes = 0
+        clean_summary = re.sub(r";?\s*active_minutes=\d+", "", summary_text).strip(" ;")
+
+        items.append(
+            HealthActivityImpactItemResponse(
+                date=day_key,
+                steps=int(activity.get("steps", 0)),
+                health_calories_burned=health_burn,
+                active_minutes=active_minutes,
+                workouts_summary=clean_summary,
+                source=str(activity.get("source") or "unknown"),
+                meal_intake=meal_intake,
+                meal_target=int(meal_target) if meal_target is not None else None,
+                workout_expected_burn=expected_burn,
+                burn_delta=burn_delta,
+                intake_delta=intake_delta,
+            )
+        )
+
+    return HealthActivityImpactResponse(
+        start_day=range_start.isoformat(),
+        end_day=range_end.isoformat(),
+        items=items,
+    )
 
 
 @app.get("/api/gamification", response_model=GamificationResponse)
 def get_gamification(user_id: int):
     return _gamification_summary(user_id)
+
+
+@app.post("/api/gamification/app-open", response_model=AppOpenStreakResponse)
+def gamification_app_open(user_id: int):
+    _ensure_app_open_schema()
+    now = datetime.now()
+    inactivity_hours = 0.0
+    freeze_prompt_required = False
+    streak_reset = False
+    message = "Welcome back."
+
+    has_existing_open_row = False
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT last_open_at FROM app_open_events WHERE user_id = ? LIMIT 1", (user_id,))
+        row = cur.fetchone()
+        has_existing_open_row = row is not None
+        if row and row[0]:
+            try:
+                parsed_open = datetime.fromisoformat(str(row[0]))
+                inactivity_hours = max(0.0, (now - parsed_open).total_seconds() / 3600.0)
+            except Exception:
+                inactivity_hours = 0.0
+
+    summary = _gamification_summary(user_id)
+    if inactivity_hours >= 24.0:
+        if int(summary.get("freeze_streaks", 0)) > 0:
+            freeze_prompt_required = True
+            message = "You were away for over 24h. Use a freeze to keep your streak?"
+        else:
+            _set_streak_for_today(user_id, keep_count=False)
+            streak_reset = True
+            summary = _gamification_summary(user_id)
+            message = "Your streak reset after 24h inactivity. Start a new streak today."
+
+    if not freeze_prompt_required:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            if has_existing_open_row:
+                cur.execute(
+                    "UPDATE app_open_events SET last_open_at = ? WHERE user_id = ?",
+                    (now.isoformat(timespec="seconds"), user_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT INTO app_open_events (user_id, last_open_at) VALUES (?, ?)",
+                    (user_id, now.isoformat(timespec="seconds")),
+                )
+            conn.commit()
+
+    return AppOpenStreakResponse(
+        freeze_prompt_required=freeze_prompt_required,
+        inactivity_hours=round(inactivity_hours, 1),
+        streak_reset=streak_reset,
+        message=message,
+        gamification=GamificationResponse(**summary),
+    )
+
+
+@app.post("/api/gamification/streak-decision", response_model=AppOpenStreakResponse)
+def gamification_streak_decision(payload: StreakDecisionRequest):
+    summary = _gamification_summary(payload.user_id)
+    if payload.use_freeze:
+        if int(summary.get("freeze_streaks", 0)) <= 0:
+            raise HTTPException(status_code=400, detail="No freeze streaks available")
+        reason = f"freeze_used:{date.today().isoformat()}"
+        if not _has_points_reason(payload.user_id, reason):
+            _award_points(payload.user_id, 0, reason)
+        _set_streak_for_today(payload.user_id, keep_count=True)
+        message = "Freeze used. Your streak is preserved."
+    else:
+        _set_streak_for_today(payload.user_id, keep_count=False)
+        message = "Streak reset. You can build it back starting today."
+
+    refreshed = _gamification_summary(payload.user_id)
+    _ensure_app_open_schema()
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO app_open_events (user_id, last_open_at)
+            VALUES (?, ?)
+            ON CONFLICT(user_id) DO UPDATE SET last_open_at = excluded.last_open_at
+            """,
+            (payload.user_id, datetime.now().isoformat(timespec="seconds")),
+        )
+        conn.commit()
+    return AppOpenStreakResponse(
+        freeze_prompt_required=False,
+        inactivity_hours=0.0,
+        streak_reset=not payload.use_freeze,
+        message=message,
+        gamification=GamificationResponse(**refreshed),
+    )
 
 
 @app.post("/api/gamification/use-freeze", response_model=GamificationResponse)
@@ -2378,6 +3543,7 @@ def use_freeze_streak(payload: UseFreezeRequest):
     if _has_points_reason(payload.user_id, reason):
         raise HTTPException(status_code=400, detail="Freeze already used today")
     _award_points(payload.user_id, 0, reason)
+    _set_streak_for_today(payload.user_id, keep_count=True)
     return _gamification_summary(payload.user_id)
 
 
@@ -2397,8 +3563,75 @@ def get_coach_suggestion(user_id: int):
     return {"suggestion": suggestion}
 
 
+@app.get("/api/status-summary")
+def get_status_summary(user_id: int):
+    """Return end-of-day style status summary + actionable suggestions."""
+    try:
+        from agent.tools.plan_tools import compute_plan_status
+
+        status_raw = compute_plan_status.func(user_id)
+        status = _safe_parse_json(status_raw)
+    except Exception:
+        status = {"explanation": "No status available.", "status": "limited"}
+
+    suggestions: List[str] = []
+    last_7d = status.get("last_7d") if isinstance(status, dict) else None
+    if isinstance(last_7d, dict):
+        workouts_done = int(last_7d.get("workouts_done") or 0)
+        workouts_planned = int(last_7d.get("workouts_planned") or 0)
+        meal_log_days = int(last_7d.get("meal_log_days") or 0)
+        if workouts_planned > workouts_done:
+            suggestions.append("You missed some workouts. Want me to add reminders or rebalance this week?")
+        if meal_log_days < 4:
+            suggestions.append("Meal logging is sparse this week. Set reminders for key meal windows?")
+        avg_target = last_7d.get("avg_target_kcal")
+        avg_intake = last_7d.get("avg_intake_kcal")
+        if avg_target is not None and avg_intake is not None:
+            delta = int(avg_intake) - int(avg_target)
+            if abs(delta) >= 150:
+                direction = "over" if delta > 0 else "under"
+                suggestions.append(
+                    f"Your intake trend is {abs(delta)} kcal/day {direction} target. Want a calorie adjustment?"
+                )
+
+    if not suggestions:
+        suggestions.append("You are in a solid spot. Want to keep the plan as-is or tweak anything?")
+    health_summary: Dict[str, Any] = {"days_with_health_data": 0, "avg_steps": 0, "avg_burn_kcal": 0}
+    try:
+        end_day = date.today()
+        start_day = end_day - timedelta(days=6)
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT date, steps, calories_burned, source
+                FROM health_activity
+                WHERE user_id = ? AND date >= ? AND date <= ? AND source = ?
+                ORDER BY date ASC
+                """,
+                (user_id, start_day.isoformat(), end_day.isoformat(), "apple_health"),
+            )
+            rows = cur.fetchall()
+        if rows:
+            steps_total = sum(int(row[1] or 0) for row in rows)
+            burn_total = sum(int(row[2] or 0) for row in rows)
+            day_count = len(rows)
+            health_summary = {
+                "days_with_health_data": day_count,
+                "avg_steps": int(steps_total / day_count),
+                "avg_burn_kcal": int(burn_total / day_count),
+            }
+            if health_summary["avg_steps"] < 5000:
+                suggestions.append("Apple Health shows lower daily movement. Want a step goal reminder added?")
+    except Exception:
+        pass
+
+    return {"status": status, "health_activity_summary": health_summary, "suggestions": suggestions}
+
+
 @app.get("/api/reminders", response_model=List[ReminderItemResponse])
 def get_reminders_api(user_id: int):
+    _ensure_daily_coach_checkin_reminder(user_id)
     with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -2424,9 +3657,110 @@ def get_reminders_api(user_id: int):
     ]
 
 
+@app.post("/api/reminders", response_model=ReminderItemResponse)
+def create_reminder_api(payload: ReminderCreateRequest):
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO reminders (user_id, reminder_type, scheduled_at, status, channel, related_plan_override_id)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                payload.user_id,
+                payload.reminder_type,
+                payload.scheduled_at,
+                payload.status,
+                payload.channel,
+                None,
+            ),
+        )
+        reminder_id = int(cur.lastrowid or 0)
+        conn.commit()
+        cur.execute(
+            """
+            SELECT id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (reminder_id, payload.user_id),
+        )
+        row = cur.fetchone()
+    _invalidate_reminders_cache(payload.user_id)
+    if not row:
+        raise HTTPException(status_code=500, detail="Failed to create reminder")
+    return ReminderItemResponse(
+        id=int(row[0]),
+        reminder_type=str(row[1]),
+        scheduled_at=str(row[2]),
+        status=str(row[3]),
+        channel=str(row[4]),
+        related_plan_override_id=int(row[5]) if row[5] is not None else None,
+    )
+
+
+@app.put("/api/reminders/{reminder_id}", response_model=ReminderItemResponse)
+def update_reminder_api(reminder_id: int, payload: ReminderUpdateRequest):
+    fields: List[str] = []
+    values: List[Any] = []
+    if payload.status is not None:
+        fields.append("status = ?")
+        values.append(payload.status)
+    if payload.scheduled_at is not None:
+        fields.append("scheduled_at = ?")
+        values.append(payload.scheduled_at)
+    if not fields:
+        raise HTTPException(status_code=400, detail="No reminder fields to update")
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        values.extend([payload.user_id, reminder_id])
+        cur.execute(
+            f"UPDATE reminders SET {', '.join(fields)} WHERE user_id = ? AND id = ?",
+            values,
+        )
+        conn.commit()
+        cur.execute(
+            """
+            SELECT id, reminder_type, scheduled_at, status, channel, related_plan_override_id
+            FROM reminders
+            WHERE id = ? AND user_id = ?
+            LIMIT 1
+            """,
+            (reminder_id, payload.user_id),
+        )
+        row = cur.fetchone()
+    if not row:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    _invalidate_reminders_cache(payload.user_id)
+    return ReminderItemResponse(
+        id=int(row[0]),
+        reminder_type=str(row[1]),
+        scheduled_at=str(row[2]),
+        status=str(row[3]),
+        channel=str(row[4]),
+        related_plan_override_id=int(row[5]) if row[5] is not None else None,
+    )
+
+
+@app.delete("/api/reminders/{reminder_id}")
+def delete_reminder_api(reminder_id: int, user_id: int):
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM reminders WHERE id = ? AND user_id = ?", (reminder_id, user_id))
+        deleted = int(cur.rowcount or 0)
+        conn.commit()
+    if deleted <= 0:
+        raise HTTPException(status_code=404, detail="Reminder not found")
+    _invalidate_reminders_cache(user_id)
+    return {"ok": True}
+
+
 @app.get("/api/session/hydrate", response_model=SessionHydrationResponse)
 def hydrate_session(user_id: int, day: Optional[str] = None):
     target_day = day or date.today().isoformat()
+    _ensure_daily_coach_checkin_reminder(user_id)
     profile = _load_user_profile(user_id)
     progress = get_progress(user_id)
     daily_intake = get_daily_intake(user_id, target_day)
@@ -2590,9 +3924,11 @@ def _generate_plan_for_user(
 @app.post("/api/onboarding/complete")
 def complete_onboarding(payload: OnboardingCompletePayload):
     _ensure_coach_schema()
+    _ensure_profile_schema()
     user_id = payload.user_id or 1
     fields = []
     values: list[Any] = []
+    selected_trainer_id: Optional[int] = None
     if payload.current_weight_kg is not None:
         fields.append("weight_kg = ?")
         values.append(payload.current_weight_kg)
@@ -2605,6 +3941,7 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.trainer_id is not None:
         fields.append("agent_id = ?")
         values.append(payload.trainer_id)
+        selected_trainer_id = int(payload.trainer_id)
     elif payload.trainer:
         # Fallback for legacy payloads using trainer slug
         with get_db_conn() as conn:
@@ -2613,17 +3950,84 @@ def complete_onboarding(payload: OnboardingCompletePayload):
             row = cur.fetchone()
         if row and row[0]:
             fields.append("agent_id = ?")
-            values.append(int(row[0]))
+            selected_trainer_id = int(row[0])
+            values.append(selected_trainer_id)
+    if payload.voice:
+        fields.append("coach_voice = ?")
+        values.append(payload.voice)
+    elif selected_trainer_id is not None:
+        fields.append("coach_voice = ?")
+        values.append(_default_voice_for_agent(selected_trainer_id))
     if payload.full_name:
         fields.append("name = ?")
         values.append(payload.full_name)
-        if fields:
-            values.append(user_id)
-            with get_db_conn() as conn:
-                cur = conn.cursor()
-                cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
-                conn.commit()
-        _refresh_profile_cache(user_id)
+
+    if fields:
+        values.append(user_id)
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(f"UPDATE users SET {', '.join(fields)} WHERE id = ?", tuple(values))
+            if payload.current_weight_kg is not None:
+                _upsert_daily_weight_checkin(user_id, float(payload.current_weight_kg), conn=conn)
+                reason = f"checkin_log:{date.today().isoformat()}"
+                if not _has_points_reason(user_id, reason):
+                    _award_points(user_id, 5, reason)
+                _apply_daily_checklist_completion_bonus(user_id, date.today().isoformat())
+            conn.commit()
+
+    pref_updates: Dict[str, Any] = {}
+    if payload.activity_level is not None:
+        pref_updates["activity_level"] = payload.activity_level
+    if payload.goal_type is not None:
+        pref_updates["goal_type"] = payload.goal_type
+    if payload.target_weight_kg is not None:
+        pref_updates["target_weight_kg"] = payload.target_weight_kg
+    if payload.allergies is not None:
+        pref_updates["allergies"] = payload.allergies
+    if payload.preferred_workout_time is not None:
+        pref_updates["preferred_workout_time"] = payload.preferred_workout_time
+    if payload.menstrual_cycle_notes is not None:
+        pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
+    if pref_updates:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT 1 FROM user_preferences WHERE user_id = ? LIMIT 1", (user_id,))
+            has_pref = cur.fetchone() is not None
+            if not has_pref:
+                created_at = datetime.now().isoformat(timespec="seconds")
+                cur.execute(
+                    """
+                    INSERT INTO user_preferences (
+                        user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
+                        dietary_preferences, workout_preferences, timezone, created_at,
+                        allergies, preferred_workout_time, menstrual_cycle_notes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        user_id,
+                        payload.weekly_weight_change_kg,
+                        pref_updates.get("activity_level"),
+                        pref_updates.get("goal_type"),
+                        pref_updates.get("target_weight_kg"),
+                        None,
+                        None,
+                        None,
+                        created_at,
+                        pref_updates.get("allergies"),
+                        pref_updates.get("preferred_workout_time"),
+                        pref_updates.get("menstrual_cycle_notes"),
+                    ),
+                )
+            else:
+                set_clause = ", ".join(f"{k} = ?" for k in pref_updates.keys())
+                cur.execute(
+                    f"UPDATE user_preferences SET {set_clause} WHERE user_id = ?",
+                    tuple(pref_updates.values()) + (user_id,),
+                )
+            conn.commit()
+    if payload.current_weight_kg is not None:
+        _invalidate_user_activity_cache(user_id, day=date.today().isoformat())
+    _refresh_profile_cache(user_id)
     _generate_plan_for_user(
         user_id,
         goal_type=payload.goal_type,

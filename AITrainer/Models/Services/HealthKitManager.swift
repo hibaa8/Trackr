@@ -9,6 +9,14 @@ import Foundation
 import HealthKit
 import Combine
 
+struct HealthDaySnapshot {
+    let date: String
+    let steps: Int
+    let caloriesBurned: Int
+    let activeMinutes: Int
+    let workoutsSummary: String
+}
+
 class HealthKitManager: ObservableObject {
     private let healthStore = HKHealthStore()
     
@@ -87,6 +95,68 @@ class HealthKitManager: ObservableObject {
         fetchCaloriesBurned()
         fetchActiveMinutes()
         fetchRecentWorkouts()
+    }
+
+    func collectDailySnapshots(lastDays: Int = 7, completion: @escaping ([HealthDaySnapshot]) -> Void) {
+        let safeDays = max(1, min(31, lastDays))
+        let calendar = Calendar.current
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+
+        let endDate = Date()
+        guard let startDate = calendar.date(byAdding: .day, value: -(safeDays - 1), to: calendar.startOfDay(for: endDate)) else {
+            completion([])
+            return
+        }
+
+        var stepsByDay: [String: Int] = [:]
+        var caloriesByDay: [String: Int] = [:]
+        var minutesByDay: [String: Int] = [:]
+        var workoutsByDay: [String: [String]] = [:]
+        let group = DispatchGroup()
+
+        group.enter()
+        fetchDailyTotals(identifier: .stepCount, unit: HKUnit.count(), startDate: startDate, endDate: endDate) { values in
+            stepsByDay = values
+            group.leave()
+        }
+
+        group.enter()
+        fetchDailyTotals(identifier: .activeEnergyBurned, unit: HKUnit.kilocalorie(), startDate: startDate, endDate: endDate) { values in
+            caloriesByDay = values
+            group.leave()
+        }
+
+        group.enter()
+        fetchDailyTotals(identifier: .appleExerciseTime, unit: HKUnit.minute(), startDate: startDate, endDate: endDate) { values in
+            minutesByDay = values
+            group.leave()
+        }
+
+        group.enter()
+        fetchWorkoutsByDay(startDate: startDate, endDate: endDate) { values in
+            workoutsByDay = values
+            group.leave()
+        }
+
+        group.notify(queue: .main) {
+            var snapshots: [HealthDaySnapshot] = []
+            for offset in 0..<safeDays {
+                guard let day = calendar.date(byAdding: .day, value: offset, to: startDate) else { continue }
+                let dayKey = formatter.string(from: day)
+                let workoutSummary = (workoutsByDay[dayKey] ?? []).joined(separator: ", ")
+                snapshots.append(
+                    HealthDaySnapshot(
+                        date: dayKey,
+                        steps: stepsByDay[dayKey] ?? 0,
+                        caloriesBurned: caloriesByDay[dayKey] ?? 0,
+                        activeMinutes: minutesByDay[dayKey] ?? 0,
+                        workoutsSummary: workoutSummary
+                    )
+                )
+            }
+            completion(snapshots)
+        }
     }
     
     private func fetchSteps() {
@@ -180,6 +250,90 @@ class HealthKitManager: ObservableObject {
         
         healthStore.execute(query)
     }
+
+    private func fetchDailyTotals(
+        identifier: HKQuantityTypeIdentifier,
+        unit: HKUnit,
+        startDate: Date,
+        endDate: Date,
+        completion: @escaping ([String: Int]) -> Void
+    ) {
+        guard let quantityType = HKQuantityType.quantityType(forIdentifier: identifier) else {
+            completion([:])
+            return
+        }
+        let calendar = Calendar.current
+        var interval = DateComponents()
+        interval.day = 1
+        let anchor = calendar.startOfDay(for: startDate)
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
+
+        let query = HKStatisticsCollectionQuery(
+            quantityType: quantityType,
+            quantitySamplePredicate: predicate,
+            options: .cumulativeSum,
+            anchorDate: anchor,
+            intervalComponents: interval
+        )
+
+        query.initialResultsHandler = { _, results, error in
+            guard let collection = results else {
+                if let error {
+                    print("Error fetching daily totals for \(identifier.rawValue): \(error.localizedDescription)")
+                }
+                completion([:])
+                return
+            }
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            var values: [String: Int] = [:]
+            collection.enumerateStatistics(from: startDate, to: endDate) { stats, _ in
+                let key = formatter.string(from: stats.startDate)
+                let amount = Int(stats.sumQuantity()?.doubleValue(for: unit) ?? 0)
+                values[key] = amount
+            }
+            completion(values)
+        }
+
+        healthStore.execute(query)
+    }
+
+    private func fetchWorkoutsByDay(
+        startDate: Date,
+        endDate: Date,
+        completion: @escaping ([String: [String]]) -> Void
+    ) {
+        let workoutType = HKObjectType.workoutType()
+        let predicate = HKQuery.predicateForSamples(withStart: startDate, end: endDate, options: .strictStartDate)
+        let sortDescriptor = NSSortDescriptor(key: HKSampleSortIdentifierStartDate, ascending: true)
+        let query = HKSampleQuery(sampleType: workoutType, predicate: predicate, limit: HKObjectQueryNoLimit, sortDescriptors: [sortDescriptor]) { _, samples, error in
+            guard let workouts = samples as? [HKWorkout] else {
+                if let error {
+                    print("Error fetching workouts by day: \(error.localizedDescription)")
+                }
+                completion([:])
+                return
+            }
+
+            let formatter = DateFormatter()
+            formatter.dateFormat = "yyyy-MM-dd"
+            var values: [String: [String]] = [:]
+            for workout in workouts {
+                let key = formatter.string(from: workout.startDate)
+                let name = self.workoutName(for: workout)
+                values[key, default: []].append(name)
+            }
+            completion(values)
+        }
+
+        healthStore.execute(query)
+    }
+
+    private func workoutName(for workout: HKWorkout) -> String {
+        let base = workout.workoutActivityType.name
+        let minutes = max(1, Int(workout.duration / 60))
+        return "\(base) \(minutes) min"
+    }
     
     // MARK: - Write Data
     
@@ -234,6 +388,22 @@ class HealthKitManager: ObservableObject {
             if let error = error {
                 print("Error enabling background delivery for energy: \(error.localizedDescription)")
             }
+        }
+    }
+}
+
+private extension HKWorkoutActivityType {
+    var name: String {
+        switch self {
+        case .running: return "Running"
+        case .walking: return "Walking"
+        case .cycling: return "Cycling"
+        case .traditionalStrengthTraining: return "Strength"
+        case .highIntensityIntervalTraining: return "HIIT"
+        case .functionalStrengthTraining: return "Functional Strength"
+        case .yoga: return "Yoga"
+        case .swimming: return "Swimming"
+        default: return "Workout"
         }
     }
 }

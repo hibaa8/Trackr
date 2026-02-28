@@ -70,6 +70,54 @@ class AgentState(TypedDict):
     user_id: Optional[int]
 
 
+def _sanitize_messages_for_llm(messages: List[BaseMessage]) -> List[BaseMessage]:
+    """
+    Remove malformed tool-call segments before sending chat history to OpenAI.
+
+    If an assistant message contains tool_calls but the required tool_call_id
+    responses are missing, OpenAI rejects the request with a 400. This can
+    happen after interrupted tool execution/retries. We drop dangling segments
+    so a thread can recover on the next turn.
+    """
+    cleaned: List[BaseMessage] = []
+    idx = 0
+
+    while idx < len(messages):
+        message = messages[idx]
+
+        if isinstance(message, ToolMessage):
+            # Orphan tool message with no preceding assistant tool call in cleaned history.
+            if not cleaned or not isinstance(cleaned[-1], AIMessage):
+                idx += 1
+                continue
+
+        if isinstance(message, AIMessage):
+            tool_calls = message.tool_calls or []
+            if tool_calls:
+                required_ids = {
+                    call.get("id")
+                    for call in tool_calls
+                    if isinstance(call, dict) and call.get("id")
+                }
+                lookahead = idx + 1
+                seen_ids = set()
+                while lookahead < len(messages) and isinstance(messages[lookahead], ToolMessage):
+                    tool_call_id = getattr(messages[lookahead], "tool_call_id", None)
+                    if tool_call_id:
+                        seen_ids.add(tool_call_id)
+                    lookahead += 1
+
+                if required_ids and not required_ids.issubset(seen_ids):
+                    # Drop this malformed assistant tool-call segment entirely.
+                    idx = lookahead
+                    continue
+
+        cleaned.append(message)
+        idx += 1
+
+    return cleaned
+
+
 def _preload_session_cache(user_id: int) -> Dict[str, Any]:
     existing = SESSION_CACHE.get(user_id, {})
     with get_db_conn() as conn:
@@ -141,7 +189,8 @@ def assistant(state: AgentState):
         )
     )
     try:
-        response = llm_with_tools.invoke([_system_message(agent_id), context_msg] + state["messages"])
+        safe_messages = _sanitize_messages_for_llm(state.get("messages", []))
+        response = llm_with_tools.invoke([_system_message(agent_id), context_msg] + safe_messages)
     except Exception as exc:
         return {
             "context": context,

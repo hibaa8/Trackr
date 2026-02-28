@@ -273,6 +273,22 @@ class FrontendBackendConnector: ObservableObject {
             .store(in: &cancellables)
     }
 
+    func loadCoaches(completion: @escaping (Result<[Coach], Error>) -> Void) {
+        APIService.shared.getCoaches()
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { coaches in
+                    completion(.success(coaches))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
     func loadReminders(userId: Int, completion: @escaping (Result<[ReminderItemResponse], Error>) -> Void) {
         APIService.shared.getReminders(userId: userId)
             .receive(on: DispatchQueue.main)
@@ -284,6 +300,38 @@ class FrontendBackendConnector: ObservableObject {
                 },
                 receiveValue: { reminders in
                     completion(.success(reminders))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func updateReminder(reminderId: Int, payload: ReminderUpdateRequest, completion: @escaping (Result<ReminderItemResponse, Error>) -> Void) {
+        APIService.shared.updateReminder(reminderId: reminderId, payload: payload)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { reminder in
+                    completion(.success(reminder))
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    func deleteReminder(reminderId: Int, userId: Int, completion: @escaping (Result<ReminderDeleteResponse, Error>) -> Void) {
+        APIService.shared.deleteReminder(reminderId: reminderId, userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { result in
+                    if case .failure(let error) = result {
+                        completion(.failure(error))
+                    }
+                },
+                receiveValue: { response in
+                    completion(.success(response))
                 }
             )
             .store(in: &cancellables)

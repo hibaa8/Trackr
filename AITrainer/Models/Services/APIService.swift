@@ -370,8 +370,30 @@ class APIService {
         return request(endpoint: "/api/progress?user_id=\(userId)")
     }
 
+    func getCoaches() -> AnyPublisher<[Coach], APIError> {
+        return request(endpoint: "/api/coaches")
+    }
+
     func getReminders(userId: Int) -> AnyPublisher<[ReminderItemResponse], APIError> {
         return request(endpoint: "/api/reminders?user_id=\(userId)")
+    }
+
+    func createReminder(_ payload: ReminderCreateRequest) -> AnyPublisher<ReminderItemResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/reminders", method: "POST", body: jsonData)
+    }
+
+    func updateReminder(reminderId: Int, payload: ReminderUpdateRequest) -> AnyPublisher<ReminderItemResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/reminders/\(reminderId)", method: "PUT", body: jsonData)
+    }
+
+    func deleteReminder(reminderId: Int, userId: Int) -> AnyPublisher<ReminderDeleteResponse, APIError> {
+        return request(endpoint: "/api/reminders/\(reminderId)?user_id=\(userId)", method: "DELETE")
     }
 
     func createBillingCheckoutSession(userId: Int, planTier: String = "premium") -> AnyPublisher<BillingCheckoutSessionResponse, APIError> {
@@ -389,11 +411,50 @@ class APIService {
         return request(endpoint: "/api/gamification?user_id=\(userId)")
     }
 
+    func notifyAppOpen(userId: Int) -> AnyPublisher<AppOpenStreakResponse, APIError> {
+        return request(endpoint: "/api/gamification/app-open?user_id=\(userId)", method: "POST")
+    }
+
+    func submitStreakDecision(userId: Int, useFreeze: Bool) -> AnyPublisher<AppOpenStreakResponse, APIError> {
+        let payload = StreakDecisionRequest(user_id: userId, use_freeze: useFreeze)
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/gamification/streak-decision", method: "POST", body: jsonData)
+    }
+
     func getSessionHydration(userId: Int, date: Date = Date()) -> AnyPublisher<SessionHydrationResponse, APIError> {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         let dateString = formatter.string(from: date)
         return request(endpoint: "/api/session/hydrate?user_id=\(userId)&day=\(dateString)")
+    }
+
+    func logHealthActivity(_ payload: HealthActivityLogRequest) -> AnyPublisher<HealthActivityLogResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/health-activity/log", method: "POST", body: jsonData)
+    }
+
+    func getHealthActivityImpact(
+        userId: Int,
+        startDay: Date? = nil,
+        endDay: Date = Date(),
+        days: Int = 7
+    ) -> AnyPublisher<HealthActivityImpactResponse, APIError> {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let end = formatter.string(from: endDay)
+        var endpoint = "/api/health-activity/impact?user_id=\(userId)&end_day=\(end)&days=\(days)"
+        if let startDay {
+            endpoint += "&start_day=\(formatter.string(from: startDay))"
+        }
+        return request(endpoint: endpoint)
+    }
+
+    func getLocalWorkoutVideos() -> AnyPublisher<[LocalWorkoutVideoResponse], APIError> {
+        return request(endpoint: "/api/workout-local-videos")
     }
 
     func useFreezeStreak(userId: Int) -> AnyPublisher<GamificationResponse, APIError> {
@@ -462,6 +523,49 @@ struct OnboardingCompletePayload: Codable {
     let age: Int?
     let fitness_background: String?
     let full_name: String?
+    let allergies: String?
+    let preferred_workout_time: String?
+    let menstrual_cycle_notes: String?
+
+    init(
+        user_id: Int?,
+        goal_type: String?,
+        target_weight_kg: Double?,
+        weekly_weight_change_kg: Double?,
+        activity_level: String?,
+        storyline: String?,
+        trainer_id: Int?,
+        personality: String?,
+        voice: String?,
+        timeframe_weeks: Int?,
+        current_weight_kg: Double?,
+        height_cm: Double?,
+        age: Int?,
+        fitness_background: String?,
+        full_name: String?,
+        allergies: String? = nil,
+        preferred_workout_time: String? = nil,
+        menstrual_cycle_notes: String? = nil
+    ) {
+        self.user_id = user_id
+        self.goal_type = goal_type
+        self.target_weight_kg = target_weight_kg
+        self.weekly_weight_change_kg = weekly_weight_change_kg
+        self.activity_level = activity_level
+        self.storyline = storyline
+        self.trainer_id = trainer_id
+        self.personality = personality
+        self.voice = voice
+        self.timeframe_weeks = timeframe_weeks
+        self.current_weight_kg = current_weight_kg
+        self.height_cm = height_cm
+        self.age = age
+        self.fitness_background = fitness_background
+        self.full_name = full_name
+        self.allergies = allergies
+        self.preferred_workout_time = preferred_workout_time
+        self.menstrual_cycle_notes = menstrual_cycle_notes
+    }
 }
 
 struct OnboardingCompleteResponse: Decodable {
@@ -472,4 +576,6 @@ struct OnboardingCompleteResponse: Decodable {
 struct CoachChangeResponse: Decodable {
     let success: Bool
     let message: String?
+    let next_change_available_at: String?
+    let retry_after_days: Int?
 }

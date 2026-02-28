@@ -8,12 +8,45 @@ struct CoachSelectionView: View {
     @State private var showCoachDetail = false
     @State private var contentOpacity = 0.0
     @State private var introCoach: Coach? = nil
+    @State private var selectedGoalFilter: GoalFilter = .all
 
     private let columns = Array(repeating: GridItem(.flexible(), spacing: 16), count: 2)
 
+    private enum GoalFilter: String, CaseIterable {
+        case all = "All"
+        case lose = "Lose Weight"
+        case gain = "Build Muscle"
+        case maintain = "Get Fit"
+    }
+
+    private var filteredCoaches: [Coach] {
+        guard selectedGoalFilter != .all else { return appState.coaches }
+        return appState.coaches.filter { coach in
+            let tags = (coach.expertise + coach.tags + [coach.title, coach.philosophy]).joined(separator: " ").lowercased()
+            switch selectedGoalFilter {
+            case .lose:
+                return tags.contains("cardio") || tags.contains("hiit") || tags.contains("fat") || tags.contains("weight")
+            case .gain:
+                return tags.contains("strength") || tags.contains("power") || tags.contains("muscle") || tags.contains("lifting")
+            case .maintain:
+                return tags.contains("mindfulness") || tags.contains("recovery") || tags.contains("mobility") || tags.contains("functional") || tags.contains("conditioning")
+            case .all:
+                return true
+            }
+        }
+    }
+
     var body: some View {
         if showCoachDetail, let coach = selectedCoach {
-            CoachDetailView(coach: coach)
+            CoachDetailView(
+                coach: coach,
+                onBack: {
+                    withAnimation(.easeInOut(duration: 0.25)) {
+                        showCoachDetail = false
+                        selectedCoach = nil
+                    }
+                }
+            )
         } else {
             ZStack {
                 // Dark background
@@ -21,15 +54,37 @@ struct CoachSelectionView: View {
 
                 VStack(spacing: 32) {
                     // Title
-                    Text("Choose Your Coach")
-                        .font(.system(size: 28, weight: .bold))
-                        .foregroundColor(.white)
-                        .padding(.top, 60)
+                    VStack(spacing: 14) {
+                        Text("Choose Your Coach")
+                            .font(.system(size: 28, weight: .bold))
+                            .foregroundColor(.white)
+                            .padding(.top, 60)
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 8) {
+                                ForEach(GoalFilter.allCases, id: \.self) { filter in
+                                    Button {
+                                        selectedGoalFilter = filter
+                                    } label: {
+                                        Text(filter.rawValue)
+                                            .font(.system(size: 12, weight: .semibold))
+                                            .foregroundColor(selectedGoalFilter == filter ? .black : .white)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 8)
+                                            .background(
+                                                Capsule().fill(selectedGoalFilter == filter ? Color.white : Color.white.opacity(0.16))
+                                            )
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(.horizontal, 20)
+                        }
+                    }
 
                     // Coach Grid
                     ScrollView {
                         LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(appState.coaches) { coach in
+                            ForEach(filteredCoaches) { coach in
                                 CoachCard(coach: coach) {
                                     selectedCoach = coach
                                     introCoach = coach

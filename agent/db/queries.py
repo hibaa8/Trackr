@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 SELECT_USER_PROFILE = """
-SELECT id, name, birthdate, height_cm, weight_kg, gender, age_years, agent_id, profile_image_base64
+SELECT id, name, birthdate, height_cm, weight_kg, gender, age_years, agent_id, profile_image_base64, coach_voice, last_agent_change_at
 FROM users
 WHERE id = ?
 """
 
 SELECT_USER_PREFS = """
 SELECT weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
-       dietary_preferences, workout_preferences, timezone, created_at
+       dietary_preferences, workout_preferences, timezone, created_at,
+       allergies, preferred_workout_time, menstrual_cycle_notes
 FROM user_preferences
 WHERE user_id = ?
 """

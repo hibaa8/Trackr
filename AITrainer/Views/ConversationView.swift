@@ -51,6 +51,21 @@ struct ConversationView: View {
             id: "timeframe",
             text: "What timeline feels realistic for your goal?",
             quickReplies: ["4 weeks", "8 weeks", "12 weeks", "No rush"]
+        ),
+        OnboardingQuestion(
+            id: "preferred_workout_time",
+            text: "What time do you usually like to work out? (e.g., 6:30 AM)",
+            quickReplies: ["6:00 AM", "12:00 PM", "6:00 PM", "8:00 PM"]
+        ),
+        OnboardingQuestion(
+            id: "allergies",
+            text: "Any food allergies or ingredients you want to avoid?",
+            quickReplies: ["None", "Dairy", "Peanuts", "Gluten"]
+        ),
+        OnboardingQuestion(
+            id: "menstrual_cycle_notes",
+            text: "Optional: if relevant, share cycle timing/preferences so I can lighten or push training appropriately.",
+            quickReplies: ["Skip", "Light training during period", "Keep normal training"]
         )
     ]
     
@@ -349,7 +364,7 @@ struct ConversationView: View {
             storyline: coach.philosophy,
             trainer_id: coach.id,
             personality: coach.personality,
-            voice: coach.speakingStyle,
+            voice: CoachVoiceProfile.preferredBackendVoice(for: coach),
             timeframe_weeks: timeframeWeeks,
             current_weight_kg: weightKg,
             height_cm: heightCm,
@@ -487,6 +502,14 @@ struct ConversationView: View {
             .split { !$0.isNumber && $0 != "." }
             .first
         return filtered.flatMap { Double($0) }
+    }
+
+    private func normalizedOptional(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if trimmed.isEmpty || trimmed.lowercased() == "skip" || trimmed.lowercased() == "none" {
+            return nil
+        }
+        return trimmed
     }
     
     
