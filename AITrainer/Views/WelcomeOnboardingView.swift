@@ -1,14 +1,41 @@
 import SwiftUI
 
+enum OnboardingFlow {
+    case intro
+    case ashley
+    case meetCoach(Coach)
+    case browseCoaches
+}
+
 struct WelcomeOnboardingView: View {
-    @State private var showCoachSelection = false
+    @State private var flow: OnboardingFlow = .intro
     @State private var contentOpacity = 0.0
     @State private var buttonOffset = 50.0
 
     var body: some View {
-        if showCoachSelection {
+        switch flow {
+        case .ashley:
+            AshleyConversationView(
+                onMeetCoach: { coach in
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        flow = .meetCoach(coach)
+                    }
+                },
+                onBrowseAll: {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        flow = .browseCoaches
+                    }
+                }
+            )
+        case .meetCoach(let coach):
+            MeetCoachFlowView(coach: coach) {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    flow = .browseCoaches
+                }
+            }
+        case .browseCoaches:
             CoachSelectionView()
-        } else {
+        case .intro:
             ZStack {
                 // Dark gradient background with blue accent
                 LinearGradient(
@@ -69,7 +96,7 @@ struct WelcomeOnboardingView: View {
                     // Get Started Button
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.3)) {
-                            showCoachSelection = true
+                            flow = .ashley
                         }
                     }) {
                         Text("Get Started")
@@ -143,4 +170,6 @@ struct FeatureRow: View {
 
 #Preview {
     WelcomeOnboardingView()
+        .environmentObject(AppState())
+        .environmentObject(AuthenticationManager())
 }

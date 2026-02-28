@@ -355,3 +355,36 @@ extension Coach {
         normalizedURL(from: videoURLString)
     }
 }
+
+// MARK: - Ashley (Receptionist)
+
+/// Ashley is the app receptionist who greets new users, collects info through natural conversation,
+/// and recommends a coach before the user proceeds to coach selection.
+struct Receptionist: Identifiable {
+    let id: Int
+    let slug: String
+    let name: String
+    let title: String
+    let primaryColor: String
+    let secondaryColor: String
+    let imageURLString: String?
+
+    static func imageURL(for name: String) -> String {
+        "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/\(name).png"
+    }
+
+    static let ashley = Receptionist(
+        id: 0,
+        slug: "ashley",
+        name: "Ashley",
+        title: "Your AI Fitness Receptionist",
+        primaryColor: "pink",
+        secondaryColor: "purple",
+        imageURLString: imageURL(for: "Ashley")
+    )
+
+    var imageURL: URL? {
+        guard let raw = imageURLString, !raw.isEmpty else { return nil }
+        return URL(string: raw)
+    }
+}

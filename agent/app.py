@@ -41,7 +41,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from googleapiclient.discovery import build
 import google.generativeai as genai
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 from openai import OpenAI
@@ -1393,6 +1393,19 @@ class CoachFeedbackResponse(BaseModel):
     thread_id: str
 
 
+class AshleyChatRequest(BaseModel):
+    message: str
+    user_id: int
+    thread_id: Optional[str] = None
+    messages_history: Optional[List[Dict[str, str]]] = None  # [{"role":"user"|"assistant","content":"..."}]
+
+
+class AshleyChatResponse(BaseModel):
+    reply: str
+    thread_id: str
+    coach_recommendation_slug: Optional[str] = None
+
+
 class CoachItemResponse(BaseModel):
     id: int
     slug: str
@@ -2481,6 +2494,61 @@ def coach_chat(payload: CoachChatRequest):
             plan_text=plan_data.get("plan_text"),
         )
     return CoachChatResponse(reply=reply, thread_id=thread_id)
+
+
+def _ashley_extract_recommendation(reply: str) -> tuple:
+    """Parse [COACH_RECOMMENDATION: slug] from Ashley reply. Returns (clean_reply, slug or None)."""
+    import re
+    pattern = r"\[COACH_RECOMMENDATION:\s*(\w+)\]\s*$"
+    m = re.search(pattern, reply, re.IGNORECASE | re.MULTILINE)
+    if m:
+        slug = m.group(1).strip().lower()
+        clean = re.sub(pattern, "", reply, flags=re.IGNORECASE | re.MULTILINE).rstrip()
+        return clean, slug
+    return reply, None
+
+
+@app.post("/api/ashley/chat", response_model=AshleyChatResponse)
+def ashley_chat(payload: AshleyChatRequest):
+    """Chat with Ashley (receptionist) during onboarding. Returns reply and optional coach recommendation."""
+    from langchain_openai import ChatOpenAI
+    from agent.prompts.system_prompt import get_ashley_system_prompt
+
+    thread_id = payload.thread_id or f"ashley:{payload.user_id}"
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.7, max_retries=1, request_timeout=30)
+
+    messages: List = [SystemMessage(content=get_ashley_system_prompt())]
+
+    if payload.messages_history:
+        for h in payload.messages_history:
+            role = (h.get("role") or "user").lower()
+            content = h.get("content") or ""
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+
+    messages.append(HumanMessage(content=payload.message))
+
+    try:
+        response = llm.invoke(messages)
+        reply = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ashley chat error: {exc}") from exc
+
+    clean_reply, slug = _ashley_extract_recommendation(reply)
+    valid_slugs = {
+        "marcus_hayes", "hana_kim", "alex_rivera", "maria_santos", "jake_foster",
+        "david_thompson", "zara_khan", "kenji_tanaka", "chloe_evans",
+        "simone_adebayo", "liam_carter",
+    }
+    coach_slug = slug if slug and slug in valid_slugs else None
+
+    return AshleyChatResponse(
+        reply=clean_reply,
+        thread_id=thread_id,
+        coach_recommendation_slug=coach_slug,
+    )
 
 
 @app.post("/coach/feedback", response_model=CoachFeedbackResponse)
