@@ -288,61 +288,60 @@ struct RecipeCard: View {
     let onViewDetails: () -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            RecipeImageView(primaryURL: recipe.imageURL, fallbackQuery: recipe.name)
-                .frame(height: 180)
-                .clipped()
-            
-            VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 10) {
+                Image(systemName: "fork.knife.circle.fill")
+                    .font(.system(size: 22))
+                    .foregroundColor(.orange.opacity(0.9))
                 Text(recipe.name)
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 16, weight: .bold))
                     .foregroundColor(.white)
                     .lineLimit(2)
-                
-                Text(recipe.summary)
-                    .font(.system(size: 14))
-                    .foregroundColor(.white.opacity(0.82))
-                    .lineLimit(3)
-                
-                HStack(spacing: 16) {
-                    if recipe.calories > 0 {
-                        MacroBadge(icon: "🔥", value: "\(recipe.calories)", label: "cal")
-                    }
-                    if let protein = recipe.protein, protein > 0 {
-                        MacroBadge(icon: "🥩", value: "\(Int(protein))g", label: "protein")
-                    }
-                    if let carbs = recipe.carbs, carbs > 0 {
-                        MacroBadge(icon: "🍞", value: "\(Int(carbs))g", label: "carbs")
+            }
+
+            Text(recipe.summary)
+                .font(.system(size: 13))
+                .foregroundColor(.white.opacity(0.82))
+                .lineLimit(2)
+
+            HStack(spacing: 12) {
+                if recipe.calories > 0 {
+                    MacroBadge(icon: "🔥", value: "\(recipe.calories)", label: "cal")
+                }
+                if let protein = recipe.protein, protein > 0 {
+                    MacroBadge(icon: "🥩", value: "\(Int(protein))g", label: "protein")
+                }
+                if let carbs = recipe.carbs, carbs > 0 {
+                    MacroBadge(icon: "🍞", value: "\(Int(carbs))g", label: "carbs")
+                }
+            }
+
+            HStack(spacing: 12) {
+                if let url = recipe.url, !url.isEmpty, let link = URL(string: url) {
+                    Link(destination: link) {
+                        HStack {
+                            Text("View Online")
+                                .font(.system(size: 12, weight: .semibold))
+                            Image(systemName: "arrow.right")
+                                .font(.system(size: 10))
+                        }
+                        .foregroundColor(.blue)
                     }
                 }
-                
-                HStack(spacing: 12) {
-                    if let url = recipe.url, !url.isEmpty, let link = URL(string: url) {
-                        Link(destination: link) {
-                            HStack {
-                                Text("View Online")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Image(systemName: "arrow.right")
-                                    .font(.system(size: 11))
-                            }
-                            .foregroundColor(.blue)
+                if recipe.hasDetails {
+                    Button(action: onViewDetails) {
+                        HStack {
+                            Text("View Details")
+                                .font(.system(size: 12, weight: .semibold))
+                            Image(systemName: "book")
+                                .font(.system(size: 10))
                         }
-                    }
-                    if recipe.hasDetails {
-                        Button(action: onViewDetails) {
-                            HStack {
-                                Text("View Details")
-                                    .font(.system(size: 13, weight: .semibold))
-                                Image(systemName: "book")
-                                    .font(.system(size: 11))
-                            }
-                            .foregroundColor(.blue)
-                        }
+                        .foregroundColor(.blue)
                     }
                 }
             }
-            .padding(16)
         }
+        .padding(14)
         .background(
             LinearGradient(
                 colors: [Color.black.opacity(0.86), Color(red: 0.09, green: 0.16, blue: 0.11)],
@@ -628,20 +627,7 @@ class RecipeFinderViewModel: ObservableObject {
 
                 do {
                     let result = try JSONDecoder().decode(RecipeSuggestionResponse.self, from: data)
-                    self?.recipes = result.recipes.enumerated().map { (index, item) in
-                        // Use curated Unsplash food photos with better distribution
-                        let foodPhotos = [
-                            "https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=800&h=600&fit=crop",
-                            "https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?w=800&h=600&fit=crop",
-                            "https://images.unsplash.com/photo-1565299624946-b28f40a0ae38?w=800&h=600&fit=crop",
-                            "https://images.unsplash.com/photo-1567620905732-2d1ec7ab7445?w=800&h=600&fit=crop",
-                            "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=800&h=600&fit=crop",
-                            "https://images.unsplash.com/photo-1504674900247-0877df9cc836?w=800&h=600&fit=crop"
-                        ]
-                        // Use index + name hash to ensure different images for each recipe
-                        let hash = abs((item.name.hashValue + index * 7) % foodPhotos.count)
-                        let imageURL = foodPhotos[hash]
-                        
+                    self?.recipes = result.recipes.map { item in
                         return RecipeItem(
                             id: item.id,
                             name: "Trainer Suggestion",
@@ -650,7 +636,7 @@ class RecipeFinderViewModel: ObservableObject {
                             protein: item.protein_g,
                             carbs: item.carbs_g,
                             fat: item.fat_g,
-                            imageURL: imageURL,
+                            imageURL: nil,
                             url: nil,
                             ingredients: item.ingredients,
                             steps: item.steps,

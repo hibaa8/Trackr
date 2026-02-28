@@ -244,7 +244,7 @@ struct AddMenuView: View {
                 }
                 
                 Button(action: {
-                    voicePrompt = "I want to log a workout. Please ask me for the workout type, duration for cardio, RPE, weight, sets, reps, and any other details needed to calculate calories burned, then log it."
+                    voicePrompt = "I want to log a workout. Please ask me for workout type, duration for cardio, RPE, weight, sets, reps, and other details; then estimate calories burned yourself and log it."
                     showVoiceChat = true
                     dismiss()
                 }) {

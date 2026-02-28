@@ -60,6 +60,16 @@ struct ConversationView: View {
             quickReplies: ["2 days", "3 days", "4 days", "No preference"]
         ),
         OnboardingQuestion(
+            id: "muscle_group_preferences",
+            text: "Any muscle groups you want to focus on? (or no preference)",
+            quickReplies: ["No preference", "Upper body", "Lower body", "Core"]
+        ),
+        OnboardingQuestion(
+            id: "sports_preferences",
+            text: "Any sports you're currently doing that we should incorporate?",
+            quickReplies: ["None", "Running", "Basketball", "Soccer"]
+        ),
+        OnboardingQuestion(
             id: "preferred_workout_time",
             text: "What time do you usually like to work out? (e.g., 6:30 AM)",
             quickReplies: ["6:00 AM", "12:00 PM", "6:00 PM", "8:00 PM"]
@@ -73,11 +83,6 @@ struct ConversationView: View {
             id: "menstrual_cycle_notes",
             text: "Optional: if relevant, share cycle timing/preferences so I can lighten or push training appropriately.",
             quickReplies: ["Skip", "Light training during period", "Keep normal training"]
-        ),
-        OnboardingQuestion(
-            id: "share_location",
-            text: "Would you like to share your location with the app so we can find nearby gyms faster?",
-            quickReplies: ["Share Location", "Not Now"]
         )
     ]
     
@@ -196,6 +201,7 @@ struct ConversationView: View {
         }
         .onAppear {
             startConversation()
+            onboardingLocationManager.requestLocationPermission()
         }
     }
     
@@ -232,14 +238,7 @@ struct ConversationView: View {
         )
         messages.append(userMessage)
         submitError = nil
-        let currentQuestion = questions[currentQuestionIndex]
         answers[questions[currentQuestionIndex].id] = text
-        if currentQuestion.id == "share_location" {
-            let lower = text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            if lower.contains("share") || lower == "yes" || lower == "y" {
-                onboardingLocationManager.requestLocationPermission()
-            }
-        }
         
         // Move to next question or complete
         currentQuestionIndex += 1
@@ -369,11 +368,14 @@ struct ConversationView: View {
         let targetWeightKg = parseWeightKg(from: answers["target_weight"])
         let timeframeWeeks = parseTimeframeWeeks(from: answers["timeframe"])
         let workoutPreference = normalizedOptional(answers["workout_days_per_week"])
+        let muscleGroupPreferences = normalizedOptional(answers["muscle_group_preferences"])
+        let sportsPreferences = normalizedOptional(answers["sports_preferences"])
         let preferredWorkoutTime = normalizedOptional(answers["preferred_workout_time"])
         let menstrualCycleNotes = normalizedOptional(answers["menstrual_cycle_notes"])
         let allergies = normalizedOptional(answers["allergies"])
-        let shareLocation = parseShareLocation(from: answers["share_location"])
         let currentLocation = onboardingLocationManager.location
+        let locationContext = currentLocationContext()
+        let shareLocation = locationSharingStatus()
         let weeklyDelta = computeWeeklyChangeKg(
             currentWeight: weightKg,
             targetWeight: targetWeightKg,
@@ -397,9 +399,12 @@ struct ConversationView: View {
             fitness_background: answers["experience"],
             full_name: fullName,
             workout_preference: workoutPreference,
+            muscle_group_preferences: muscleGroupPreferences,
+            sports_preferences: sportsPreferences,
             allergies: allergies,
             preferred_workout_time: preferredWorkoutTime,
             menstrual_cycle_notes: menstrualCycleNotes,
+            location_context: locationContext,
             location_shared: shareLocation,
             location_latitude: shareLocation == true ? currentLocation?.coordinate.latitude : nil,
             location_longitude: shareLocation == true ? currentLocation?.coordinate.longitude : nil
@@ -431,6 +436,34 @@ struct ConversationView: View {
             workoutPreference: answers["workout_days_per_week"] ?? "",
             calorieTarget: calorieTarget
         )
+    }
+
+    private func currentLocationContext() -> String? {
+        if let placemark = onboardingLocationManager.placemark {
+            let locality = placemark.locality?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let admin = placemark.administrativeArea?.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let locality, !locality.isEmpty, let admin, !admin.isEmpty {
+                return "\(locality), \(admin)"
+            }
+            if let locality, !locality.isEmpty {
+                return locality
+            }
+            if let admin, !admin.isEmpty {
+                return admin
+            }
+        }
+        return nil
+    }
+
+    private func locationSharingStatus() -> Bool? {
+        switch onboardingLocationManager.authorizationStatus {
+        case .authorizedAlways, .authorizedWhenInUse:
+            return true
+        case .denied, .restricted:
+            return false
+        default:
+            return nil
+        }
     }
     
     private func estimateCalories(age: Int, heightCm: Double, weightKg: Double, activityLevel: String) -> Int {
@@ -522,20 +555,6 @@ struct ConversationView: View {
         return nil
     }
 
-    private func parseShareLocation(from text: String?) -> Bool? {
-        let lower = text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
-        if lower.isEmpty {
-            return nil
-        }
-        if lower.contains("share") || lower == "yes" || lower == "y" {
-            return true
-        }
-        if lower.contains("not now") || lower.contains("skip") || lower == "no" || lower == "n" {
-            return false
-        }
-        return nil
-    }
-    
     private func parseInt(from text: String?) -> Int? {
         guard let value = parseDouble(from: text) else { return nil }
         return Int(value)

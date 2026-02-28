@@ -1,6 +1,5 @@
 import SwiftUI
 import Combine
-import CoreLocation
 
 struct MainTabView: View {
     @EnvironmentObject var appState: AppState
@@ -49,7 +48,8 @@ struct MainTabView: View {
 
 struct ExplorePageView: View {
     let coach: Coach
-    @StateObject private var exploreLocationManager = LocationManager()
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
     @State private var showVoiceChat = false
     @State private var chatPrompt: String?
     @State private var showRecipePlanner = false
@@ -114,13 +114,15 @@ struct ExplorePageView: View {
             }
             .navigationBarHidden(true)
         }
-        .sheet(isPresented: $showVoiceChat) {
+        .fullScreenCover(isPresented: $showVoiceChat) {
             VoiceActiveView(
                 coach: coach,
                 autoFocus: true,
                 startRecording: false,
-                initialPrompt: chatPrompt
+                initialPrompt: chatPrompt ?? "Teach me an exercise with proper form."
             )
+            .environmentObject(appState)
+            .environmentObject(authManager)
         }
         .fullScreenCover(isPresented: $showRecipePlanner) {
             RecipeFinderView()
@@ -133,7 +135,6 @@ struct ExplorePageView: View {
         }
         .confirmationDialog("Share location to find gyms", isPresented: $showGymLocationPrompt, titleVisibility: .visible) {
             Button("Share Location") {
-                exploreLocationManager.requestLocationPermission()
                 showGymFinder = true
             }
             Button("Not Now", role: .cancel) {}

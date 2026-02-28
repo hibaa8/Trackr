@@ -395,6 +395,30 @@ def _build_plan_data(
     target_loss_lbs: Optional[float],
     goal_override: Optional[str] = None,
 ) -> Dict[str, Any]:
+    def _normalize_pref(value: Any) -> Optional[str]:
+        if value is None:
+            return None
+        text = str(value).strip()
+        if not text:
+            return None
+        if text.lower() in {"none", "no preference", "n/a", "na", "skip"}:
+            return None
+        return text
+
+    def _extract_days_per_week(value: Optional[str]) -> Optional[int]:
+        if not value:
+            return None
+        digits = "".join(ch if ch.isdigit() else " " for ch in value).split()
+        if not digits:
+            return None
+        try:
+            parsed = int(digits[0])
+        except ValueError:
+            return None
+        if 2 <= parsed <= 6:
+            return parsed
+        return None
+
     requested_days = days
     with get_db_conn() as conn:
         cur = conn.cursor()
@@ -407,8 +431,25 @@ def _build_plan_data(
             return {"error": "User not found."}
         cur.execute(queries.SELECT_USER_PREFS, (user_id,))
         pref_row = cur.fetchone()
+        try:
+            cur.execute(
+                """
+                SELECT workout_preferences, muscle_group_preferences, sports_preferences, location_context
+                FROM user_preferences
+                WHERE user_id = ?
+                LIMIT 1
+                """,
+                (user_id,),
+            )
+            context_row = cur.fetchone()
+        except Exception:
+            context_row = None
 
     targets = calc_targets(user_row, pref_row, goal_override=goal_override)
+    workout_preference_text = _normalize_pref(context_row[0]) if context_row else None
+    muscle_group_preferences = _normalize_pref(context_row[1]) if context_row else None
+    sports_preferences = _normalize_pref(context_row[2]) if context_row else None
+    location_context = _normalize_pref(context_row[3]) if context_row else None
     target_weight_override = None
     if target_loss_lbs:
         target_weight_override = user_row[2] - (target_loss_lbs * 0.453592)
@@ -427,6 +468,9 @@ def _build_plan_data(
         days_per_week = 4
     else:
         days_per_week = 4
+    preferred_days = _extract_days_per_week(workout_preference_text)
+    if preferred_days is not None:
+        days_per_week = preferred_days
     if not validate_workout_volume(targets["goal_type"], days_per_week):
         days_per_week = 5 if targets["goal_type"] == "gain" else 4
     workout_cycle = generate_workout_plan(targets["goal_type"], days_per_week=days_per_week)
@@ -439,6 +483,16 @@ def _build_plan_data(
     for i in range(days):
         day = start + timedelta(days=i)
         workout = workout_cycle[i % len(workout_cycle)]
+        if muscle_group_preferences or sports_preferences:
+            lowered = workout.lower()
+            if "rest" not in lowered and "mobility" not in lowered:
+                context_bits: List[str] = []
+                if muscle_group_preferences:
+                    context_bits.append(f"prioritize {muscle_group_preferences}")
+                if sports_preferences:
+                    context_bits.append(f"support {sports_preferences}")
+                if context_bits:
+                    workout = f"{workout} Preference context: {'; '.join(context_bits)}."
         block_index = i // 14
         calorie_target = max(1200, targets["calorie_target"] - (block_index * decrement))
         plan_days.append(
@@ -482,6 +536,12 @@ def _build_plan_data(
         "calorie_formula": targets.get("calorie_formula"),
         "progression_rule": "double progression",
         "check_in_rule": check_in_rule,
+        "user_context": {
+            "location_context": location_context,
+            "workout_preference": workout_preference_text,
+            "muscle_group_preferences": muscle_group_preferences,
+            "sports_preferences": sports_preferences,
+        },
     }
     if not validate_macros(
         plan_data["calorie_target"],

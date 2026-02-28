@@ -435,6 +435,8 @@ If they ask to gain muscle or stay fit, pass goal_override="gain" or "maintain".
 If the user wants to log a workout session, call `log_workout_session` and include
 the exercises list with name, sets, reps, weight, and RPE for strength work, and
 duration_min for cardio.
+Do not ask the user for calories burned when logging workouts; estimate/infer it from
+workout details instead.
 If the user asks to show their logged workouts, call `get_workout_sessions`.
 If the user asks to remove an exercise from a logged workout, call `remove_workout_exercise`
 with the exercise name and date (default to today if not provided).

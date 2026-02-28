@@ -48,7 +48,7 @@ from openai import OpenAI
 
 from agent.state import SESSION_CACHE
 from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
-from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key, _draft_reminders_key
+from config.constants import DB_PATH, CACHE_TTL_LONG, _draft_health_activity_key, _draft_meal_logs_key, _draft_reminders_key, _draft_workout_sessions_key
 from agent.db.connection import get_db_conn
 from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
@@ -364,46 +364,30 @@ def _extract_og_image(url: str) -> Optional[str]:
 
 def _store_meal_log(payload: FoodLogRequest) -> None:
     _ensure_meal_log_schema()
-    def _idempotency_key() -> str:
-        if payload.idempotency_key and payload.idempotency_key.strip():
-            return payload.idempotency_key.strip()
-        item_payload = [
-            {
-                "name": item.name,
-                "amount": item.amount,
-                "calories": item.calories,
-                "protein_g": item.protein_g,
-                "carbs_g": item.carbs_g,
-                "fat_g": item.fat_g,
-                "fiber_g": item.fiber_g,
-                "sugar_g": item.sugar_g,
-                "sodium_mg": item.sodium_mg,
-            }
-            for item in payload.items
-        ]
-        normalized = {
-            "food_name": payload.food_name,
-            "total_calories": payload.total_calories,
-            "protein_g": payload.protein_g,
-            "carbs_g": payload.carbs_g,
-            "fat_g": payload.fat_g,
-            "fiber_g": payload.fiber_g,
-            "sugar_g": payload.sugar_g,
-            "sodium_mg": payload.sodium_mg,
-            "items": item_payload,
-            "logged_at": payload.logged_at or "",
-        }
-        digest = hashlib.sha256(json.dumps(normalized, sort_keys=True).encode("utf-8")).hexdigest()
-        return f"auto:{digest}"
-
     logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
     description = payload.food_name
     day_key = logged_at[:10]
-    idem_key = _idempotency_key()
-    idem_cache_key = f"idem:api:meal:{payload.user_id}:{idem_key}"
-    cached = _redis_get_json(idem_cache_key)
-    if isinstance(cached, dict) and cached.get("ok"):
-        return
+
+    # Cache-first: store meal draft in Redis before DB persistence.
+    draft_key = _draft_meal_logs_key(payload.user_id)
+    cached_draft = _redis_get_json(draft_key)
+    draft = cached_draft if isinstance(cached_draft, dict) else {"meals": []}
+    draft_entry = {
+        "id": None,
+        "user_id": payload.user_id,
+        "logged_at": logged_at,
+        "description": description,
+        "calories": int(payload.total_calories),
+        "protein_g": int(payload.protein_g),
+        "carbs_g": int(payload.carbs_g),
+        "fat_g": int(payload.fat_g),
+        "confidence": max((item.confidence for item in payload.items), default=0.6),
+        "confirmed": 1,
+    }
+    draft.setdefault("meals", []).insert(0, draft_entry)
+    _redis_set_json(draft_key, draft, ttl_seconds=CACHE_TTL_LONG)
+    SESSION_CACHE.setdefault(payload.user_id, {})["meal_logs"] = draft
+
     with get_db_conn() as conn:
         cur = conn.cursor()
         cur.execute(
@@ -435,7 +419,6 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
     _maybe_award_daily_calorie_target_bonus(payload.user_id, logged_at[:10])
     _apply_daily_checklist_completion_bonus(payload.user_id, logged_at[:10])
     _ensure_daily_coach_checkin_reminder(payload.user_id)
-    _redis_set_json(idem_cache_key, {"ok": True}, ttl_seconds=600)
 
 
 def _ensure_auth_schema() -> None:
@@ -495,6 +478,9 @@ def _ensure_profile_schema() -> None:
             ("allergies", "TEXT NULL"),
             ("preferred_workout_time", "TEXT NULL"),
             ("menstrual_cycle_notes", "TEXT NULL"),
+            ("muscle_group_preferences", "TEXT NULL"),
+            ("sports_preferences", "TEXT NULL"),
+            ("location_context", "TEXT NULL"),
         ]
         for col_name, col_type in pref_columns:
             cur.execute(
@@ -1296,6 +1282,11 @@ def _upsert_daily_weight_checkin(user_id: int, weight_kg: float, conn=None) -> N
 
 
 def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
+    cached = _redis_get_json(_draft_workout_sessions_key(user_id))
+    if isinstance(cached, dict):
+        sessions = cached.get("sessions")
+        if isinstance(sessions, list):
+            return sessions
     try:
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -1325,6 +1316,9 @@ def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
                     "details": details,
                 }
             )
+        draft = {"sessions": sessions}
+        _redis_set_json(_draft_workout_sessions_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+        SESSION_CACHE.setdefault(user_id, {})["workout_sessions"] = draft
         return sessions
     except Exception:
         return []
@@ -1332,6 +1326,11 @@ def _list_workout_sessions(user_id: int) -> List[Dict[str, Any]]:
 
 def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
     _ensure_meal_log_schema()
+    cached = _redis_get_json(_draft_meal_logs_key(user_id))
+    if isinstance(cached, dict):
+        meals = cached.get("meals")
+        if isinstance(meals, list):
+            return meals
     try:
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -1366,6 +1365,9 @@ def _list_meal_logs(user_id: int) -> List[Dict[str, Any]]:
                     "confirmed": bool(row[12]),
                 }
             )
+        draft = {"meals": meals}
+        _redis_set_json(_draft_meal_logs_key(user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+        SESSION_CACHE.setdefault(user_id, {})["meal_logs"] = draft
         return meals
     except Exception:
         return []
@@ -1703,9 +1705,12 @@ class OnboardingCompletePayload(BaseModel):
     fitness_background: Optional[str] = None
     voice: Optional[str] = None
     workout_preference: Optional[str] = None
+    muscle_group_preferences: Optional[str] = None
+    sports_preferences: Optional[str] = None
     allergies: Optional[str] = None
     preferred_workout_time: Optional[str] = None
     menstrual_cycle_notes: Optional[str] = None
+    location_context: Optional[str] = None
     location_shared: Optional[bool] = None
     location_latitude: Optional[float] = None
     location_longitude: Optional[float] = None
@@ -2204,7 +2209,7 @@ def search_gyms(
     if not trimmed:
         raise HTTPException(status_code=400, detail="Query must not be empty")
 
-    params: Dict[str, str] = {"query": f"gym near {trimmed}"}
+    params: Dict[str, str] = {"query": trimmed}
     lat, lng = _resolve_gym_search_origin(lat, lng, user_id)
     if lat is not None and lng is not None:
         params["location"] = f"{lat},{lng}"
@@ -4064,6 +4069,12 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
     if payload.workout_preference is not None:
         pref_updates["workout_preferences"] = payload.workout_preference
+    if payload.muscle_group_preferences is not None:
+        pref_updates["muscle_group_preferences"] = payload.muscle_group_preferences
+    if payload.sports_preferences is not None:
+        pref_updates["sports_preferences"] = payload.sports_preferences
+    if payload.location_context is not None:
+        pref_updates["location_context"] = payload.location_context
     if pref_updates:
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -4076,8 +4087,9 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                     INSERT INTO user_preferences (
                         user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
                         dietary_preferences, workout_preferences, timezone, created_at,
-                        allergies, preferred_workout_time, menstrual_cycle_notes
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        allergies, preferred_workout_time, menstrual_cycle_notes,
+                        muscle_group_preferences, sports_preferences, location_context
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_id,
@@ -4092,6 +4104,9 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         pref_updates.get("allergies"),
                         pref_updates.get("preferred_workout_time"),
                         pref_updates.get("menstrual_cycle_notes"),
+                        pref_updates.get("muscle_group_preferences"),
+                        pref_updates.get("sports_preferences"),
+                        pref_updates.get("location_context"),
                     ),
                 )
             else:

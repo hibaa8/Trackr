@@ -308,6 +308,7 @@ struct TrainerMainView: View {
                 startRecording: chatLaunchMode == .voice,
                 initialPrompt: chatInitialPrompt
             )
+            .id("voice-\(chatLaunchMode == .voice ? "voice" : "text")-\(chatInitialPrompt ?? "none")")
         }
         .safeAreaInset(edge: .bottom) {
             bottomInputBar
@@ -604,7 +605,7 @@ struct TrainerMainView: View {
                 systemImage: "figure.run.circle"
             ) {
                 chatLaunchMode = .text
-                chatInitialPrompt = "I want to log an exercise session. Please ask me for exercise type, duration, intensity, and calories burned if available, then log it."
+                chatInitialPrompt = "I want to log an exercise session. Please ask me for exercise type, duration, and intensity details, then estimate calories burned yourself and log it."
                 showVoiceChat = true
             }
         }
@@ -805,7 +806,7 @@ struct TrainerMainView: View {
     private var bottomInputBar: some View {
         HStack(spacing: 16) {
             Button(action: {
-                chatLaunchMode = .voice
+                chatLaunchMode = .text
                 chatInitialPrompt = nil
                 showVoiceChat = true
             }) {
@@ -1379,13 +1380,10 @@ struct VoiceActiveView: View {
                     startVoiceRecording()
                 }
             }
-            if let prompt = initialPrompt, !didSendInitialPrompt {
-                didSendInitialPrompt = true
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
-                    messageText = prompt
-                    sendMessage()
-                }
-            }
+            sendInitialPromptIfNeeded()
+        }
+        .onChange(of: initialPrompt) { _, _ in
+            sendInitialPromptIfNeeded()
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
@@ -1433,6 +1431,17 @@ struct VoiceActiveView: View {
                     image: nil
                 )
             ]
+        }
+    }
+
+    private func sendInitialPromptIfNeeded() {
+        guard let prompt = initialPrompt?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !prompt.isEmpty,
+              !didSendInitialPrompt else { return }
+        didSendInitialPrompt = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+            messageText = prompt
+            sendMessage()
         }
     }
 
@@ -1488,14 +1497,17 @@ struct VoiceActiveView: View {
                 case .success(let response):
                     self.threadId = response.thread_id
                     let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
-                    let coachMessage = VoiceMessage(
-                        id: UUID(),
-                        text: replyText,
-                        isFromCoach: true,
-                        timestamp: Date(),
-                        image: nil
-                    )
-                    self.messages.append(coachMessage)
+                    let chunks = splitCoachReply(replyText)
+                    for chunk in chunks {
+                        let coachMessage = VoiceMessage(
+                            id: UUID(),
+                            text: chunk,
+                            isFromCoach: true,
+                            timestamp: Date(),
+                            image: nil
+                        )
+                        self.messages.append(coachMessage)
+                    }
                     refreshPlanAndBroadcast(userId: userId)
                 case .failure:
                     let errorMessage = VoiceMessage(
@@ -1511,6 +1523,41 @@ struct VoiceActiveView: View {
                 }
             }
         }
+    }
+
+    private func splitCoachReply(_ text: String) -> [String] {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+
+        // Keep concise sentence-style bubbles for a more natural chat cadence.
+        let sentenceCandidates = trimmed
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: ".")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var chunks: [String] = []
+        for sentence in sentenceCandidates {
+            let sentenceWithPunctuation = sentence.hasSuffix("!") || sentence.hasSuffix("?") ? sentence : "\(sentence)."
+            if sentenceWithPunctuation.count <= 180 {
+                chunks.append(sentenceWithPunctuation)
+            } else {
+                // Fallback split for very long single sentences.
+                var current = ""
+                for word in sentenceWithPunctuation.split(separator: " ") {
+                    let next = current.isEmpty ? String(word) : "\(current) \(word)"
+                    if next.count > 180 {
+                        if !current.isEmpty { chunks.append(current) }
+                        current = String(word)
+                    } else {
+                        current = next
+                    }
+                }
+                if !current.isEmpty { chunks.append(current) }
+            }
+        }
+
+        return chunks.isEmpty ? [trimmed] : chunks
     }
 
     private func refreshPlanAndBroadcast(userId: Int) {
@@ -1945,23 +1992,34 @@ struct VoiceMessageBubble: View {
                 Spacer()
             } else {
                 Spacer()
-                VStack(alignment: .trailing, spacing: 8) {
-                    if let image = message.image {
-                        Image(uiImage: image)
-                            .resizable()
-                            .scaledToFill()
-                            .frame(width: 180, height: 120)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
+                HStack(alignment: .bottom, spacing: 10) {
+                    VStack(alignment: .trailing, spacing: 8) {
+                        if let image = message.image {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 180, height: 120)
+                                .clipShape(RoundedRectangle(cornerRadius: 14))
+                        }
+                        Text(.init(message.text))
+                            .font(.system(size: 15, weight: .medium))
+                            .foregroundColor(.white)
+                            .lineSpacing(4)
                     }
-                    Text(.init(message.text))
-                        .font(.system(size: 15, weight: .medium))
-                        .foregroundColor(.white)
-                        .lineSpacing(4)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
+                    .background(Color.white.opacity(0.2))
+                    .cornerRadius(18, corners: [.topLeft, .topRight, .bottomLeft])
+
+                    ZStack {
+                        Circle()
+                            .fill(Color.white.opacity(0.2))
+                            .frame(width: 30, height: 30)
+                        Image(systemName: "person.fill")
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundColor(.white)
+                    }
                 }
-                .padding(.horizontal, 16)
-                .padding(.vertical, 12)
-                .background(Color.white.opacity(0.2))
-                .cornerRadius(18, corners: [.topLeft, .topRight, .bottomLeft])
             }
         }
     }

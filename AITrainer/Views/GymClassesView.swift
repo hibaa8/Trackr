@@ -25,9 +25,9 @@ struct GymClassesView: View {
                 // Background gradient
                 LinearGradient(
                     colors: [
-                        Color.backgroundGradientStart,
-                        Color.backgroundGradientEnd,
-                        Color.white.opacity(0.8)
+                        Color.black,
+                        Color.blue.opacity(0.28),
+                        Color.black
                     ],
                     startPoint: .topLeading,
                     endPoint: .bottomTrailing
@@ -90,11 +90,11 @@ struct GymClassesView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("Local Gyms")
                     .font(.displayMedium)
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
 
                 Text("Find gyms near you")
                     .font(.bodyMedium)
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.72))
             }
 
             Spacer()
@@ -102,12 +102,12 @@ struct GymClassesView: View {
             Button(action: { dismiss() }) {
                 ZStack {
                     Circle()
-                        .fill(Color.white.opacity(0.8))
+                        .fill(Color.white.opacity(0.12))
                         .frame(width: 44, height: 44)
 
                     Image(systemName: "xmark")
                         .font(.system(size: 16, weight: .bold))
-                        .foregroundColor(.textSecondary)
+                        .foregroundColor(.white.opacity(0.85))
                 }
             }
         }
@@ -116,12 +116,12 @@ struct GymClassesView: View {
     // MARK: - Location Section
 
     private var locationSection: some View {
-        ModernCard {
+        VStack(spacing: 16) {
             VStack(spacing: 16) {
                 // Current location display
                 HStack(spacing: 12) {
                     Image(systemName: "location.fill")
-                        .foregroundColor(.fitnessGradientStart)
+                        .foregroundColor(.blue)
 
                     if locationManager.isLoading {
                         HStack {
@@ -132,7 +132,7 @@ struct GymClassesView: View {
                     } else {
                         Text(locationManager.locationString)
                             .font(.bodyMedium)
-                            .foregroundColor(.textPrimary)
+                            .foregroundColor(.white)
                     }
 
                     Spacer()
@@ -143,7 +143,7 @@ struct GymClassesView: View {
                     }) {
                         Image(systemName: "pencil")
                             .font(.system(size: 14))
-                            .foregroundColor(.fitnessGradientStart)
+                            .foregroundColor(.blue)
                     }
                 }
 
@@ -152,16 +152,18 @@ struct GymClassesView: View {
                     // Search field
                     HStack {
                         Image(systemName: "magnifyingglass")
-                            .foregroundColor(.textSecondary)
+                            .foregroundColor(.white.opacity(0.72))
 
                         TextField("Search gyms or places...", text: $searchText)
                             .font(.bodyMedium)
+                            .foregroundColor(.white)
+                            .accentColor(.blue)
                             .onSubmit {
                                 searchForGyms()
                             }
                     }
                     .padding(12)
-                    .background(Color.backgroundGradientStart)
+                    .background(Color.white.opacity(0.1))
                     .cornerRadius(12)
 
                     // Search / current location button
@@ -171,19 +173,27 @@ struct GymClassesView: View {
                         let trimmed = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
                         Image(systemName: trimmed.isEmpty ? "location.circle.fill" : "paperplane.fill")
                             .font(.system(size: 22, weight: .semibold))
-                            .foregroundColor(.fitnessGradientStart)
+                            .foregroundColor(.blue)
                     }
                 }
 
                 if let errorMessage = locationManager.errorMessage {
                     Text(errorMessage)
                         .font(.captionMedium)
-                        .foregroundColor(.red)
+                        .foregroundColor(.red.opacity(0.95))
                         .multilineTextAlignment(.center)
                 }
             }
             .padding(16)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 18)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 18)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
     }
 
     // MARK: - Loading View
@@ -217,11 +227,11 @@ struct GymClassesView: View {
             VStack(spacing: 8) {
                 Text("No gyms found")
                     .font(.headlineMedium)
-                    .foregroundColor(.textPrimary)
+                    .foregroundColor(.white)
 
                 Text("Try adjusting your location or search terms")
                     .font(.bodyMedium)
-                    .foregroundColor(.textSecondary)
+                    .foregroundColor(.white.opacity(0.72))
                     .multilineTextAlignment(.center)
             }
 
@@ -233,8 +243,22 @@ struct GymClassesView: View {
                     .padding(.horizontal, 12)
             }
 
-            ModernPrimaryButton(title: "Allow Location Access") {
+            Button(action: {
                 locationManager.requestLocationPermission()
+            }) {
+                Text("Allow Location Access")
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundColor(.white)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+                    .background(
+                        LinearGradient(
+                            colors: [Color.blue, Color.blue.opacity(0.75)],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .cornerRadius(14)
             }
             .padding(.horizontal, 40)
         }
@@ -275,11 +299,7 @@ struct GymClassesView: View {
         }
 
         if let location = locationManager.location {
-            if isLocationQuery(trimmed) {
-                gymFinder.searchGymsByText(query: trimmed, location: location)
-            } else {
-                gymFinder.searchNearbyGyms(location: location, keyword: trimmed)
-            }
+            gymFinder.searchGymsByText(query: trimmed, location: location)
         } else {
             gymFinder.nearbyGyms = []
             gymFinder.errorMessage = "Please enable location access to search for local gyms."
@@ -319,7 +339,7 @@ struct GymCard: View {
     }
 
     var body: some View {
-        ModernCard {
+        VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 16) {
                 gymPhoto
 
@@ -327,11 +347,11 @@ struct GymCard: View {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(gym.name)
                             .font(.headlineMedium)
-                            .foregroundColor(.textPrimary)
+                            .foregroundColor(.white)
 
                         Text(gym.address)
                             .font(.bodyMedium)
-                            .foregroundColor(.textSecondary)
+                            .foregroundColor(.white.opacity(0.72))
                     }
 
                     Spacer()
@@ -344,7 +364,7 @@ struct GymCard: View {
                             Text(String(format: "%.1f", rating))
                                 .font(.bodyMedium)
                                 .fontWeight(.semibold)
-                                .foregroundColor(.textPrimary)
+                                .foregroundColor(.white)
                         }
                     }
                 }
@@ -353,7 +373,7 @@ struct GymCard: View {
                     if let distanceText = distanceText {
                         Label(distanceText, systemImage: "location")
                             .font(.captionLarge)
-                            .foregroundColor(.textSecondary)
+                            .foregroundColor(.white.opacity(0.72))
                     }
 
                     if let openStatusText = openStatusText {
@@ -366,17 +386,25 @@ struct GymCard: View {
                 Button(action: openInMaps) {
                     Text("Open in Maps")
                         .font(.bodyMedium)
-                        .foregroundColor(.fitnessGradientStart)
+                        .foregroundColor(.blue)
                         .padding(.horizontal, 16)
                         .padding(.vertical, 10)
                         .background(
                             RoundedRectangle(cornerRadius: 20)
-                                .stroke(Color.fitnessGradientStart, lineWidth: 1)
+                                .stroke(Color.blue, lineWidth: 1)
                         )
                 }
             }
             .padding(20)
         }
+        .background(
+            RoundedRectangle(cornerRadius: 16)
+                .fill(Color.white.opacity(0.08))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16)
+                        .stroke(Color.white.opacity(0.12), lineWidth: 1)
+                )
+        )
     }
 
     private var gymPhoto: some View {
@@ -435,10 +463,12 @@ struct LocationSearchView: View {
             VStack {
                 HStack {
                     Image(systemName: "magnifyingglass")
-                        .foregroundColor(.textSecondary)
+                        .foregroundColor(.white.opacity(0.72))
 
                     TextField("Enter city, address, or ZIP code", text: $searchText)
                         .font(.bodyMedium)
+                        .foregroundColor(.white)
+                        .accentColor(.blue)
                         .onSubmit {
                             if !searchText.isEmpty {
                                 onLocationSelected(searchText)
@@ -446,12 +476,21 @@ struct LocationSearchView: View {
                         }
                 }
                 .padding(12)
-                .background(Color.backgroundGradientStart)
+                .background(Color.white.opacity(0.1))
                 .cornerRadius(12)
                 .padding()
 
                 Spacer()
             }
+            .background(
+                LinearGradient(
+                    colors: [Color.black, Color.blue.opacity(0.22), Color.black],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .ignoresSafeArea()
+            )
+            .preferredColorScheme(.dark)
             .navigationTitle("Search Location")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
