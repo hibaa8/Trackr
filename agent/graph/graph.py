@@ -141,6 +141,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "health_activity": health_activity,
         "reminders": reminders,
         "agent_id": existing.get("agent_id"),
+        "google_access_token": existing.get("google_access_token"),
     }
     return {
         "context": context,
@@ -355,8 +356,10 @@ def apply_plan(state: AgentState) -> AgentState:
     }
     _redis_set_json(_draft_plan_key(user_id), cache_bundle, ttl_seconds=CACHE_TTL_LONG)
     _redis_set_json(f"user:{user_id}:active_plan", cache_bundle, ttl_seconds=CACHE_TTL_PLAN)
+    existing = SESSION_CACHE.get(user_id, {})
     SESSION_CACHE[user_id] = {
-        "context": SESSION_CACHE.get(user_id, {}).get("context"),
+        **existing,
+        "context": existing.get("context"),
         "active_plan": cache_bundle,
     }
 

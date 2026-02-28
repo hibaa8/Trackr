@@ -31,6 +31,7 @@ from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
 from agent.db.connection import get_db_conn
 from google.oauth2 import service_account
+from google.oauth2.credentials import Credentials as GoogleUserCredentials
 from googleapiclient.discovery import build
 
 
@@ -98,13 +99,20 @@ def _coerce_to_date(value: Any) -> date:
     return datetime.strptime(str(value), "%Y-%m-%d").date()
 
 
-def _google_calendar_service():
+def _google_calendar_service(user_id: Optional[int] = None):
+    if user_id is not None:
+        session = SESSION_CACHE.get(user_id) or {}
+        user_token = str(session.get("google_access_token") or "").strip()
+        if user_token:
+            creds = GoogleUserCredentials(token=user_token, scopes=["https://www.googleapis.com/auth/calendar.events"])
+            return build("calendar", "v3", credentials=creds, cache_discovery=False)
+
     raw_json = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "").strip()
     json_path = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE", "").strip()
     delegated_user = os.getenv("GOOGLE_CALENDAR_DELEGATED_USER", "").strip()
     if not raw_json and not json_path:
         raise RuntimeError(
-            "Google Calendar is not configured. Set GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON or GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE."
+            "Missing Google credentials. Sign in with Google in-app or set GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON / GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE."
         )
     scopes = ["https://www.googleapis.com/auth/calendar"]
     if raw_json:
@@ -605,8 +613,10 @@ def get_current_plan_summary(user_id: int) -> str:
         or _redis_get_json(f"user:{user_id}:active_plan")
         or {}
     )
-    if bundle and user_id not in SESSION_CACHE:
-        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    if bundle:
+        cached_session = SESSION_CACHE.setdefault(user_id, {})
+        cached_session.setdefault("context", None)
+        cached_session["active_plan"] = bundle
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan:
@@ -647,8 +657,10 @@ def get_plan_day(user_id: int, date_str: Optional[str] = None) -> str:
         or _redis_get_json(f"user:{user_id}:active_plan")
         or {}
     )
-    if bundle and user_id not in SESSION_CACHE:
-        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    if bundle:
+        cached_session = SESSION_CACHE.setdefault(user_id, {})
+        cached_session.setdefault("context", None)
+        cached_session["active_plan"] = bundle
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan or not plan_days:
@@ -789,7 +801,7 @@ def add_google_calendar_events(
         return "No events to add. Provide event details or choose an active-plan request type."
 
     try:
-        service = _google_calendar_service()
+        service = _google_calendar_service(user_id=user_id)
     except Exception as exc:
         return f"Google Calendar setup error: {exc}"
 
@@ -814,8 +826,9 @@ def add_google_calendar_events(
                     "description": description,
                     "start": {"dateTime": _to_iso(start_at), "timeZone": tz},
                     "end": {"dateTime": _to_iso(end_at), "timeZone": tz},
-                    "attendees": [{"email": user_email}],
                 }
+                if "@" in user_email:
+                    body["attendees"] = [{"email": user_email}]
                 created = service.events().insert(
                     calendarId=calendar_id,
                     body=body,
@@ -879,10 +892,9 @@ def generate_plan(
         "checkpoints": plan_data.get("checkpoints", []),
     }
     _redis_set_json(_draft_plan_key(user_id), cache_bundle, ttl_seconds=CACHE_TTL_LONG)
-    SESSION_CACHE[user_id] = {
-        "context": SESSION_CACHE.get(user_id, {}).get("context"),
-        "active_plan": cache_bundle,
-    }
+    cached_session = SESSION_CACHE.setdefault(user_id, {})
+    cached_session.setdefault("context", None)
+    cached_session["active_plan"] = cache_bundle
     plan_text = _format_plan_text(plan_data)
     return json.dumps({"plan_text": plan_text, "plan_data": plan_data})
 
@@ -1244,8 +1256,10 @@ def replace_active_plan_workouts(
         preferred_list = []
 
     bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _load_active_plan_draft(user_id)
-    if bundle and user_id not in SESSION_CACHE:
-        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    if bundle:
+        cached_session = SESSION_CACHE.setdefault(user_id, {})
+        cached_session.setdefault("context", None)
+        cached_session["active_plan"] = bundle
     plan = bundle.get("plan")
     plan_days = bundle.get("plan_days", [])
     if not plan or not plan_days:
@@ -1658,8 +1672,10 @@ def propose_plan_patch_with_llm(
 def get_weight_checkpoint_for_current_week(user_id: int) -> str:
     """Get the expected weight for the current week from cached checkpoints."""
     bundle = SESSION_CACHE.get(user_id, {}).get("active_plan") or _redis_get_json(f"user:{user_id}:active_plan") or {}
-    if bundle and user_id not in SESSION_CACHE:
-        SESSION_CACHE[user_id] = {"context": None, "active_plan": bundle}
+    if bundle:
+        cached_session = SESSION_CACHE.setdefault(user_id, {})
+        cached_session.setdefault("context", None)
+        cached_session["active_plan"] = bundle
     plan = bundle.get("plan")
     checkpoints = bundle.get("checkpoints", [])
     if not plan or not checkpoints:

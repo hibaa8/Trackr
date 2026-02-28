@@ -459,6 +459,7 @@ If the user asks to add Google Calendar events, first summarize what you are abo
 Only after the user clearly confirms, call `add_google_calendar_events` with `confirmed_by_user=true`.
 Never claim calendar events were added unless this tool succeeds.
 Do not respond with generic manual Google Calendar setup instructions when this tool can handle the request.
+If the calendar tool reports missing credentials or missing Google sign-in, instruct the user to open Settings and tap "Connect Google Calendar", then retry.
 For full plan sync requests, use request_type="active_plan_workouts" or "active_plan_workouts_and_meal_logs".
 
 If the user requests plan changes (days off, too hard/easy, focus muscle group, or exercise swaps), do NOT claim changes were applied unless a mutation tool succeeds. Ask clarifying questions if needed, then call `propose_plan_patch_with_llm` with apply=true.

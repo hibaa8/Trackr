@@ -1402,6 +1402,7 @@ class CoachChatRequest(BaseModel):
     thread_id: Optional[str] = None
     agent_id: Optional[Union[int, str]] = None
     image_base64: Optional[str] = None
+    google_access_token: Optional[str] = None
 
 
 class CoachChatResponse(BaseModel):
@@ -2511,6 +2512,8 @@ def coach_chat(payload: CoachChatRequest):
     resolved_agent = _resolve_coach_slug(payload.agent_id)
     if resolved_agent:
         SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = resolved_agent
+    if payload.google_access_token and payload.google_access_token.strip():
+        SESSION_CACHE.setdefault(payload.user_id, {})["google_access_token"] = payload.google_access_token.strip()
 
     if thread_id not in _AGENT_PRELOADED:
         preload_fn(payload.user_id)
