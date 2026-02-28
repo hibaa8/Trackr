@@ -2633,48 +2633,6 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     return {"ok": True}
 
 
-@app.get("/api/coach-media/{media_type}/{filename}")
-def get_coach_media(media_type: str, filename: str):
-    """Serve coach media files securely from Supabase with signed URLs."""
-    # Validate media type
-    if media_type not in ["images", "videos"]:
-        raise HTTPException(status_code=404, detail="Invalid media type")
-
-    # Validate filename format (basic security check)
-    import re
-    if not re.match(r'^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|mp4|mov)$', filename):
-        raise HTTPException(status_code=404, detail="Invalid filename")
-
-    base = _supabase_url()
-    if not base or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-
-    # Generate signed URL for the coach media
-    path = f"coach-media/{media_type}/{filename}"
-    url = f"{base}/storage/v1/object/sign/coach-media/{media_type}/{filename}"
-
-    headers = {
-        "Content-Type": "application/json",
-        **_supabase_headers()
-    }
-
-    try:
-        import requests
-        # Request a signed URL that expires in 1 hour
-        response = requests.post(url, json={"expiresIn": 3600}, headers=headers)
-        response.raise_for_status()
-        signed_data = response.json()
-
-        if "signedURL" in signed_data:
-            # Return the signed URL for the client to fetch directly
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url=signed_data["signedURL"])
-        else:
-            raise HTTPException(status_code=500, detail="Failed to generate signed URL")
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to access media: {str(e)}")
-
 
 if __name__ == "__main__":
     import uvicorn

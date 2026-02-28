@@ -48,6 +48,14 @@ struct Coach: Identifiable, Codable, Hashable {
 
 // Coach data based on the detailed profiles provided
 extension Coach {
+    /// Direct Supabase URLs for public coach-media bucket
+    private static func imageURL(for name: String) -> String {
+        "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/\(name).png"
+    }
+    private static func videoURL(for name: String) -> String {
+        "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/\(name)-Intro.mp4"
+    }
+
     static let allCoaches: [Coach] = [
         Coach(
             id: 1,
@@ -68,8 +76,8 @@ extension Coach {
             tags: ["discipline", "grit", "intensity", "mission"],
             primaryColor: "blue",
             secondaryColor: "navy",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Marcus.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Marcus-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Marcus"),
+            videoURLString: Self.videoURL(for: "Marcus")
         ),
 
         Coach(
@@ -91,8 +99,8 @@ extension Coach {
             tags: ["precision", "core", "control", "mindful"],
             primaryColor: "cyan",
             secondaryColor: "blue",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Hana.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Hana-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Hana"),
+            videoURLString: Self.videoURL(for: "Hana")
         ),
 
         Coach(
@@ -114,8 +122,8 @@ extension Coach {
             tags: ["inclusive", "community", "strength", "affirming"],
             primaryColor: "purple",
             secondaryColor: "pink",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Alex.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Alex-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Alex"),
+            videoURLString: Self.videoURL(for: "Alex")
         ),
 
         Coach(
@@ -137,8 +145,8 @@ extension Coach {
             tags: ["energy", "dance", "cardio", "joy"],
             primaryColor: "orange",
             secondaryColor: "red",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Maria.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Maria-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Maria"),
+            videoURLString: Self.videoURL(for: "Maria")
         ),
 
         Coach(
@@ -160,8 +168,8 @@ extension Coach {
             tags: ["agility", "parkour", "freedom", "flow"],
             primaryColor: "green",
             secondaryColor: "teal",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Jake.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Jake-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Jake"),
+            videoURLString: Self.videoURL(for: "Jake")
         ),
 
         Coach(
@@ -183,8 +191,8 @@ extension Coach {
             tags: ["performance", "injury prevention", "foundation", "precision"],
             primaryColor: "navy",
             secondaryColor: "blue",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/David.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/David-Intro.mp4"
+            imageURLString: Self.imageURL(for: "David"),
+            videoURLString: Self.videoURL(for: "David")
         ),
 
         Coach(
@@ -206,8 +214,8 @@ extension Coach {
             tags: ["combat", "confidence", "resilience", "power"],
             primaryColor: "red",
             secondaryColor: "orange",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Zara.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Zara-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Zara"),
+            videoURLString: Self.videoURL(for: "Zara")
         ),
 
         Coach(
@@ -229,8 +237,8 @@ extension Coach {
             tags: ["mindfulness", "balance", "calm", "flow"],
             primaryColor: "indigo",
             secondaryColor: "purple",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Kenji.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Kenji-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Kenji"),
+            videoURLString: Self.videoURL(for: "Kenji")
         ),
 
         Coach(
@@ -252,8 +260,8 @@ extension Coach {
             tags: ["yoga", "mindfulness", "calm", "recovery"],
             primaryColor: "cyan",
             secondaryColor: "blue",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Chloe.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Chloe-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Chloe"),
+            videoURLString: Self.videoURL(for: "Chloe")
         ),
 
         Coach(
@@ -275,8 +283,8 @@ extension Coach {
             tags: ["strength", "power", "confidence", "energy"],
             primaryColor: "red",
             secondaryColor: "orange",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Simone.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Simone-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Simone"),
+            videoURLString: Self.videoURL(for: "Simone")
         ),
 
         Coach(
@@ -298,8 +306,8 @@ extension Coach {
             tags: ["teamwork", "motivation", "strength", "optimism"],
             primaryColor: "navy",
             secondaryColor: "blue",
-            imageURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/Liam.png",
-            videoURLString: "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/Liam-Intro.mp4"
+            imageURLString: Self.imageURL(for: "Liam"),
+            videoURLString: Self.videoURL(for: "Liam")
         )
     ]
 
