@@ -179,7 +179,6 @@ struct TrainerMainView: View {
     @State private var showPlanDetail = false
     @State private var showCalorieDetail = false
     @State private var showRecipePlanner = false
-    @State private var showCommunity = false
     @State private var showGymFinder = false
     @State private var showGamificationSheet = false
     @State private var todayPlan: PlanDayResponse?
@@ -190,7 +189,10 @@ struct TrainerMainView: View {
     @State private var showXPGainToast = false
     @State private var showDailyCompletionGraffiti = false
     @State private var showLevelUpGraffiti = false
+    @State private var showLevelUpPopup = false
     @State private var leveledTo = 1
+    @State private var levelUpPopupData: LevelUpPopupData?
+    @State private var hideLevelUpPopupWorkItem: DispatchWorkItem?
     @State private var lastCelebratedDayKey: String?
     @State private var lastMealLogCount = 0
     @State private var lastWorkoutLogCount = 0
@@ -211,6 +213,7 @@ struct TrainerMainView: View {
     @AppStorage("trainer.hasShownInitialLocationPrompt") private var hasShownInitialLocationPrompt = false
     @State private var showDashboardLocationPrompt = false
     @State private var isLoadingPlan = false
+    @State private var planDaysRemaining: Int?
     @State private var cancellables = Set<AnyCancellable>()
 
     private let timer = Timer.publish(every: 60, on: .main, in: .common).autoconnect()
@@ -277,6 +280,17 @@ struct TrainerMainView: View {
                         .transition(.opacity.combined(with: .scale))
                         .zIndex(11)
                 }
+
+                if showLevelUpPopup, let levelUpPopupData {
+                    VStack {
+                        LevelUpInfoPopup(data: levelUpPopupData)
+                            .padding(.horizontal, 16)
+                            .padding(.top, geometry.safeAreaInsets.top + 8)
+                        Spacer()
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(12)
+                }
             }
         }
         .onReceive(timer) { _ in
@@ -300,6 +314,10 @@ struct TrainerMainView: View {
             refreshDashboardData()
             loadProgressForXPTracking(trackChanges: true)
             loadGamification(trackGain: true)
+        }
+        .onDisappear {
+            hideLevelUpPopupWorkItem?.cancel()
+            hideLevelUpPopupWorkItem = nil
         }
         .sheet(isPresented: $showVoiceChat) {
             VoiceActiveView(
@@ -334,9 +352,6 @@ struct TrainerMainView: View {
         }
         .fullScreenCover(isPresented: $showRecipePlanner) {
             RecipeFinderView()
-        }
-        .fullScreenCover(isPresented: $showCommunity) {
-            CommunityView()
         }
         .fullScreenCover(isPresented: $showGymFinder) {
             GymClassesView()
@@ -629,12 +644,6 @@ struct TrainerMainView: View {
             }
             HStack(spacing: 10) {
                 quickLogButton(
-                    title: "Community",
-                    systemImage: "person.3.sequence.fill"
-                ) {
-                    showCommunity = true
-                }
-                quickLogButton(
                     title: "Find Gyms",
                     systemImage: "mappin.and.ellipse"
                 ) {
@@ -915,14 +924,21 @@ struct TrainerMainView: View {
                         showXPGainToast(
                             message: "Level up! +1 streak freeze unlocked"
                         )
-                        withAnimation(.spring(response: 0.45, dampingFraction: 0.82)) {
-                            showLevelUpGraffiti = true
-                        }
-                        DispatchQueue.main.asyncAfter(deadline: .now() + 2.2) {
-                            withAnimation(.easeInOut(duration: 0.2)) {
-                                showLevelUpGraffiti = false
-                            }
-                        }
+                        let gainedXP = max(0, summary.points - (previousPoints ?? summary.points))
+                        let required = max(1, 60 + ((summary.level - 1) * 5))
+                        let xpInLevel = max(0, required - summary.next_level_points)
+                        let daysLeft = max(0, self.planDaysRemaining ?? 0)
+                        let encouragement = levelUpEncouragement(for: summary.level)
+                        showLevelUpSummary(
+                            level: summary.level,
+                            gainedXP: gainedXP,
+                            xpInLevel: xpInLevel,
+                            xpRequired: required,
+                            xpToNext: summary.next_level_points,
+                            daysLeftInPlan: daysLeft,
+                            gainedDescription: "+1 streak freeze unlocked (\(summary.freeze_streaks) available)"
+                        )
+                        speak(encouragement)
                     }
                 }
             )
@@ -936,6 +952,7 @@ struct TrainerMainView: View {
             .sink(
                 receiveCompletion: { _ in },
                 receiveValue: { progress in
+                    self.planDaysRemaining = planDaysLeft(from: progress.plan?.end_date)
                     let todayKey = dayKey(from: Date())
                     let checklist = progress.daily_checklist
                     let mealCount = checklist?.meals_logged ?? progress.meals.filter { item in
@@ -964,6 +981,37 @@ struct TrainerMainView: View {
                 }
             )
             .store(in: &cancellables)
+    }
+
+    private func showLevelUpSummary(
+        level: Int,
+        gainedXP: Int,
+        xpInLevel: Int,
+        xpRequired: Int,
+        xpToNext: Int,
+        daysLeftInPlan: Int,
+        gainedDescription: String
+    ) {
+        hideLevelUpPopupWorkItem?.cancel()
+        levelUpPopupData = LevelUpPopupData(
+            level: level,
+            gainedXP: gainedXP,
+            gainedDescription: gainedDescription,
+            daysLeftInPlan: daysLeftInPlan,
+            xpInLevel: xpInLevel,
+            xpRequired: xpRequired,
+            xpToNext: max(0, xpToNext)
+        )
+        withAnimation(.easeInOut(duration: 0.2)) {
+            showLevelUpPopup = true
+        }
+        let workItem = DispatchWorkItem {
+            withAnimation(.easeInOut(duration: 0.2)) {
+                showLevelUpPopup = false
+            }
+        }
+        hideLevelUpPopupWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4.2, execute: workItem)
     }
 
     private func triggerDailyCompletionGraffitiIfNeeded(mealCount: Int, workoutCount: Int, checkinCount: Int, dayKey: String) {
@@ -1109,6 +1157,31 @@ struct TrainerMainView: View {
         return quotes.randomElement() ?? "You crushed it."
     }
 
+    private func levelUpEncouragement(for level: Int) -> String {
+        let lines = [
+            "Level \(level) unlocked. You're building serious momentum.",
+            "Huge win. New level, new standards. Keep pushing.",
+            "That level-up is earned. Stay consistent and keep stacking days.",
+            "Proud of this progress. Let's keep your streak alive and climb higher."
+        ]
+        return lines.randomElement() ?? "Level \(level) unlocked. Great work."
+    }
+
+    private func planDaysLeft(from endDate: String?) -> Int {
+        guard let raw = endDate?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty else {
+            return 0
+        }
+        let prefix = String(raw.prefix(10))
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd"
+        guard let end = formatter.date(from: prefix) else { return 0 }
+        let startOfToday = Calendar.current.startOfDay(for: Date())
+        let startOfEnd = Calendar.current.startOfDay(for: end)
+        let days = Calendar.current.dateComponents([.day], from: startOfToday, to: startOfEnd).day ?? 0
+        return max(0, days + 1)
+    }
+
     private func speak(_ text: String) {
         let utterance = AVSpeechUtterance(string: text)
         let voiceHint = backendConnector.profile?.user?.coach_voice
@@ -1130,6 +1203,64 @@ struct TrainerMainView: View {
         let phrase = coach.commonPhrases.randomElement() ?? "Let's get after it."
         let text = "\(phrase) Ready to make progress today."
         speak(text)
+    }
+}
+
+private struct LevelUpPopupData {
+    let level: Int
+    let gainedXP: Int
+    let gainedDescription: String
+    let daysLeftInPlan: Int
+    let xpInLevel: Int
+    let xpRequired: Int
+    let xpToNext: Int
+}
+
+private struct LevelUpInfoPopup: View {
+    let data: LevelUpPopupData
+
+    private var progress: Double {
+        guard data.xpRequired > 0 else { return 0 }
+        return min(1, max(0, Double(data.xpInLevel) / Double(data.xpRequired)))
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack {
+                Label("Level \(data.level) reached", systemImage: "sparkles")
+                    .font(.system(size: 14, weight: .bold))
+                    .foregroundColor(.white)
+                Spacer()
+                Text("+\(data.gainedXP) XP")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundColor(.cyan)
+            }
+
+            Text(data.gainedDescription)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundColor(.white.opacity(0.9))
+
+            HStack {
+                Text("Plan days left: \(data.daysLeftInPlan)")
+                Spacer()
+                Text("\(data.xpToNext) XP to next")
+            }
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundColor(.white.opacity(0.86))
+
+            ProgressView(value: progress)
+                .tint(.blue)
+                .scaleEffect(x: 1, y: 1.2, anchor: .center)
+        }
+        .padding(12)
+        .background(
+            RoundedRectangle(cornerRadius: 14)
+                .fill(Color.black.opacity(0.84))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14)
+                        .stroke(Color.white.opacity(0.14), lineWidth: 1)
+                )
+        )
     }
 }
 
@@ -1233,6 +1364,8 @@ struct VoiceActiveView: View {
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
     @State private var didSendInitialPrompt = false
+    @State private var topNoticeText: String?
+    @State private var hideNoticeWorkItem: DispatchWorkItem?
     @Environment(\.dismiss) private var dismiss
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
@@ -1367,7 +1500,15 @@ struct VoiceActiveView: View {
                     }
                 }
             }
+            if let topNoticeText {
+                topNoticeBanner(text: topNoticeText)
+                    .padding(.top, 14)
+                    .padding(.horizontal, 16)
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                    .zIndex(2)
+            }
         }
+        .animation(.easeInOut(duration: 0.22), value: topNoticeText != nil)
         .onAppear {
             loadWelcomeMessage()
             if autoFocus {
@@ -1384,6 +1525,10 @@ struct VoiceActiveView: View {
         }
         .onChange(of: initialPrompt) { _, _ in
             sendInitialPromptIfNeeded()
+        }
+        .onDisappear {
+            hideNoticeWorkItem?.cancel()
+            hideNoticeWorkItem = nil
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
@@ -1508,6 +1653,7 @@ struct VoiceActiveView: View {
                         )
                         self.messages.append(coachMessage)
                     }
+                    maybeShowUpdateNotice(response: response, replyText: replyText)
                     refreshPlanAndBroadcast(userId: userId)
                 case .failure:
                     let errorMessage = VoiceMessage(
@@ -1558,6 +1704,55 @@ struct VoiceActiveView: View {
         }
 
         return chunks.isEmpty ? [trimmed] : chunks
+    }
+
+    private func maybeShowUpdateNotice(response: CoachChatResponse, replyText: String) {
+        let lower = replyText.lowercased()
+        if response.requires_feedback || (response.plan_text?.isEmpty == false) ||
+            lower.contains("plan updated") || lower.contains("updated your plan") || lower.contains("adjusted your plan") {
+            showTopNotice("Plan update saved - dashboard will refresh shortly.")
+            return
+        }
+        if lower.contains("logged") || lower.contains("log meal") || lower.contains("meal logged") ||
+            lower.contains("workout logged") || lower.contains("logged workout") ||
+            lower.contains("saved your meal") || lower.contains("saved your workout") {
+            showTopNotice("Log saved - your progress will update shortly.")
+        }
+    }
+
+    private func showTopNotice(_ text: String) {
+        hideNoticeWorkItem?.cancel()
+        topNoticeText = text
+        let workItem = DispatchWorkItem {
+            withAnimation {
+                topNoticeText = nil
+            }
+        }
+        hideNoticeWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.6, execute: workItem)
+    }
+
+    private func topNoticeBanner(text: String) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "checkmark.circle.fill")
+                .foregroundColor(.blue)
+                .font(.system(size: 14, weight: .semibold))
+            Text(text)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundColor(.white)
+                .lineLimit(2)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(
+            RoundedRectangle(cornerRadius: 12)
+                .fill(Color.black.opacity(0.78))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 12)
+                        .stroke(Color.white.opacity(0.15), lineWidth: 1)
+                )
+        )
     }
 
     private func refreshPlanAndBroadcast(userId: Int) {
@@ -1934,6 +2129,14 @@ private struct GamificationSheetView: View {
 struct VoiceMessageBubble: View {
     let message: VoiceMessage
     let coach: Coach
+    
+    private var userAvatarImage: UIImage? {
+        guard let data = UserDefaults.standard.data(forKey: "profileImage"),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        return image
+    }
 
     var body: some View {
         HStack {
@@ -2012,12 +2215,26 @@ struct VoiceMessageBubble: View {
                     .cornerRadius(18, corners: [.topLeft, .topRight, .bottomLeft])
 
                     ZStack {
-                        Circle()
-                            .fill(Color.white.opacity(0.2))
-                            .frame(width: 30, height: 30)
-                        Image(systemName: "person.fill")
-                            .font(.system(size: 13, weight: .medium))
-                            .foregroundColor(.white)
+                        if let userAvatarImage {
+                            Image(uiImage: userAvatarImage)
+                                .resizable()
+                                .scaledToFill()
+                                .frame(width: 30, height: 30)
+                                .clipShape(Circle())
+                                .overlay(
+                                    Circle()
+                                        .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                                )
+                        } else {
+                            Circle()
+                                .fill(Color.white.opacity(0.2))
+                                .frame(width: 30, height: 30)
+                                .overlay(
+                                    Image(systemName: "person.fill")
+                                        .font(.system(size: 13, weight: .medium))
+                                        .foregroundColor(.white)
+                                )
+                        }
                     }
                 }
             }

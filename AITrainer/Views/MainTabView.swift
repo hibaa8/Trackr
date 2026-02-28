@@ -53,7 +53,6 @@ struct ExplorePageView: View {
     @State private var showVoiceChat = false
     @State private var chatPrompt: String?
     @State private var showRecipePlanner = false
-    @State private var showCommunity = false
     @State private var showGymFinder = false
     @State private var showGymLocationPrompt = false
 
@@ -92,14 +91,6 @@ struct ExplorePageView: View {
                         }
 
                         exploreButton(
-                            title: "Community",
-                            subtitle: "Connect with the fitness community.",
-                            systemImage: "person.3.sequence.fill"
-                        ) {
-                            showCommunity = true
-                        }
-
-                        exploreButton(
                             title: "Find Gym",
                             subtitle: "Search nearby gyms and classes.",
                             systemImage: "mappin.and.ellipse"
@@ -126,9 +117,6 @@ struct ExplorePageView: View {
         }
         .fullScreenCover(isPresented: $showRecipePlanner) {
             RecipeFinderView()
-        }
-        .fullScreenCover(isPresented: $showCommunity) {
-            CommunityView()
         }
         .fullScreenCover(isPresented: $showGymFinder) {
             GymClassesView()
@@ -1795,11 +1783,38 @@ struct SettingsPageView: View {
                 return "Server error (HTTP \(code))."
             case .unauthorized:
                 return "You are not authorized. Please sign in again."
+            case .requestFailed(let wrapped):
+                if let urlError = wrapped as? URLError {
+                    return readableNetworkError(urlError)
+                }
+                return "Couldn’t reach the server. Please try again."
+            case .invalidURL:
+                return "App server URL is invalid."
+            case .invalidResponse:
+                return "Server returned an invalid response."
+            case .decodingFailed:
+                return "Couldn’t read reminder data from server."
             default:
-                return "\(apiError)"
+                return "Reminder request failed. Please try again."
             }
         }
+        if let urlError = error as? URLError {
+            return readableNetworkError(urlError)
+        }
         return error.localizedDescription
+    }
+
+    private func readableNetworkError(_ error: URLError) -> String {
+        switch error.code {
+        case .timedOut:
+            return "The request timed out. Make sure the backend is running and reachable."
+        case .notConnectedToInternet:
+            return "No internet connection."
+        case .cannotConnectToHost, .cannotFindHost, .networkConnectionLost:
+            return "Cannot connect to the backend server."
+        default:
+            return "Network error: \(error.localizedDescription)"
+        }
     }
 
     private func startPremiumCheckout() {

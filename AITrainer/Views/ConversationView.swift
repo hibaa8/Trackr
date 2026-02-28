@@ -83,6 +83,11 @@ struct ConversationView: View {
             id: "menstrual_cycle_notes",
             text: "Optional: if relevant, share cycle timing/preferences so I can lighten or push training appropriately.",
             quickReplies: ["Skip", "Light training during period", "Keep normal training"]
+        ),
+        OnboardingQuestion(
+            id: "connect_google_calendar",
+            text: "Do you want to connect your Google Calendar so I can add your plan events automatically?",
+            quickReplies: ["Connect Google Calendar", "Not Now"]
         )
     ]
     
@@ -238,7 +243,21 @@ struct ConversationView: View {
         )
         messages.append(userMessage)
         submitError = nil
+        let currentQuestion = questions[currentQuestionIndex]
         answers[questions[currentQuestionIndex].id] = text
+        if currentQuestion.id == "connect_google_calendar" {
+            let connect = parseAffirmativeChoice(text)
+            let followUp = (connect == true)
+                ? "Perfect. I’ll sync your plan into calendar events once onboarding finishes."
+                : "No problem, we can set up calendar sync later in settings."
+            let followUpMessage = OnboardingChatMessage(
+                id: UUID().uuidString,
+                text: followUp,
+                isFromCoach: true,
+                timestamp: Date()
+            )
+            messages.append(followUpMessage)
+        }
         
         // Move to next question or complete
         currentQuestionIndex += 1
@@ -373,6 +392,7 @@ struct ConversationView: View {
         let preferredWorkoutTime = normalizedOptional(answers["preferred_workout_time"])
         let menstrualCycleNotes = normalizedOptional(answers["menstrual_cycle_notes"])
         let allergies = normalizedOptional(answers["allergies"])
+        let connectGoogleCalendar = parseAffirmativeChoice(answers["connect_google_calendar"])
         let currentLocation = onboardingLocationManager.location
         let locationContext = currentLocationContext()
         let shareLocation = locationSharingStatus()
@@ -405,6 +425,7 @@ struct ConversationView: View {
             preferred_workout_time: preferredWorkoutTime,
             menstrual_cycle_notes: menstrualCycleNotes,
             location_context: locationContext,
+            connect_google_calendar: connectGoogleCalendar,
             location_shared: shareLocation,
             location_latitude: shareLocation == true ? currentLocation?.coordinate.latitude : nil,
             location_longitude: shareLocation == true ? currentLocation?.coordinate.longitude : nil
@@ -464,6 +485,18 @@ struct ConversationView: View {
         default:
             return nil
         }
+    }
+
+    private func parseAffirmativeChoice(_ text: String?) -> Bool? {
+        let lower = text?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        if lower.isEmpty { return nil }
+        if lower.contains("connect") || lower.contains("yes") || lower == "y" || lower == "true" {
+            return true
+        }
+        if lower.contains("not now") || lower.contains("no") || lower == "n" || lower == "false" {
+            return false
+        }
+        return nil
     }
     
     private func estimateCalories(age: Int, heightCm: Double, weightKg: Double, activityLevel: String) -> Int {
@@ -650,6 +683,14 @@ struct ConversationView: View {
         let message: OnboardingChatMessage
         let coach: Coach
         
+        private var userAvatarImage: UIImage? {
+            guard let data = UserDefaults.standard.data(forKey: "profileImage"),
+                  let image = UIImage(data: data) else {
+                return nil
+            }
+            return image
+        }
+        
         var body: some View {
             HStack(alignment: .top, spacing: 12) {
                 Spacer()
@@ -663,12 +704,26 @@ struct ConversationView: View {
                     .cornerRadius(16, corners: [.topLeft, .topRight, .bottomLeft])
 
                 ZStack {
-                    Circle()
-                        .fill(Color.white.opacity(0.2))
-                        .frame(width: 32, height: 32)
-                    Image(systemName: "person.fill")
-                        .font(.system(size: 14, weight: .medium))
-                        .foregroundColor(.white)
+                    if let userAvatarImage {
+                        Image(uiImage: userAvatarImage)
+                            .resizable()
+                            .scaledToFill()
+                            .frame(width: 32, height: 32)
+                            .clipShape(Circle())
+                            .overlay(
+                                Circle()
+                                    .stroke(Color.white.opacity(0.25), lineWidth: 1)
+                            )
+                    } else {
+                        Circle()
+                            .fill(Color.white.opacity(0.2))
+                            .frame(width: 32, height: 32)
+                            .overlay(
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 14, weight: .medium))
+                                    .foregroundColor(.white)
+                            )
+                    }
                 }
             }
         }

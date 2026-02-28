@@ -551,6 +551,7 @@ struct OnboardingCompletePayload: Codable {
     let preferred_workout_time: String?
     let menstrual_cycle_notes: String?
     let location_context: String?
+    let connect_google_calendar: Bool?
     let location_shared: Bool?
     let location_latitude: Double?
     let location_longitude: Double?
@@ -578,6 +579,7 @@ struct OnboardingCompletePayload: Codable {
         preferred_workout_time: String? = nil,
         menstrual_cycle_notes: String? = nil,
         location_context: String? = nil,
+        connect_google_calendar: Bool? = nil,
         location_shared: Bool? = nil,
         location_latitude: Double? = nil,
         location_longitude: Double? = nil
@@ -604,6 +606,7 @@ struct OnboardingCompletePayload: Codable {
         self.preferred_workout_time = preferred_workout_time
         self.menstrual_cycle_notes = menstrual_cycle_notes
         self.location_context = location_context
+        self.connect_google_calendar = connect_google_calendar
         self.location_shared = location_shared
         self.location_latitude = location_latitude
         self.location_longitude = location_longitude

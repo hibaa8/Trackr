@@ -481,6 +481,7 @@ def _ensure_profile_schema() -> None:
             ("muscle_group_preferences", "TEXT NULL"),
             ("sports_preferences", "TEXT NULL"),
             ("location_context", "TEXT NULL"),
+            ("google_calendar_connected", "BOOLEAN NULL"),
         ]
         for col_name, col_type in pref_columns:
             cur.execute(
@@ -999,6 +1000,12 @@ def _set_streak_for_today(user_id: int, keep_count: bool) -> None:
             (new_count, new_best, today_str, int(streak_id)),
         )
         conn.commit()
+
+
+def _consume_streak_freeze(user_id: int) -> None:
+    """Consume one streak freeze by recording a unique usage reason."""
+    reason = f"freeze_used:{datetime.now().isoformat(timespec='seconds')}:{uuid.uuid4().hex[:8]}"
+    _award_points(user_id, 0, reason)
 
 
 def _apply_daily_checklist_completion_bonus(user_id: int, target_day: str) -> None:
@@ -1711,6 +1718,7 @@ class OnboardingCompletePayload(BaseModel):
     preferred_workout_time: Optional[str] = None
     menstrual_cycle_notes: Optional[str] = None
     location_context: Optional[str] = None
+    connect_google_calendar: Optional[bool] = None
     location_shared: Optional[bool] = None
     location_latitude: Optional[float] = None
     location_longitude: Optional[float] = None
@@ -3568,9 +3576,7 @@ def gamification_streak_decision(payload: StreakDecisionRequest):
     if payload.use_freeze:
         if int(summary.get("freeze_streaks", 0)) <= 0:
             raise HTTPException(status_code=400, detail="No freeze streaks available")
-        reason = f"freeze_used:{date.today().isoformat()}"
-        if not _has_points_reason(payload.user_id, reason):
-            _award_points(payload.user_id, 0, reason)
+        _consume_streak_freeze(payload.user_id)
         _set_streak_for_today(payload.user_id, keep_count=True)
         message = "Freeze used. Your streak is preserved."
     else:
@@ -3604,10 +3610,7 @@ def use_freeze_streak(payload: UseFreezeRequest):
     summary = _gamification_summary(payload.user_id)
     if int(summary.get("freeze_streaks", 0)) <= 0:
         raise HTTPException(status_code=400, detail="No freeze streaks available")
-    reason = f"freeze_used:{date.today().isoformat()}"
-    if _has_points_reason(payload.user_id, reason):
-        raise HTTPException(status_code=400, detail="Freeze already used today")
-    _award_points(payload.user_id, 0, reason)
+    _consume_streak_freeze(payload.user_id)
     _set_streak_for_today(payload.user_id, keep_count=True)
     return _gamification_summary(payload.user_id)
 
@@ -3986,6 +3989,53 @@ def _generate_plan_for_user(
     return plan_data
 
 
+def _seed_calendar_blocks_for_plan(user_id: int, plan_data: dict[str, Any]) -> int:
+    """Seed internal calendar blocks so reminders align with the generated plan."""
+    plan_days = plan_data.get("plan_days") if isinstance(plan_data, dict) else None
+    if not isinstance(plan_days, list) or not plan_days:
+        return 0
+    inserted = 0
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM calendar_blocks WHERE user_id = ? AND source = ?",
+            (user_id, "plan_autosync"),
+        )
+        for day in plan_days:
+            if not isinstance(day, dict):
+                continue
+            day_date = str(day.get("date") or "").strip()
+            if not day_date:
+                continue
+            workout_title = str(day.get("workout") or "Planned workout").strip()
+            if not workout_title:
+                workout_title = "Planned workout"
+            workout_start = f"{day_date}T18:00:00"
+            workout_end = f"{day_date}T19:00:00"
+            cur.execute(
+                """
+                INSERT INTO calendar_blocks (user_id, start_at, end_at, title, source, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, workout_start, workout_end, workout_title, "plan_autosync", "active"),
+            )
+            inserted += 1
+
+            meal_title = "Log meals for today"
+            meal_start = f"{day_date}T20:00:00"
+            meal_end = f"{day_date}T20:20:00"
+            cur.execute(
+                """
+                INSERT INTO calendar_blocks (user_id, start_at, end_at, title, source, status)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (user_id, meal_start, meal_end, meal_title, "plan_autosync", "active"),
+            )
+            inserted += 1
+        conn.commit()
+    return inserted
+
+
 @app.post("/api/onboarding/complete")
 def complete_onboarding(payload: OnboardingCompletePayload):
     _ensure_coach_schema()
@@ -4075,6 +4125,8 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         pref_updates["sports_preferences"] = payload.sports_preferences
     if payload.location_context is not None:
         pref_updates["location_context"] = payload.location_context
+    if payload.connect_google_calendar is not None:
+        pref_updates["google_calendar_connected"] = bool(payload.connect_google_calendar)
     if pref_updates:
         with get_db_conn() as conn:
             cur = conn.cursor()
@@ -4088,8 +4140,8 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
                         dietary_preferences, workout_preferences, timezone, created_at,
                         allergies, preferred_workout_time, menstrual_cycle_notes,
-                        muscle_group_preferences, sports_preferences, location_context
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        muscle_group_preferences, sports_preferences, location_context, google_calendar_connected
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         user_id,
@@ -4107,6 +4159,7 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         pref_updates.get("muscle_group_preferences"),
                         pref_updates.get("sports_preferences"),
                         pref_updates.get("location_context"),
+                        pref_updates.get("google_calendar_connected"),
                     ),
                 )
             else:
@@ -4119,13 +4172,19 @@ def complete_onboarding(payload: OnboardingCompletePayload):
     if payload.current_weight_kg is not None:
         _invalidate_user_activity_cache(user_id, day=date.today().isoformat())
     _refresh_profile_cache(user_id)
-    _generate_plan_for_user(
+    generated_plan = _generate_plan_for_user(
         user_id,
         goal_type=payload.goal_type,
         timeframe_weeks=payload.timeframe_weeks,
         weekly_change_kg=payload.weekly_weight_change_kg,
     )
-    return {"ok": True}
+    calendar_events_created = 0
+    if payload.connect_google_calendar and generated_plan:
+        try:
+            calendar_events_created = _seed_calendar_blocks_for_plan(user_id, generated_plan)
+        except Exception as exc:
+            print(f"Calendar autosync failed for user {user_id}: {exc}")
+    return {"ok": True, "calendar_events_created": calendar_events_created}
 
 
 @app.get("/api/coach-media/{media_type}/{filename}")

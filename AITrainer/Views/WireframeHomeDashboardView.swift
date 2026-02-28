@@ -8,7 +8,6 @@ struct WireframeHomeDashboardView: View {
     @State private var showGymClasses = false
     @State private var showRecipes = false
     @State private var showWorkoutVideos = false
-    @State private var showCommunity = false
     
     var body: some View {
         NavigationView {
@@ -77,9 +76,6 @@ struct WireframeHomeDashboardView: View {
             }
             .sheet(isPresented: $showWorkoutVideos) {
                 WorkoutVideosView()
-            }
-            .sheet(isPresented: $showCommunity) {
-                CommunityView()
             }
             .onChange(of: appState.selectedDate) { newDate in
                 guard let userId = authManager.effectiveUserId else { return }
@@ -413,15 +409,6 @@ struct WireframeHomeDashboardView: View {
                     showWorkoutVideos = true
                 }
 
-                EnhancedExploreCard(
-                    icon: "👥",
-                    iconColor: .orange,
-                    title: "Community",
-                    subtitle: "Connect with others",
-                    badge: "1.2k online"
-                ) {
-                    showCommunity = true
-                }
             }
         }
     }

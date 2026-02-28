@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import json
 import hashlib
+import os
 import re
+import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -28,6 +30,8 @@ from agent.redis.cache import _redis_delete, _redis_get_json, _redis_set_json
 from agent.state import SESSION_CACHE
 from agent.tools.activity_utils import _estimate_workout_calories, _is_cardio_exercise
 from agent.db.connection import get_db_conn
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 
 def _award_points(user_id: int, points: int, reason: str) -> None:
@@ -92,6 +96,76 @@ def _coerce_to_date(value: Any) -> date:
     if isinstance(value, date):
         return value
     return datetime.strptime(str(value), "%Y-%m-%d").date()
+
+
+def _google_calendar_service():
+    raw_json = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "").strip()
+    json_path = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE", "").strip()
+    delegated_user = os.getenv("GOOGLE_CALENDAR_DELEGATED_USER", "").strip()
+    if not raw_json and not json_path:
+        raise RuntimeError(
+            "Google Calendar is not configured. Set GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON or GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE."
+        )
+    scopes = ["https://www.googleapis.com/auth/calendar"]
+    if raw_json:
+        info = json.loads(raw_json)
+        credentials = service_account.Credentials.from_service_account_info(info, scopes=scopes)
+    else:
+        credentials = service_account.Credentials.from_service_account_file(json_path, scopes=scopes)
+    if delegated_user:
+        credentials = credentials.with_subject(delegated_user)
+    return build("calendar", "v3", credentials=credentials, cache_discovery=False)
+
+
+def _fetch_user_email(user_id: int) -> Optional[str]:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT email FROM users WHERE id = ? LIMIT 1", (user_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    email = str(row[0] or "").strip()
+    return email or None
+
+
+def _to_iso(value: str) -> str:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return parsed.isoformat()
+
+
+def _plan_calendar_events(
+    user_id: int,
+    include_meal_logs: bool,
+    timezone: str,
+) -> List[Dict[str, Any]]:
+    bundle = _get_active_plan_bundle_data(user_id, allow_db_fallback=True)
+    plan_days = bundle.get("plan_days") or []
+    events: List[Dict[str, Any]] = []
+    for day in plan_days:
+        day_date = str(day.get("date") or "").strip()
+        if not day_date:
+            continue
+        workout_label = str(day.get("workout_plan") or "Workout").strip() or "Workout"
+        events.append(
+            {
+                "title": workout_label,
+                "start_at": f"{day_date}T18:00:00",
+                "end_at": f"{day_date}T19:00:00",
+                "description": "Auto-synced from your AI Trainer plan.",
+                "timezone": timezone,
+            }
+        )
+        if include_meal_logs:
+            events.append(
+                {
+                    "title": "Log meals for today",
+                    "start_at": f"{day_date}T20:00:00",
+                    "end_at": f"{day_date}T20:20:00",
+                    "description": "Auto-synced meal logging reminder from your AI Trainer plan.",
+                    "timezone": timezone,
+                }
+            )
+    return events
 
 
 def _normalize_checkin_date(value: Optional[str]) -> str:
@@ -677,6 +751,99 @@ def delete_reminder(user_id: int, reminder_id: int) -> str:
         conn.commit()
     _refresh_reminders_cache(user_id)
     return "Reminder deleted."
+
+
+@tool("add_google_calendar_events")
+def add_google_calendar_events(
+    user_id: int,
+    confirmed_by_user: bool,
+    request_type: str = "custom",
+    events: Optional[List[Dict[str, Any]]] = None,
+    timezone: str = "UTC",
+) -> str:
+    """
+    Add Google Calendar events for the current user after explicit confirmation.
+
+    request_type:
+    - "custom": use the provided events list
+    - "active_plan_workouts": create workout events for each day in active plan
+    - "active_plan_workouts_and_meal_logs": create workout + meal log events for each plan day
+    """
+    if not confirmed_by_user:
+        return "Confirmation required. Ask the user to confirm exactly what calendar events to add, then try again."
+
+    user_email = _fetch_user_email(user_id)
+    if not user_email:
+        return "Could not find a user email on file. Please update profile email first."
+
+    prepared_events: List[Dict[str, Any]]
+    mode = (request_type or "custom").strip().lower()
+    if mode == "active_plan_workouts":
+        prepared_events = _plan_calendar_events(user_id, include_meal_logs=False, timezone=timezone)
+    elif mode == "active_plan_workouts_and_meal_logs":
+        prepared_events = _plan_calendar_events(user_id, include_meal_logs=True, timezone=timezone)
+    else:
+        prepared_events = events or []
+
+    if not prepared_events:
+        return "No events to add. Provide event details or choose an active-plan request type."
+
+    try:
+        service = _google_calendar_service()
+    except Exception as exc:
+        return f"Google Calendar setup error: {exc}"
+
+    calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary").strip() or "primary"
+    success_count = 0
+    failed = 0
+    created_links: List[str] = []
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        for item in prepared_events:
+            title = str(item.get("title") or "Workout").strip() or "Workout"
+            start_at = str(item.get("start_at") or "").strip()
+            end_at = str(item.get("end_at") or "").strip()
+            description = str(item.get("description") or "").strip()
+            tz = str(item.get("timezone") or timezone).strip() or "UTC"
+            if not start_at or not end_at:
+                failed += 1
+                continue
+            try:
+                body = {
+                    "summary": title,
+                    "description": description,
+                    "start": {"dateTime": _to_iso(start_at), "timeZone": tz},
+                    "end": {"dateTime": _to_iso(end_at), "timeZone": tz},
+                    "attendees": [{"email": user_email}],
+                }
+                created = service.events().insert(
+                    calendarId=calendar_id,
+                    body=body,
+                    sendUpdates="all",
+                ).execute()
+                success_count += 1
+                html_link = str(created.get("htmlLink") or "").strip()
+                if html_link:
+                    created_links.append(html_link)
+                cur.execute(
+                    """
+                    INSERT INTO calendar_blocks (user_id, start_at, end_at, title, source, status)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (user_id, start_at, end_at, title, "google_calendar_sync", "active"),
+                )
+            except Exception:
+                failed += 1
+        conn.commit()
+
+    if success_count <= 0:
+        return "I couldn't add any events to Google Calendar. Please verify calendar credentials and try again."
+    link_preview = "\n".join(created_links[:3]) if created_links else "Events created successfully."
+    return (
+        f"Added {success_count} Google Calendar event(s) for {user_email}."
+        + (f" Failed: {failed}." if failed else "")
+        + f"\n{link_preview}"
+    )
 
 
 @tool("generate_plan")

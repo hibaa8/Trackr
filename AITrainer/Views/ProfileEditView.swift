@@ -23,6 +23,8 @@ struct ProfileEditView: View {
     @State private var showImagePicker = false
     @State private var selectedPhoto: PhotosPickerItem?
     @State private var useImperialUnits = false
+    @State private var isSaving = false
+    @State private var saveErrorMessage: String?
 
     var body: some View {
         NavigationView {
@@ -119,6 +121,20 @@ struct ProfileEditView: View {
                 if let newPhoto = newPhoto {
                     viewModel.handlePhotoSelection(newPhoto)
                 }
+            }
+            .alert("Couldn't Save Profile", isPresented: Binding(
+                get: { saveErrorMessage != nil },
+                set: { isPresented in
+                    if !isPresented {
+                        saveErrorMessage = nil
+                    }
+                }
+            )) {
+                Button("OK", role: .cancel) {
+                    saveErrorMessage = nil
+                }
+            } message: {
+                Text(saveErrorMessage ?? "Please try again.")
             }
         }
     }
@@ -749,15 +765,26 @@ struct ProfileEditView: View {
 
     private var saveButton: some View {
         Button(action: {
+            guard viewModel.hasChanges, !isSaving else { return }
             // Add haptic feedback
             let impactFeedback = UIImpactFeedbackGenerator(style: .medium)
             impactFeedback.impactOccurred()
 
+            isSaving = true
             let payload = viewModel.buildUpdatePayload(userId: userId)
             backendConnector.updateProfile(payload: payload) { result in
+                isSaving = false
                 switch result {
                 case .success(let response):
                     viewModel.saveChanges()
+                    if let updatedName = response.user?.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                       !updatedName.isEmpty {
+                        UserDefaults.standard.set(updatedName, forKey: "currentUserName")
+                        if var data = appState.userData {
+                            data.displayName = updatedName
+                            appState.userData = data
+                        }
+                    }
                     onSaved?(response)
 
                     // Success haptic
@@ -767,6 +794,12 @@ struct ProfileEditView: View {
                     dismiss()
                 case .failure(let error):
                     print("Failed to update profile: \(error)")
+                    let nsError = error as NSError
+                    if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorNotConnectedToInternet {
+                        saveErrorMessage = "No internet connection. Please reconnect and try again."
+                    } else {
+                        saveErrorMessage = error.localizedDescription
+                    }
 
                     // Error haptic
                     let errorFeedback = UINotificationFeedbackGenerator()
@@ -775,7 +808,10 @@ struct ProfileEditView: View {
             }
         }) {
             HStack(spacing: 12) {
-                if viewModel.hasChanges {
+                if isSaving {
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                } else if viewModel.hasChanges {
                     Image(systemName: "checkmark.circle.fill")
                         .font(.system(size: 20, weight: .semibold))
                         .foregroundColor(.white)
@@ -785,7 +821,7 @@ struct ProfileEditView: View {
                         .foregroundColor(.white.opacity(0.6))
                 }
 
-                Text(viewModel.hasChanges ? "Save Changes" : "No Changes to Save")
+                Text(isSaving ? "Saving..." : (viewModel.hasChanges ? "Save Changes" : "No Changes to Save"))
                     .font(.system(size: 18, weight: .semibold, design: .rounded))
                     .foregroundColor(.white)
             }
@@ -829,7 +865,7 @@ struct ProfileEditView: View {
             .scaleEffect(viewModel.hasChanges ? 1.0 : 0.98)
             .animation(.spring(response: 0.4, dampingFraction: 0.7), value: viewModel.hasChanges)
         }
-        .disabled(!viewModel.hasChanges)
+        .disabled(!viewModel.hasChanges || isSaving)
     }
 
     // MARK: - Helper Views
