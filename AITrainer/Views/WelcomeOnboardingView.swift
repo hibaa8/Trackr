@@ -3,7 +3,6 @@ import SwiftUI
 enum OnboardingFlow {
     case intro
     case ashley
-    case meetCoach(Coach)
     case browseCoaches
 }
 
@@ -11,30 +10,33 @@ struct WelcomeOnboardingView: View {
     @State private var flow: OnboardingFlow = .intro
     @State private var contentOpacity = 0.0
     @State private var buttonOffset = 50.0
+    /// When returning from "Choose Your Coach", skip the video and show the chat directly.
+    @State private var skipAshleyVideoOnReturn = false
 
     var body: some View {
         switch flow {
         case .ashley:
             AshleyConversationView(
-                onMeetCoach: { coach in
-                    withAnimation(.easeInOut(duration: 0.3)) {
-                        flow = .meetCoach(coach)
-                    }
-                },
                 onBrowseAll: {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         flow = .browseCoaches
                     }
-                }
+                },
+                onBackToIntro: {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        skipAshleyVideoOnReturn = false
+                        flow = .intro
+                    }
+                },
+                startWithChat: skipAshleyVideoOnReturn
             )
-        case .meetCoach(let coach):
-            MeetCoachFlowView(coach: coach) {
-                withAnimation(.easeInOut(duration: 0.3)) {
-                    flow = .browseCoaches
-                }
-            }
         case .browseCoaches:
-            CoachSelectionView()
+            CoachSelectionView(onBack: {
+                withAnimation(.easeInOut(duration: 0.3)) {
+                    skipAshleyVideoOnReturn = true
+                    flow = .ashley
+                }
+            })
         case .intro:
             ZStack {
                 // Dark gradient background with blue accent

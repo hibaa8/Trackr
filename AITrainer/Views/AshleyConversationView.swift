@@ -2,20 +2,33 @@
 //  AshleyConversationView.swift
 //  AITrainer
 //
-//  Chat with Ashley (receptionist) during onboarding. Ashley collects info naturally
+//  Ashley intro video first, then chat. Ashley collects info naturally
 //  and recommends a coach. User can accept the recommendation or browse all coaches.
 //
 
 import SwiftUI
 import Combine
+import AVKit
 
 struct AshleyConversationView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
-    var onMeetCoach: (Coach) -> Void
     var onBrowseAll: () -> Void
+    var onBackToIntro: (() -> Void)? = nil
+    /// When true, skip the intro video and show the chat directly (e.g. when returning from "Choose Your Coach").
+    var startWithChat: Bool = false
+
+    @State private var showVideoFirst: Bool
+
+    init(onBrowseAll: @escaping () -> Void, onBackToIntro: (() -> Void)? = nil, startWithChat: Bool = false) {
+        self.onBrowseAll = onBrowseAll
+        self.onBackToIntro = onBackToIntro
+        self.startWithChat = startWithChat
+        _showVideoFirst = State(initialValue: !startWithChat)
+    }
 
     @State private var messages: [AshleyMessage] = []
+    @State private var coachToMeet: Coach?
     @State private var userInput = ""
     @State private var isSubmitting = false
     @State private var submitError: String?
@@ -27,6 +40,20 @@ struct AshleyConversationView: View {
     private let ashley = Receptionist.ashley
 
     var body: some View {
+        Group {
+            if showVideoFirst {
+                AshleyIntroVideoView(
+                    receptionist: ashley,
+                    onBack: onBackToIntro,
+                    onFinish: { withAnimation(.easeInOut(duration: 0.3)) { showVideoFirst = false } }
+                )
+            } else {
+                chatView
+            }
+        }
+    }
+
+    private var chatView: some View {
         ZStack {
             Color.black.ignoresSafeArea()
 
@@ -46,7 +73,9 @@ struct AshleyConversationView: View {
                 if let coach = recommendedCoach {
                     AshleyRecommendationCard(
                         coach: coach,
-                        onMeetCoach: { onMeetCoach(coach) },
+                        onMeetCoach: {
+                            coachToMeet = coach
+                        },
                         onBrowseAll: onBrowseAll
                     )
                     .padding(.horizontal, 20)
@@ -113,6 +142,11 @@ struct AshleyConversationView: View {
                     .padding(.horizontal, 20)
                     .padding(.bottom, 40)
                 }
+            }
+        }
+        .fullScreenCover(item: $coachToMeet) { coach in
+            MeetCoachFlowView(coach: coach, showBackToAshley: true) {
+                coachToMeet = nil
             }
         }
         .onAppear {
@@ -322,10 +356,128 @@ struct AshleyRecommendationCard: View {
     }
 }
 
+/// Ashley's intro video shown before the chat.
+struct AshleyIntroVideoView: View {
+    let receptionist: Receptionist
+    var onBack: (() -> Void)? = nil
+    let onFinish: () -> Void
+    @State private var player = AVPlayer()
+    @State private var endObserver: NSObjectProtocol?
+
+    var body: some View {
+        ZStack(alignment: .top) {
+            Color.black.ignoresSafeArea()
+            if let url = receptionist.videoURL {
+                AshleyFullScreenVideoPlayer(player: player)
+                    .ignoresSafeArea()
+                    .onAppear {
+                        let item = AVPlayerItem(url: url)
+                        player.replaceCurrentItem(with: item)
+                        player.play()
+                        endObserver = NotificationCenter.default.addObserver(
+                            forName: .AVPlayerItemDidPlayToEndTime,
+                            object: item,
+                            queue: .main
+                        ) { _ in
+                            finishPlayback()
+                        }
+                    }
+            } else {
+                VStack(spacing: 24) {
+                    if let imageURL = receptionist.imageURL {
+                        AsyncImage(url: imageURL) { phase in
+                            if let image = phase.image {
+                                image.resizable().scaledToFill()
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 60))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        .frame(width: 120, height: 120)
+                        .clipShape(Circle())
+                    }
+                    Text("Hey! I'm \(receptionist.name)")
+                        .font(.system(size: 24, weight: .bold))
+                        .foregroundColor(.white)
+                    Text(receptionist.title)
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundColor(.gray)
+                }
+            }
+
+            HStack {
+                if let onBack = onBack {
+                    Button(action: {
+                        player.pause()
+                        onBack()
+                    }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.6))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.top, 50)
+                    .padding(.leading, 20)
+                }
+                Spacer()
+                Button(action: finishPlayback) {
+                    Text("Skip")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Capsule())
+                }
+                .padding(.top, 50)
+                .padding(.trailing, 20)
+            }
+        }
+        .onDisappear {
+            if let endObserver {
+                NotificationCenter.default.removeObserver(endObserver)
+            }
+            endObserver = nil
+            player.pause()
+        }
+    }
+
+    private func finishPlayback() {
+        player.pause()
+        onFinish()
+    }
+}
+
+private struct AshleyFullScreenVideoPlayer: UIViewControllerRepresentable {
+    let player: AVPlayer
+
+    func makeUIViewController(context: Context) -> AVPlayerViewController {
+        let controller = AVPlayerViewController()
+        controller.player = player
+        controller.showsPlaybackControls = false
+        controller.videoGravity = .resizeAspectFill
+        return controller
+    }
+
+    func updateUIViewController(_ uiViewController: AVPlayerViewController, context: Context) {
+        if uiViewController.player !== player {
+            uiViewController.player = player
+        }
+        uiViewController.videoGravity = .resizeAspectFill
+        uiViewController.showsPlaybackControls = false
+    }
+}
+
 /// Wrapper that shows CoachIntroVideoView, then CoachDetailView (which leads to ChatSetupView → ConversationView).
+/// When showBackToAshley is true, shows a back arrow that returns to Ashley via onBack.
 struct MeetCoachFlowView: View {
     let coach: Coach
-    var onBackToBrowse: (() -> Void)?
+    var showBackToAshley: Bool = false
+    var onBack: (() -> Void)?
 
     @State private var showDetail = false
 
@@ -335,10 +487,13 @@ struct MeetCoachFlowView: View {
             if showDetail {
                 CoachDetailView(
                     coach: coach,
-                    onBack: onBackToBrowse
+                    onBack: showBackToAshley ? onBack : nil
                 )
             } else {
-                CoachIntroVideoView(coach: coach) {
+                CoachIntroVideoView(
+                    coach: coach,
+                    onBack: showBackToAshley ? onBack : nil
+                ) {
                     withAnimation(.easeInOut(duration: 0.3)) {
                         showDetail = true
                     }
@@ -349,10 +504,7 @@ struct MeetCoachFlowView: View {
 }
 
 #Preview {
-    AshleyConversationView(
-        onMeetCoach: { _ in },
-        onBrowseAll: {}
-    )
+    AshleyConversationView(onBrowseAll: {})
     .environmentObject(AppState())
     .environmentObject(AuthenticationManager())
 }

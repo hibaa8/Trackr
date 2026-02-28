@@ -4,6 +4,8 @@ import AVKit
 
 struct CoachSelectionView: View {
     @EnvironmentObject private var appState: AppState
+    var onBack: (() -> Void)? = nil
+
     @State private var selectedCoach: Coach? = nil
     @State private var showCoachDetail = false
     @State private var contentOpacity = 0.0
@@ -53,12 +55,27 @@ struct CoachSelectionView: View {
                 Color.black.ignoresSafeArea()
 
                 VStack(spacing: 32) {
-                    // Title
-                    VStack(spacing: 14) {
+                    // Header with back button and title
+                    ZStack {
                         Text("Choose Your Coach")
                             .font(.system(size: 28, weight: .bold))
                             .foregroundColor(.white)
-                            .padding(.top, 60)
+                        HStack {
+                            if let onBack = onBack {
+                                Button(action: onBack) {
+                                    Image(systemName: "chevron.left")
+                                        .font(.system(size: 18, weight: .semibold))
+                                        .foregroundColor(.white)
+                                        .frame(width: 44, height: 44)
+                                }
+                            }
+                            Spacer()
+                        }
+                    }
+                    .padding(.horizontal, 20)
+                    .padding(.top, 60)
+
+                    VStack(spacing: 14) {
                         ScrollView(.horizontal, showsIndicators: false) {
                             HStack(spacing: 8) {
                                 ForEach(GoalFilter.allCases, id: \.self) { filter in
@@ -226,13 +243,14 @@ struct ScaleButtonStyle: ButtonStyle {
 
 struct CoachIntroVideoView: View {
     let coach: Coach
+    var onBack: (() -> Void)? = nil
     let onFinish: () -> Void
     @Environment(\.dismiss) private var dismiss
     @State private var player = AVPlayer()
     @State private var endObserver: NSObjectProtocol?
 
     var body: some View {
-        ZStack(alignment: .topTrailing) {
+        ZStack(alignment: .top) {
             Color.black.ignoresSafeArea()
             if let url = coach.videoURL {
                 FullScreenVideoPlayer(player: player)
@@ -255,17 +273,36 @@ struct CoachIntroVideoView: View {
                     .font(.system(size: 16, weight: .semibold))
             }
 
-            Button(action: finishPlayback) {
-                Text("Skip")
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundColor(.white)
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 8)
-                    .background(Color.black.opacity(0.6))
-                    .clipShape(Capsule())
+            HStack {
+                if let onBack = onBack {
+                    Button(action: {
+                        player.pause()
+                        onBack()
+                    }) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 18, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
+                            .background(Color.black.opacity(0.6))
+                            .clipShape(Capsule())
+                    }
+                    .padding(.top, 50)
+                    .padding(.leading, 20)
+                }
+                Spacer()
+                Button(action: finishPlayback) {
+                    Text("Skip")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundColor(.white)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 8)
+                        .background(Color.black.opacity(0.6))
+                        .clipShape(Capsule())
+                }
+                .padding(.top, 50)
+                .padding(.trailing, 20)
             }
-            .padding(.top, 50)
-            .padding(.trailing, 20)
         }
         .onDisappear {
             if let endObserver {

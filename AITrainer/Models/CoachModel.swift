@@ -368,9 +368,13 @@ struct Receptionist: Identifiable {
     let primaryColor: String
     let secondaryColor: String
     let imageURLString: String?
+    let videoURLString: String?
 
     static func imageURL(for name: String) -> String {
         "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/images/\(name).png"
+    }
+    static func videoURL(for name: String) -> String {
+        "https://fubkjshjbnlaqybvpnqy.supabase.co/storage/v1/object/public/coach-media/videos/\(name)'s Intro.mp4"
     }
 
     static let ashley = Receptionist(
@@ -380,11 +384,16 @@ struct Receptionist: Identifiable {
         title: "Your AI Fitness Receptionist",
         primaryColor: "pink",
         secondaryColor: "purple",
-        imageURLString: imageURL(for: "Ashley")
+        imageURLString: imageURL(for: "Ashley"),
+        videoURLString: videoURL(for: "Ashley")
     )
 
     var imageURL: URL? {
         guard let raw = imageURLString, !raw.isEmpty else { return nil }
+        return URL(string: raw)
+    }
+    var videoURL: URL? {
+        guard let raw = videoURLString, !raw.isEmpty else { return nil }
         return URL(string: raw)
     }
 }

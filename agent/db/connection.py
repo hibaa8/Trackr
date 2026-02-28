@@ -8,6 +8,28 @@ import psycopg2
 from psycopg2.pool import ThreadedConnectionPool
 
 
+def _is_connection_closed_error(exc: BaseException) -> bool:
+    """Detect if error indicates the DB connection was closed unexpectedly."""
+    msg = str(exc).lower()
+    return (
+        "server closed the connection" in msg
+        or "connection is closed" in msg
+        or "connection reset" in msg
+        or "connection refused" in msg
+    )
+
+
+def invalidate_pool() -> None:
+    """Close and discard the connection pool. Next request will create a fresh pool."""
+    global _POOL
+    if _POOL is not None:
+        try:
+            _POOL.closeall()
+        except Exception:
+            pass
+        _POOL = None
+
+
 def _adapt_query(query: str) -> str:
     return query.replace("?", "%s")
 
@@ -49,6 +71,7 @@ class ConnectionAdapter:
         self._conn = conn
         self._pool = pool
         self._adapt_query = adapt_query
+        self._conn_bad = False
 
     def cursor(self):
         return CursorAdapter(self._conn.cursor(), adapt_query=self._adapt_query)
@@ -60,10 +83,13 @@ class ConnectionAdapter:
         self._conn.rollback()
 
     def close(self) -> None:
-        if self._pool is not None:
+        if self._pool is not None and not self._conn_bad:
             self._pool.putconn(self._conn)
         else:
-            self._conn.close()
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
     def __enter__(self):
         return self
@@ -105,6 +131,10 @@ def get_db_conn():
             dbname=dbname,
             port=port,
             sslmode=sslmode,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
 
     conn = _POOL.getconn()
@@ -112,8 +142,14 @@ def get_db_conn():
     try:
         yield adapter
         adapter.commit()
-    except Exception:
-        adapter.rollback()
+    except Exception as e:
+        if _is_connection_closed_error(e):
+            adapter._conn_bad = True
+            invalidate_pool()
+        try:
+            adapter.rollback()
+        except Exception:
+            pass  # connection may be dead
         raise
     finally:
         adapter.close()
