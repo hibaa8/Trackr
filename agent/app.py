@@ -447,7 +447,7 @@ def _store_meal_log(payload: FoodLogRequest) -> None:
             INSERT INTO meal_logs (
                 user_id, logged_at, photo_path, description, calories,
                 protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg, confidence, confirmed
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 payload.user_id,

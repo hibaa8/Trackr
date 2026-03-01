@@ -208,6 +208,19 @@ def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
             if not logged_at or not description:
                 continue
             logged_at = _normalize_meal_time(str(logged_at))
+            calories = int(float(meal.get("calories", 0) or 0))
+            protein_g = int(float(meal.get("protein_g", 0) or 0))
+            carbs_g = int(float(meal.get("carbs_g", 0) or 0))
+            fat_g = int(float(meal.get("fat_g", 0) or 0))
+            confidence = float(meal.get("confidence", 0.5) or 0.5)
+            confirmed_raw = meal.get("confirmed", 1)
+            if isinstance(confirmed_raw, bool):
+                confirmed = 1 if confirmed_raw else 0
+            else:
+                try:
+                    confirmed = int(confirmed_raw)
+                except (TypeError, ValueError):
+                    confirmed = 1
             cur.execute(
                 """
                 INSERT INTO meal_logs (
@@ -219,12 +232,12 @@ def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
                     logged_at,
                     None,
                     description,
-                    meal.get("calories", 0),
-                    meal.get("protein_g", 0),
-                    meal.get("carbs_g", 0),
-                    meal.get("fat_g", 0),
-                    meal.get("confidence", 0.5),
-                    meal.get("confirmed", 1),
+                    calories,
+                    protein_g,
+                    carbs_g,
+                    fat_g,
+                    confidence,
+                    confirmed,
                 ),
             )
         conn.commit()

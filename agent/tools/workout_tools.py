@@ -129,6 +129,16 @@ def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -
         cur = conn.cursor()
         for session_date, session in latest_by_date.items():
             workout_type = session.get("workout_type") or "Workout"
+            duration_min = int(float(session.get("duration_min", 0) or 0))
+            calories_burned = int(float(session.get("calories_burned", 0) or 0))
+            completed_raw = session.get("completed", 1)
+            if isinstance(completed_raw, bool):
+                completed = 1 if completed_raw else 0
+            else:
+                try:
+                    completed = int(completed_raw)
+                except (TypeError, ValueError):
+                    completed = 1
             cur.execute(
                 "DELETE FROM workout_sessions WHERE user_id = ? AND date = ?",
                 (user_id, session_date),
@@ -143,10 +153,10 @@ def _sync_workout_sessions_to_db(user_id: int, sessions: List[Dict[str, Any]]) -
                     user_id,
                     session_date,
                     workout_type,
-                    session.get("duration_min"),
-                    session.get("calories_burned"),
+                    duration_min,
+                    calories_burned,
                     session.get("notes"),
-                    session.get("completed", 1),
+                    completed,
                     session.get("source", "manual"),
                 ),
             )

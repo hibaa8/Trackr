@@ -1423,7 +1423,12 @@ struct VoiceActiveView: View {
                     }
                     .padding(.horizontal, 20)
                     .padding(.top, 16)
+                    .contentShape(Rectangle())
+                    .onTapGesture {
+                        inputFocused = false
+                    }
                 }
+                .scrollDismissesKeyboard(.interactively)
 
                 Spacer()
 
@@ -1451,7 +1456,10 @@ struct VoiceActiveView: View {
                     }
 
                     HStack(spacing: 12) {
-                        Button(action: { showImageOptions = true }) {
+                        Button(action: {
+                            inputFocused = false
+                            showImageOptions = true
+                        }) {
                             Image(systemName: "plus.circle")
                                 .font(.system(size: 28))
                                 .foregroundColor(.white.opacity(0.7))
@@ -1467,8 +1475,13 @@ struct VoiceActiveView: View {
                                     .fill(Color.white.opacity(0.15))
                             )
                             .focused($inputFocused)
+                            .submitLabel(.send)
+                            .onSubmit {
+                                sendMessage()
+                            }
 
                         Button(action: {
+                            inputFocused = false
                             if isRecording {
                                 stopVoiceRecording()
                             } else {
@@ -1591,6 +1604,7 @@ struct VoiceActiveView: View {
     }
 
     private func sendMessage() {
+        inputFocused = false
         let trimmed = messageText.trimmingCharacters(in: .whitespacesAndNewlines)
         let outgoingText = trimmed.isEmpty && selectedImage != nil ? "Sent an image." : trimmed
         guard !outgoingText.isEmpty else { return }
@@ -1676,16 +1690,8 @@ struct VoiceActiveView: View {
                             }
                             self.messages.append(coachMessage)
                         }
-                        if let firstChunk = chunks.first, let messageId = firstCoachMessageId {
-                            self.appState.prefetchCoachReplyTTS(firstChunk, messageId: messageId, autoPlayWhenReady: true)
-                        }
-                        if chunks.count > 1 {
-                            for index in 1..<chunks.count {
-                                let targetId = self.messages[self.messages.count - chunks.count + index].id
-                                self.appState.prefetchCoachReplyTTS(chunks[index], messageId: targetId, autoPlayWhenReady: false)
-                            }
-                        }
-                        maybeShowUpdateNotice(response: response, replyText: replyText)
+                        // Voice playback/prefetch is disabled for agent chat messages.
+                        // Temporarily disabled to avoid showing "saved" notices prematurely.
                         maybePromptCalendarConnection(replyText)
                         refreshPlanAndBroadcast(userId: userId)
                     case .failure:
@@ -2294,29 +2300,6 @@ struct VoiceMessageBubble: View {
                             .foregroundColor(.white)
                             .lineSpacing(4)
 
-                        Button(action: {
-                            guard coachVoiceEnabled else { return }
-                            if appState.voiceLoadingMessageIds.contains(message.id) { return }
-                            if appState.currentlySpeakingMessageId == message.id {
-                                appState.stopCoachVoice()
-                            } else {
-                                appState.playCoachReplyTTS(message.text, messageId: message.id)
-                            }
-                        }) {
-                            HStack(spacing: 6) {
-                                Image(systemName: coachVoiceEnabled
-                                      ? (appState.voiceLoadingMessageIds.contains(message.id) ? "hourglass" : (appState.currentlySpeakingMessageId == message.id ? "stop.fill" : "speaker.wave.2.fill"))
-                                      : "speaker.slash.fill")
-                                    .font(.system(size: 11, weight: .semibold))
-                                Text(coachVoiceEnabled
-                                     ? (appState.voiceLoadingMessageIds.contains(message.id) ? "Generating..." : (appState.currentlySpeakingMessageId == message.id ? "Stop Voice" : "Play Voice"))
-                                     : "Voice Off")
-                                    .font(.system(size: 11, weight: .semibold))
-                            }
-                            .foregroundColor(coachVoiceEnabled ? .white.opacity(0.95) : .white.opacity(0.6))
-                            .padding(.top, 2)
-                        }
-                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)
