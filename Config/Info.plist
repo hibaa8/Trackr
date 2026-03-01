@@ -15,7 +15,7 @@
 	<key>CFBundleShortVersionString</key>
 	<string>1.0</string>
 	<key>BackendBaseURL</key>
-	<string>http://127.0.0.1:8000</string>
+	<string>http://localhost:8000</string>
 	<key>SupabaseURL</key>
 	<string>https://fubkjshjbnlaqybvpnqy.supabase.co</string>
 	<key>SupabaseAnonKey</key>
@@ -58,6 +58,8 @@
 	<string>AI Trainer needs access to your location to find nearby gyms and fitness classes.</string>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>AI Trainer needs access to the microphone to send voice messages.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>AI Trainer needs access to your camera to capture meal photos and upload them for analysis.</string>
 	<key>NSAppTransportSecurity</key>
 	<dict>
 		<key>NSAllowsArbitraryLoads</key>

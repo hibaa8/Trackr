@@ -28,6 +28,7 @@ class AuthenticationManager: ObservableObject {
     private let isoFormatter = ISO8601DateFormatter()
     private var cancellables = Set<AnyCancellable>()
     private let googleAccessTokenKey = "currentGoogleAccessToken"
+    private let googleCalendarConnectedKey = "isGoogleCalendarConnected"
     
     private func logCalendar(_ message: String) {
         print("[GoogleCalendar][AuthManager] \(message)")
@@ -84,6 +85,13 @@ class AuthenticationManager: ObservableObject {
         let token = userDefaults.string(forKey: googleAccessTokenKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         logCalendar("Read stored token: \(token.isEmpty ? "missing" : "present"), value=\(maskedToken(token))")
         return token.isEmpty ? nil : token
+    }
+    
+    var isGoogleCalendarConnected: Bool {
+        if userDefaults.bool(forKey: googleCalendarConnectedKey) {
+            return true
+        }
+        return googleAccessToken != nil
     }
 
     func checkAuthenticationStatus() {
@@ -171,6 +179,7 @@ class AuthenticationManager: ObservableObject {
         userDefaults.removeObject(forKey: "currentUserName")
         userDefaults.removeObject(forKey: "currentUserId")
         userDefaults.removeObject(forKey: googleAccessTokenKey)
+        userDefaults.removeObject(forKey: googleCalendarConnectedKey)
     }
 
     func forceShowLoginOnLaunch() {
@@ -186,6 +195,7 @@ class AuthenticationManager: ObservableObject {
         userDefaults.removeObject(forKey: "currentUserName")
         userDefaults.removeObject(forKey: "currentUserId")
         userDefaults.removeObject(forKey: googleAccessTokenKey)
+        userDefaults.removeObject(forKey: googleCalendarConnectedKey)
     }
 
     func completeOnboarding() {
@@ -272,6 +282,7 @@ class AuthenticationManager: ObservableObject {
             self.logCalendar("finishWithScopes granted=\(granted.count), missing=\(missing.count)")
             guard !missing.isEmpty else {
                 userDefaults.set(user.accessToken.tokenString, forKey: googleAccessTokenKey)
+                userDefaults.set(true, forKey: googleCalendarConnectedKey)
                 self.logCalendar("Stored token after existing scopes: \(self.maskedToken(user.accessToken.tokenString))")
                 completion(.success(()))
                 return
@@ -292,6 +303,7 @@ class AuthenticationManager: ObservableObject {
                     return
                 }
                 self.userDefaults.set(token, forKey: self.googleAccessTokenKey)
+                self.userDefaults.set(true, forKey: self.googleCalendarConnectedKey)
                 self.logCalendar("Stored token after addScopes: \(self.maskedToken(token))")
                 completion(.success(()))
             }
@@ -333,6 +345,7 @@ class AuthenticationManager: ObservableObject {
                 return
             }
             userDefaults.set(trimmed, forKey: googleAccessTokenKey)
+            userDefaults.set(true, forKey: googleCalendarConnectedKey)
             logCalendar("freshGoogleCalendarAccessToken() returning token=\(maskedToken(trimmed))")
             completion(trimmed)
         }

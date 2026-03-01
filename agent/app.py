@@ -217,6 +217,40 @@ def _extract_plan_from_messages(messages: List[Any]) -> Dict[str, Any]:
     return {"plan_text": plan_text, "proposed_plan": proposed_plan}
 
 
+def _looks_like_calendar_request(text: str) -> bool:
+    lowered = (text or "").lower()
+    if "google calendar" not in lowered:
+        return False
+    return any(keyword in lowered for keyword in ["add", "create", "schedule", "event"])
+
+
+def _looks_like_manual_calendar_reply(text: str) -> bool:
+    lowered = (text or "").lower()
+    manual_markers = [
+        "can't directly add",
+        "cannot directly add",
+        "i can guide you",
+        "open your google calendar",
+        "click on the \"+ create\"",
+        "tap on the time slot",
+    ]
+    return any(marker in lowered for marker in manual_markers)
+
+
+def _calendar_confirmation_prompt(user_message: str) -> str:
+    normalized = " ".join((user_message or "").split())
+    if not normalized:
+        return (
+            "I can add this directly to your connected Google Calendar. "
+            "Reply 'yes' to confirm and I’ll create it now."
+        )
+    return (
+        "I can add this directly to your connected Google Calendar.\n"
+        f"Please confirm: \"{normalized}\"\n"
+        "Reply 'yes' to proceed or tell me what to change."
+    )
+
+
 def _safe_parse_json(text: str) -> Dict[str, Any]:
     if not text:
         return {}
@@ -2600,6 +2634,25 @@ def coach_chat(payload: CoachChatRequest):
 
     graph_state = graph.get_state(config)
     reply = state["messages"][-1].content if state.get("messages") else ""
+    session = SESSION_CACHE.get(payload.user_id, {})
+    has_calendar_auth = bool(str(session.get("google_access_token") or "").strip())
+    is_calendar_request = _looks_like_calendar_request(payload.message)
+
+    if is_calendar_request and not has_calendar_auth:
+        return CoachChatResponse(
+            reply=(
+                "Before I can add Google Calendar events, please open Settings and tap "
+                "\"Connect Google Calendar\". Once it says connected, ask again and I’ll add it directly."
+            ),
+            thread_id=thread_id,
+        )
+
+    if is_calendar_request and _looks_like_manual_calendar_reply(reply):
+        return CoachChatResponse(
+            reply=_calendar_confirmation_prompt(payload.message),
+            thread_id=thread_id,
+        )
+
     if graph_state.next and "human_feedback" in graph_state.next:
         plan_data = _extract_plan_from_messages(state.get("messages", []))
         if plan_data.get("proposed_plan"):

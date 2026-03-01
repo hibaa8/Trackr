@@ -1893,7 +1893,7 @@ struct SettingsPageView: View {
     }
 
     private func refreshGoogleCalendarConnectionState() {
-        isGoogleCalendarConnected = authManager.googleAccessToken != nil
+        isGoogleCalendarConnected = authManager.isGoogleCalendarConnected
     }
 
     private func connectGoogleCalendarInSettings() {

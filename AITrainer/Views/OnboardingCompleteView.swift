@@ -1468,6 +1468,18 @@ struct VoiceActiveView: View {
                             )
                             .focused($inputFocused)
 
+                        Button(action: {
+                            if isRecording {
+                                stopVoiceRecording()
+                            } else {
+                                startVoiceRecording()
+                            }
+                        }) {
+                            Image(systemName: isRecording ? "mic.fill" : "mic")
+                                .font(.system(size: 24, weight: .semibold))
+                                .foregroundColor(isRecording ? .red : .white.opacity(0.7))
+                        }
+
                         if !messageText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || selectedImage != nil {
                             Button(action: sendMessage) {
                                 Image(systemName: "arrow.up.circle.fill")
@@ -1475,18 +1487,6 @@ struct VoiceActiveView: View {
                                     .foregroundColor(.blue)
                             }
                             .disabled(isLoading)
-                        } else {
-                            Button(action: {
-                                if isRecording {
-                                    stopVoiceRecording()
-                                } else {
-                                    startVoiceRecording()
-                                }
-                            }) {
-                                Image(systemName: isRecording ? "mic.fill" : "mic")
-                                    .font(.system(size: 24, weight: .semibold))
-                                    .foregroundColor(isRecording ? .red : .white.opacity(0.7))
-                            }
                         }
                     }
                     .padding(.horizontal, 20)
@@ -1792,16 +1792,41 @@ struct VoiceActiveView: View {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return [] }
 
-        // Keep concise sentence-style bubbles for a more natural chat cadence.
-        let sentenceCandidates = trimmed
-            .replacingOccurrences(of: "\n", with: " ")
-            .split(separator: ".")
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        // Split only at sentence boundaries to avoid mid-number/mid-word breaks.
+        // This preserves tokens like "23.6 C" and URLs better than naive "." splitting.
+        let normalized = trimmed.replacingOccurrences(of: "\n", with: " ")
+        let boundaryPattern = #"(?<=[.!?])\s+"#
+        let sentenceCandidates: [String]
+        if let regex = try? NSRegularExpression(pattern: boundaryPattern) {
+            let range = NSRange(normalized.startIndex..<normalized.endIndex, in: normalized)
+            let matches = regex.matches(in: normalized, options: [], range: range)
+            if matches.isEmpty {
+                sentenceCandidates = [normalized]
+            } else {
+                var parts: [String] = []
+                var cursor = normalized.startIndex
+                for match in matches {
+                    guard let matchRange = Range(match.range, in: normalized) else { continue }
+                    let sentence = String(normalized[cursor..<matchRange.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !sentence.isEmpty { parts.append(sentence) }
+                    cursor = matchRange.upperBound
+                }
+                let tail = String(normalized[cursor...]).trimmingCharacters(in: .whitespacesAndNewlines)
+                if !tail.isEmpty { parts.append(tail) }
+                sentenceCandidates = parts.isEmpty ? [normalized] : parts
+            }
+        } else {
+            sentenceCandidates = [normalized]
+        }
 
         var chunks: [String] = []
         for sentence in sentenceCandidates {
-            let sentenceWithPunctuation = sentence.hasSuffix("!") || sentence.hasSuffix("?") ? sentence : "\(sentence)."
+            let sentenceWithPunctuation: String
+            if sentence.hasSuffix(".") || sentence.hasSuffix("!") || sentence.hasSuffix("?") {
+                sentenceWithPunctuation = sentence
+            } else {
+                sentenceWithPunctuation = "\(sentence)."
+            }
             if sentenceWithPunctuation.count <= 180 {
                 chunks.append(sentenceWithPunctuation)
             } else {
@@ -1867,7 +1892,7 @@ struct VoiceActiveView: View {
     }
 
     private func shouldRouteCalendarRequestToSettings(_ outgoingText: String) -> Bool {
-        guard authManager.googleAccessToken == nil else { return false }
+        guard !authManager.isGoogleCalendarConnected else { return false }
         let lower = outgoingText.lowercased()
         let asksCalendarDirectly =
             lower.contains("google calendar") &&

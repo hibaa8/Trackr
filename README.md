@@ -54,6 +54,7 @@ The app calls the backend here:
 - `AITrainer/Models/Services/RecipeImageService.swift` (AI recipe images)
 
 If you change the backend host, update the `baseURL` in those files.
+Backend host is centrally configured via `Config/Info.plist` (`BackendBaseURL`) and `AITrainer/Models/Services/BackendConfig.swift`.
 
 ## Notes
 - The AI coach endpoints are served by the agent logic via FastAPI:

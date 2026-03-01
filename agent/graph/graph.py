@@ -33,6 +33,7 @@ from agent.tools.plan_tools import (
     get_current_date,
     get_current_plan_summary,
     get_plan_day,
+    get_realtime_coaching_context,
     get_reminders,
     get_weight_checkpoint_for_current_week,
     log_checkin,
@@ -210,6 +211,7 @@ def assistant(state: AgentState):
 tools = [
     get_current_plan_summary,
     get_plan_day,
+    get_realtime_coaching_context,
     search_web,
     generate_plan,
     shift_active_plan_end_date,
@@ -241,6 +243,7 @@ _tool_node = ToolNode(tools)
 _USER_SCOPED_TOOL_NAMES = {
     "get_current_plan_summary",
     "get_plan_day",
+    "get_realtime_coaching_context",
     "generate_plan",
     "shift_active_plan_end_date",
     "replace_active_plan_workouts",

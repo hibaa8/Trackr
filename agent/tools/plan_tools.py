@@ -8,6 +8,9 @@ import re
 import uuid
 from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode
+from urllib.request import urlopen
+from zoneinfo import ZoneInfo
 
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import tool
@@ -264,6 +267,169 @@ def _infer_event_window_from_text(text: str) -> Optional[tuple[str, str]]:
     start_dt = datetime.combine(target_day, datetime.min.time()).replace(hour=hour, minute=minute)
     end_dt = start_dt + timedelta(hours=1)
     return start_dt.isoformat(timespec="seconds"), end_dt.isoformat(timespec="seconds")
+
+
+def _resolve_user_timezone(user_id: int) -> str:
+    tz = _fetch_user_timezone(user_id)
+    if not tz:
+        return "UTC"
+    try:
+        ZoneInfo(tz)
+        return tz
+    except Exception:
+        return "UTC"
+
+
+def _extract_time_points_from_text(text: str) -> List[int]:
+    lowered = (text or "").lower()
+    points: List[int] = []
+    for match in re.finditer(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", lowered):
+        h = int(match.group(1))
+        m = int(match.group(2) or 0)
+        period = match.group(3)
+        if h == 12:
+            h = 0
+        if period == "pm":
+            h += 12
+        points.append((h * 60) + m)
+    for match in re.finditer(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", lowered):
+        h = int(match.group(1))
+        m = int(match.group(2))
+        points.append((h * 60) + m)
+    return sorted(set(points))
+
+
+def _fetch_weather_snapshot(user_id: int) -> Dict[str, Any]:
+    api_key = os.getenv("OPENWEATHER_API_KEY", "").strip()
+    if not api_key:
+        return {"status": "unavailable", "reason": "missing_openweather_api_key"}
+
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT location_latitude, location_longitude FROM users WHERE id = ? LIMIT 1", (user_id,))
+        user_row = cur.fetchone()
+        cur.execute("SELECT location_context FROM user_preferences WHERE user_id = ? LIMIT 1", (user_id,))
+        pref_row = cur.fetchone()
+    lat = user_row[0] if user_row else None
+    lon = user_row[1] if user_row else None
+    location_context = str(pref_row[0] or "").strip() if pref_row else ""
+
+    params: Dict[str, Any] = {"appid": api_key, "units": "metric"}
+    if lat is not None and lon is not None:
+        params["lat"] = float(lat)
+        params["lon"] = float(lon)
+    elif location_context:
+        params["q"] = location_context
+    else:
+        return {"status": "unavailable", "reason": "missing_user_location"}
+
+    try:
+        url = "https://api.openweathermap.org/data/2.5/weather?" + urlencode(params)
+        with urlopen(url, timeout=8) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        return {"status": "unavailable", "reason": f"weather_fetch_failed:{exc}"}
+
+    weather_list = data.get("weather") or []
+    main_weather = weather_list[0] if weather_list else {}
+    weather_main = str(main_weather.get("main") or "").strip()
+    weather_desc = str(main_weather.get("description") or "").strip()
+    temp_c = data.get("main", {}).get("temp")
+    feels_like_c = data.get("main", {}).get("feels_like")
+    wind_mps = data.get("wind", {}).get("speed")
+    city = str(data.get("name") or "").strip()
+
+    warnings: List[str] = []
+    lower_main = weather_main.lower()
+    lower_desc = weather_desc.lower()
+    if any(k in lower_main for k in ["rain", "snow", "thunderstorm"]) or any(
+        k in lower_desc for k in ["rain", "snow", "storm", "thunder"]
+    ):
+        warnings.append("outdoor_conditions_poor")
+    if isinstance(temp_c, (int, float)):
+        if temp_c >= 32:
+            warnings.append("high_heat_risk")
+        if temp_c <= 0:
+            warnings.append("cold_weather_risk")
+
+    return {
+        "status": "ok",
+        "city": city or None,
+        "weather_main": weather_main or None,
+        "weather_description": weather_desc or None,
+        "temperature_c": temp_c,
+        "feels_like_c": feels_like_c,
+        "wind_mps": wind_mps,
+        "warnings": warnings,
+    }
+
+
+@tool("get_realtime_coaching_context")
+def get_realtime_coaching_context(user_id: int) -> str:
+    """
+    Return a real-time coaching context snapshot:
+    local time, weather, today's meal/workout logs, and guidance flags.
+    """
+    tz_name = _resolve_user_timezone(user_id)
+    now_local = datetime.now(ZoneInfo(tz_name))
+    today_key = now_local.date().isoformat()
+    weather = _fetch_weather_snapshot(user_id)
+
+    meal_draft = SESSION_CACHE.get(user_id, {}).get("meal_logs") or _redis_get_json(_draft_meal_logs_key(user_id)) or {"meals": []}
+    meals = meal_draft.get("meals", []) if isinstance(meal_draft, dict) else []
+    todays_meals = [m for m in meals if str(m.get("logged_at") or "").startswith(today_key)]
+    total_intake = sum(int(m.get("calories") or 0) for m in todays_meals)
+    latest_meal_at = str(todays_meals[0].get("logged_at")) if todays_meals else None
+
+    workout_draft = SESSION_CACHE.get(user_id, {}).get("workout_sessions") or _redis_get_json(_draft_workout_sessions_key(user_id)) or {"sessions": []}
+    sessions = workout_draft.get("sessions", []) if isinstance(workout_draft, dict) else []
+    todays_workouts = [w for w in sessions if str(w.get("date") or "").startswith(today_key) and bool(w.get("completed"))]
+    total_workout_minutes = sum(int(w.get("duration_min") or 0) for w in todays_workouts)
+
+    advisories: List[str] = []
+    if weather.get("status") == "ok":
+        weather_warnings = weather.get("warnings") or []
+        if "outdoor_conditions_poor" in weather_warnings:
+            advisories.append("Weather is poor for outdoor sessions; suggest indoor alternatives.")
+        if "high_heat_risk" in weather_warnings:
+            advisories.append("Heat risk is elevated; recommend hydration and lower intensity outdoors.")
+        if "cold_weather_risk" in weather_warnings:
+            advisories.append("Cold conditions; advise extended warm-up or indoor options.")
+
+    last_user_message = str((SESSION_CACHE.get(user_id) or {}).get("last_user_message") or "")
+    lowered = last_user_message.lower()
+    time_points = _extract_time_points_from_text(last_user_message)
+    mentions_run = any(k in lowered for k in ["run", "jog", "sprint"])
+    mentions_intense = any(k in lowered for k in ["intense", "hard", "heavy", "hiit", "max effort"])
+    if len(time_points) >= 2 and mentions_run:
+        gap = time_points[1] - time_points[0]
+        if 0 < gap <= 240:
+            advisories.append(
+                "User may be stacking sessions too close together; recommend keeping first session easy or reducing load."
+            )
+    if mentions_run and mentions_intense and len(time_points) >= 2:
+        advisories.append("If doing a run before a hard workout, keep run low-intensity and prioritize recovery.")
+
+    if any(k in lowered for k in ["workout", "train", "session", "run"]) and len(todays_meals) == 0:
+        advisories.append("No meal logged yet today before training; suggest a light pre-workout meal/snack.")
+
+    payload = {
+        "local_time_iso": now_local.isoformat(timespec="seconds"),
+        "timezone": tz_name,
+        "today": today_key,
+        "weather": weather,
+        "today_meals": {
+            "count": len(todays_meals),
+            "total_calories": total_intake,
+            "latest_logged_at": latest_meal_at,
+        },
+        "today_workouts": {
+            "count": len(todays_workouts),
+            "total_duration_min": total_workout_minutes,
+        },
+        "advisories": advisories,
+    }
+    return json.dumps(payload)
 
 
 def _normalize_checkin_date(value: Optional[str]) -> str:
@@ -909,6 +1075,7 @@ def add_google_calendar_events(
     failed = 0
     first_error: Optional[str] = None
     last_user_message = str((SESSION_CACHE.get(user_id) or {}).get("last_user_message") or "")
+    created_event_summaries: List[str] = []
     total_events = len(prepared_events)
     with get_db_conn() as conn:
         cur = conn.cursor()
@@ -963,7 +1130,16 @@ def add_google_calendar_events(
                     # Avoid invite fan-out latency for bulk sync.
                     sendUpdates="none",
                 ).execute()
+                created_id = str(created.get("id") or "").strip()
+                if not created_id:
+                    raise RuntimeError("Google Calendar insert returned no event id.")
                 success_count += 1
+                created_start = str((created.get("start") or {}).get("dateTime") or start_at)
+                if len(created_event_summaries) < 3:
+                    created_event_summaries.append(f"{title} @ {created_start} ({tz})")
+                _calendar_trace(
+                    f"add_google_calendar_events inserted event_id={created_id} user_id={user_id} title={title}"
+                )
                 cur.execute(
                     """
                     INSERT INTO calendar_blocks (user_id, start_at, end_at, title, source, status)
@@ -985,7 +1161,12 @@ def add_google_calendar_events(
         if first_error:
             return f"I couldn't add any events to Google Calendar. First error: {first_error}"
         return "I couldn't add any events to Google Calendar. Please verify calendar credentials and try again."
-    return f"Added {success_count} Google Calendar event(s) for {user_email}." + (f" Failed: {failed}." if failed else "")
+    preview = "\n".join(created_event_summaries)
+    return (
+        f"Added {success_count} Google Calendar event(s) for {user_email}."
+        + (f" Failed: {failed}." if failed else "")
+        + (f"\nScheduled:\n{preview}" if preview else "")
+    )
 
 
 @tool("generate_plan")
