@@ -1,14 +1,49 @@
 import SwiftUI
+import Combine
+
+enum OnboardingFlow {
+    case intro
+    case ashley
+}
 
 struct WelcomeOnboardingView: View {
-    @State private var showCoachSelection = false
+    @EnvironmentObject private var appState: AppState
+    @EnvironmentObject private var authManager: AuthenticationManager
+
+    @State private var flow: OnboardingFlow = .intro
     @State private var contentOpacity = 0.0
     @State private var buttonOffset = 50.0
+    @State private var showCoachBrowser = false
+    @State private var ashleyMessages: [[String: String]] = []
+    @State private var subscriptions = Set<AnyCancellable>()
 
     var body: some View {
-        if showCoachSelection {
-            CoachSelectionView()
-        } else {
+        switch flow {
+        case .ashley:
+            AshleyConversationView(
+                onBrowseAll: {
+                    showCoachBrowser = true
+                },
+                onCoachChosen: { coach, history in
+                    completeOnboardingWithCoach(coach, messages: history)
+                },
+                onBackToIntro: {
+                    withAnimation(.easeInOut(duration: 0.3)) {
+                        flow = .intro
+                    }
+                },
+                startWithChat: false,
+                onMessagesUpdated: { ashleyMessages = $0 }
+            )
+            .fullScreenCover(isPresented: $showCoachBrowser) {
+                CoachSelectionView(
+                    onBack: { showCoachBrowser = false },
+                    onCoachSelectedFromAshley: { coach in
+                        completeOnboardingWithCoach(coach, messages: ashleyMessages)
+                    }
+                )
+            }
+        case .intro:
             ZStack {
                 // Dark gradient background with blue accent
                 LinearGradient(
@@ -69,7 +104,7 @@ struct WelcomeOnboardingView: View {
                     // Get Started Button
                     Button(action: {
                         withAnimation(.easeInOut(duration: 0.3)) {
-                            showCoachSelection = true
+                            flow = .ashley
                         }
                     }) {
                         Text("Get Started")
@@ -103,6 +138,26 @@ struct WelcomeOnboardingView: View {
             contentOpacity = 1.0
             buttonOffset = 0.0
         }
+    }
+
+    private func completeOnboardingWithCoach(_ coach: Coach, messages: [[String: String]]) {
+        guard let userId = authManager.effectiveUserId else { return }
+
+        APIService.shared.completeAshleyOnboarding(
+            userId: userId,
+            coachId: coach.id,
+            coachSlug: nil,
+            messagesHistory: messages
+        )
+        .receive(on: DispatchQueue.main)
+        .sink(
+            receiveCompletion: { _ in },
+            receiveValue: { _ in
+                appState.setSelectedCoach(coach)
+                authManager.completeOnboarding()
+            }
+        )
+        .store(in: &subscriptions)
     }
 }
 
@@ -143,4 +198,6 @@ struct FeatureRow: View {
 
 #Preview {
     WelcomeOnboardingView()
+        .environmentObject(AppState())
+        .environmentObject(AuthenticationManager())
 }

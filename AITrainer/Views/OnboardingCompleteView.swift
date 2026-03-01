@@ -1603,6 +1603,19 @@ struct VoiceActiveView: View {
             image: selectedImage
         )
         messages.append(userMessage)
+        if shouldRouteCalendarRequestToSettings(outgoingText) {
+            let coachNudge = VoiceMessage(
+                id: UUID(),
+                text: "Before I can add Google Calendar events, please go to Settings and tap \"Connect Google Calendar\". Once it says connected, come back here and ask again.",
+                isFromCoach: true,
+                timestamp: Date(),
+                image: nil
+            )
+            messages.append(coachNudge)
+            messageText = ""
+            selectedImage = nil
+            return
+        }
         messageText = ""
         let imageToUpload = selectedImage
         selectedImage = nil
@@ -1621,53 +1634,157 @@ struct VoiceActiveView: View {
                 case .failure:
                     imageBase64 = nil
                 }
-                sendChat(outgoingText, imageBase64: imageBase64, userId: userId)
+                prepareAndSendChat(outgoingText, imageBase64: imageBase64, userId: userId)
             }
         } else {
-            sendChat(outgoingText, imageBase64: nil, userId: userId)
+            prepareAndSendChat(outgoingText, imageBase64: nil, userId: userId)
         }
     }
 
-    private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
-        AICoachService.shared.sendMessage(
-            outgoingText,
-            threadId: threadId,
-            agentId: coach.id,
-            userId: userId,
-            imageBase64: imageBase64
-        ) { result in
-            DispatchQueue.main.async {
-                self.isLoading = false
-                switch result {
-                case .success(let response):
-                    self.threadId = response.thread_id
-                    let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
-                    let chunks = splitCoachReply(replyText)
-                    for chunk in chunks {
-                        let coachMessage = VoiceMessage(
+    private func prepareAndSendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
+        let shouldVerifyCalendarSync = isLikelyCalendarConfirmation(outgoingText)
+        guard shouldVerifyCalendarSync else {
+            sendChat(
+                outgoingText,
+                imageBase64: imageBase64,
+                userId: userId,
+                shouldVerifyCalendarSync: false,
+                baselineCalendarSyncCount: nil
+            )
+            return
+        }
+
+        APIService.shared.getGoogleCalendarSyncStatus(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { completion in
+                    if case .failure = completion {
+                        sendChat(
+                            outgoingText,
+                            imageBase64: imageBase64,
+                            userId: userId,
+                            shouldVerifyCalendarSync: true,
+                            baselineCalendarSyncCount: nil
+                        )
+                    }
+                },
+                receiveValue: { status in
+                    sendChat(
+                        outgoingText,
+                        imageBase64: imageBase64,
+                        userId: userId,
+                        shouldVerifyCalendarSync: true,
+                        baselineCalendarSyncCount: status.synced_events_count
+                    )
+                }
+            )
+            .store(in: &cancellables)
+    }
+
+    private func sendChat(
+        _ outgoingText: String,
+        imageBase64: String?,
+        userId: Int,
+        shouldVerifyCalendarSync: Bool,
+        baselineCalendarSyncCount: Int?
+    ) {
+        authManager.freshGoogleCalendarAccessToken { token in
+            AICoachService.shared.sendMessage(
+                outgoingText,
+                threadId: threadId,
+                agentId: coach.id,
+                userId: userId,
+                googleAccessToken: token,
+                imageBase64: imageBase64
+            ) { result in
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                    switch result {
+                    case .success(let response):
+                        self.threadId = response.thread_id
+                        let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                        let chunks = splitCoachReply(replyText)
+                        for chunk in chunks {
+                            let coachMessage = VoiceMessage(
+                                id: UUID(),
+                                text: chunk,
+                                isFromCoach: true,
+                                timestamp: Date(),
+                                image: nil
+                            )
+                            self.messages.append(coachMessage)
+                        }
+                        maybeShowUpdateNotice(response: response, replyText: replyText)
+                        maybePromptCalendarConnection(replyText)
+                        refreshPlanAndBroadcast(userId: userId)
+                    case .failure:
+                        if shouldVerifyCalendarSync {
+                            verifyCalendarSyncAfterChatFailure(
+                                userId: userId,
+                                baselineCalendarSyncCount: baselineCalendarSyncCount
+                            )
+                        } else {
+                            let errorMessage = VoiceMessage(
+                                id: UUID(),
+                                text: "I couldn’t reach the coach service. Please make sure the backend is running.",
+                                isFromCoach: true,
+                                timestamp: Date(),
+                                image: nil
+                            )
+                            self.messages.append(errorMessage)
+                            // Even when chat fails, refresh listeners in case server-side tools partially completed.
+                            NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private func verifyCalendarSyncAfterChatFailure(userId: Int, baselineCalendarSyncCount: Int?) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
+            APIService.shared.getGoogleCalendarSyncStatus(userId: userId)
+                .receive(on: DispatchQueue.main)
+                .sink(
+                    receiveCompletion: { completion in
+                        guard case .failure = completion else { return }
+                        let errorMessage = VoiceMessage(
                             id: UUID(),
-                            text: chunk,
+                            text: "I couldn’t reach the coach service. Please make sure the backend is running.",
                             isFromCoach: true,
                             timestamp: Date(),
                             image: nil
                         )
-                        self.messages.append(coachMessage)
+                        self.messages.append(errorMessage)
+                        NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                    },
+                    receiveValue: { status in
+                        if let baseline = baselineCalendarSyncCount, status.synced_events_count > baseline {
+                            let addedCount = status.synced_events_count - baseline
+                            let successMessage = VoiceMessage(
+                                id: UUID(),
+                                text: "Calendar sync completed. I added \(addedCount) event(s) to your Google Calendar.",
+                                isFromCoach: true,
+                                timestamp: Date(),
+                                image: nil
+                            )
+                            self.messages.append(successMessage)
+                            self.showTopNotice("Calendar updated - events were added successfully.")
+                            self.refreshPlanAndBroadcast(userId: userId)
+                        } else {
+                            let errorMessage = VoiceMessage(
+                                id: UUID(),
+                                text: "I couldn’t confirm calendar sync yet. Please try again in a moment.",
+                                isFromCoach: true,
+                                timestamp: Date(),
+                                image: nil
+                            )
+                            self.messages.append(errorMessage)
+                            NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                        }
                     }
-                    maybeShowUpdateNotice(response: response, replyText: replyText)
-                    refreshPlanAndBroadcast(userId: userId)
-                case .failure:
-                    let errorMessage = VoiceMessage(
-                        id: UUID(),
-                        text: "I couldn’t reach the coach service. Please make sure the backend is running.",
-                        isFromCoach: true,
-                        timestamp: Date(),
-                        image: nil
-                    )
-                    self.messages.append(errorMessage)
-                    // Even when chat fails, refresh listeners in case server-side tools partially completed.
-                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
-                }
-            }
+                )
+                .store(in: &cancellables)
         }
     }
 
@@ -1730,6 +1847,58 @@ struct VoiceActiveView: View {
         }
         hideNoticeWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 2.6, execute: workItem)
+    }
+
+    private func maybePromptCalendarConnection(_ replyText: String) {
+        let lower = replyText.lowercased()
+        if lower.contains("google calendar setup error") ||
+            lower.contains("missing google credentials") ||
+            lower.contains("sign in with google in-app") ||
+            lower.contains("sign in with google in app") {
+            let coachNudge = VoiceMessage(
+                id: UUID(),
+                text: "Please open Settings and use \"Connect Google Calendar\" first. After it connects, ask me again and I’ll add your events.",
+                isFromCoach: true,
+                timestamp: Date(),
+                image: nil
+            )
+            messages.append(coachNudge)
+        }
+    }
+
+    private func shouldRouteCalendarRequestToSettings(_ outgoingText: String) -> Bool {
+        guard authManager.googleAccessToken == nil else { return false }
+        let lower = outgoingText.lowercased()
+        let asksCalendarDirectly =
+            lower.contains("google calendar") &&
+            (lower.contains("add") || lower.contains("create") || lower.contains("event"))
+        if asksCalendarDirectly {
+            return true
+        }
+        let isApproval = ["yes", "y", "yeah", "go ahead", "ok", "okay", "sure", "proceed"].contains {
+            lower.trimmingCharacters(in: .whitespacesAndNewlines) == $0
+        }
+        if !isApproval { return false }
+        let recentCoachText = messages.suffix(4)
+            .filter { $0.isFromCoach }
+            .map { $0.text.lowercased() }
+            .joined(separator: " ")
+        return recentCoachText.contains("google calendar")
+            && (recentCoachText.contains("add") || recentCoachText.contains("event"))
+    }
+
+    private func isLikelyCalendarConfirmation(_ outgoingText: String) -> Bool {
+        let lower = outgoingText.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        let isApproval = [
+            "yes", "y", "yeah", "yep", "go ahead", "ok", "okay", "sure", "proceed", "do it", "sounds good"
+        ].contains(lower)
+        guard isApproval else { return false }
+        let recentCoachText = messages.suffix(6)
+            .filter { $0.isFromCoach }
+            .map { $0.text.lowercased() }
+            .joined(separator: " ")
+        return recentCoachText.contains("google calendar")
+            && (recentCoachText.contains("add") || recentCoachText.contains("event"))
     }
 
     private func topNoticeBanner(text: String) -> some View {

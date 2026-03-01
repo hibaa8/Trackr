@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import hashlib
+import logging
 import os
 import re
 import uuid
@@ -33,6 +34,21 @@ from agent.db.connection import get_db_conn
 from google.oauth2 import service_account
 from google.oauth2.credentials import Credentials as GoogleUserCredentials
 from googleapiclient.discovery import build
+
+logger = logging.getLogger(__name__)
+
+
+def _mask_token(token: Optional[str]) -> str:
+    value = str(token or "").strip()
+    if not value:
+        return "nil"
+    if len(value) <= 10:
+        return f"{value[:2]}...{value[-2:]}"
+    return f"{value[:6]}...{value[-4:]}"
+
+
+def _calendar_trace(message: str) -> None:
+    print(f"[GoogleCalendar] {message}", flush=True)
 
 
 def _award_points(user_id: int, points: int, reason: str) -> None:
@@ -103,14 +119,17 @@ def _google_calendar_service(user_id: Optional[int] = None):
     if user_id is not None:
         session = SESSION_CACHE.get(user_id) or {}
         user_token = str(session.get("google_access_token") or "").strip()
+        _calendar_trace(f"session lookup user_id={user_id} token={_mask_token(user_token)}")
         if user_token:
             creds = GoogleUserCredentials(token=user_token, scopes=["https://www.googleapis.com/auth/calendar.events"])
+            _calendar_trace(f"using user OAuth token for calendar service user_id={user_id}")
             return build("calendar", "v3", credentials=creds, cache_discovery=False)
 
     raw_json = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON", "").strip()
     json_path = os.getenv("GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE", "").strip()
     delegated_user = os.getenv("GOOGLE_CALENDAR_DELEGATED_USER", "").strip()
     if not raw_json and not json_path:
+        _calendar_trace(f"no user token and no service-account credentials configured user_id={user_id}")
         raise RuntimeError(
             "Missing Google credentials. Sign in with Google in-app or set GOOGLE_CALENDAR_SERVICE_ACCOUNT_JSON / GOOGLE_CALENDAR_SERVICE_ACCOUNT_FILE."
         )
@@ -122,6 +141,7 @@ def _google_calendar_service(user_id: Optional[int] = None):
         credentials = service_account.Credentials.from_service_account_file(json_path, scopes=scopes)
     if delegated_user:
         credentials = credentials.with_subject(delegated_user)
+    _calendar_trace(f"using service-account fallback for calendar service user_id={user_id}")
     return build("calendar", "v3", credentials=credentials, cache_discovery=False)
 
 
@@ -174,6 +194,76 @@ def _plan_calendar_events(
                 }
             )
     return events
+
+
+def _default_event_window_iso() -> tuple[str, str]:
+    """Fallback window when custom event time is missing: tomorrow, 6-7 PM local."""
+    now = datetime.now()
+    start = (now + timedelta(days=1)).replace(hour=18, minute=0, second=0, microsecond=0)
+    end = start + timedelta(hours=1)
+    return start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
+
+
+def _fetch_user_timezone(user_id: int) -> Optional[str]:
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute("SELECT timezone FROM user_preferences WHERE user_id = ? LIMIT 1", (user_id,))
+        row = cur.fetchone()
+    if not row:
+        return None
+    value = str(row[0] or "").strip()
+    return value or None
+
+
+def _infer_event_window_from_text(text: str) -> Optional[tuple[str, str]]:
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    lowered = raw.lower()
+
+    target_day: Optional[date] = None
+    if "today" in lowered:
+        target_day = date.today()
+    elif "tomorrow" in lowered:
+        target_day = date.today() + timedelta(days=1)
+    else:
+        iso_match = re.search(r"\b(\d{4})-(\d{2})-(\d{2})\b", raw)
+        if iso_match:
+            try:
+                target_day = date(int(iso_match.group(1)), int(iso_match.group(2)), int(iso_match.group(3)))
+            except Exception:
+                target_day = None
+
+    hour: Optional[int] = None
+    minute = 0
+    ampm_match = re.search(r"\b(\d{1,2})(?::(\d{2}))?\s*(am|pm)\b", lowered)
+    if ampm_match:
+        parsed_hour = int(ampm_match.group(1))
+        parsed_minute = int(ampm_match.group(2) or 0)
+        period = ampm_match.group(3)
+        if parsed_hour == 12:
+            parsed_hour = 0
+        if period == "pm":
+            parsed_hour += 12
+        hour = parsed_hour
+        minute = parsed_minute
+    else:
+        h24_match = re.search(r"\b([01]?\d|2[0-3]):([0-5]\d)\b", lowered)
+        if h24_match:
+            hour = int(h24_match.group(1))
+            minute = int(h24_match.group(2))
+
+    if hour is None and target_day is None:
+        return None
+    if target_day is None:
+        target_day = date.today()
+    if hour is None:
+        hour = 18
+        minute = 0
+
+    start_dt = datetime.combine(target_day, datetime.min.time()).replace(hour=hour, minute=minute)
+    end_dt = start_dt + timedelta(hours=1)
+    return start_dt.isoformat(timespec="seconds"), end_dt.isoformat(timespec="seconds")
 
 
 def _normalize_checkin_date(value: Optional[str]) -> str:
@@ -783,6 +873,7 @@ def add_google_calendar_events(
     """
     if not confirmed_by_user:
         return "Confirmation required. Ask the user to confirm exactly what calendar events to add, then try again."
+    _calendar_trace(f"add_google_calendar_events start user_id={user_id} request_type={request_type} confirmed={confirmed_by_user}")
 
     user_email = _fetch_user_email(user_id)
     if not user_email:
@@ -790,54 +881,89 @@ def add_google_calendar_events(
 
     prepared_events: List[Dict[str, Any]]
     mode = (request_type or "custom").strip().lower()
+    effective_timezone = (timezone or "").strip() or "UTC"
+    if effective_timezone.upper() == "UTC":
+        user_timezone = _fetch_user_timezone(user_id)
+        if user_timezone:
+            effective_timezone = user_timezone
     if mode == "active_plan_workouts":
-        prepared_events = _plan_calendar_events(user_id, include_meal_logs=False, timezone=timezone)
+        prepared_events = _plan_calendar_events(user_id, include_meal_logs=False, timezone=effective_timezone)
     elif mode == "active_plan_workouts_and_meal_logs":
-        prepared_events = _plan_calendar_events(user_id, include_meal_logs=True, timezone=timezone)
+        prepared_events = _plan_calendar_events(user_id, include_meal_logs=True, timezone=effective_timezone)
     else:
         prepared_events = events or []
 
     if not prepared_events:
+        _calendar_trace(f"add_google_calendar_events no prepared events user_id={user_id}")
         return "No events to add. Provide event details or choose an active-plan request type."
 
     try:
         service = _google_calendar_service(user_id=user_id)
     except Exception as exc:
+        _calendar_trace(f"add_google_calendar_events service init failed user_id={user_id} error={exc}")
         return f"Google Calendar setup error: {exc}"
 
     calendar_id = os.getenv("GOOGLE_CALENDAR_ID", "primary").strip() or "primary"
+    _calendar_trace(f"add_google_calendar_events calendar_id={calendar_id} events={len(prepared_events)} user_id={user_id}")
     success_count = 0
     failed = 0
-    created_links: List[str] = []
+    first_error: Optional[str] = None
+    last_user_message = str((SESSION_CACHE.get(user_id) or {}).get("last_user_message") or "")
+    total_events = len(prepared_events)
     with get_db_conn() as conn:
         cur = conn.cursor()
-        for item in prepared_events:
+        for idx, item in enumerate(prepared_events, start=1):
             title = str(item.get("title") or "Workout").strip() or "Workout"
-            start_at = str(item.get("start_at") or "").strip()
-            end_at = str(item.get("end_at") or "").strip()
+            # Accept multiple payload shapes from LLM tool calls:
+            # - {"start_at": "...", "end_at": "..."}
+            # - {"start": "...", "end": "..."}
+            # - {"start": {"dateTime": "..."}, "end": {"dateTime": "..."}}
+            start_raw = item.get("start_at") or item.get("start")
+            end_raw = item.get("end_at") or item.get("end")
+            if isinstance(start_raw, dict):
+                start_raw = start_raw.get("dateTime") or start_raw.get("date")
+            if isinstance(end_raw, dict):
+                end_raw = end_raw.get("dateTime") or end_raw.get("date")
+            start_at = str(start_raw or "").strip()
+            end_at = str(end_raw or "").strip()
             description = str(item.get("description") or "").strip()
-            tz = str(item.get("timezone") or timezone).strip() or "UTC"
+            tz = str(item.get("timezone") or effective_timezone).strip() or effective_timezone
             if not start_at or not end_at:
-                failed += 1
-                continue
+                # Prefer parsing from latest user message (e.g. "today at 11 PM"), then default.
+                inferred = _infer_event_window_from_text(last_user_message) if mode == "custom" else None
+                if inferred:
+                    inferred_start, inferred_end = inferred
+                    if not start_at:
+                        start_at = inferred_start
+                    if not end_at:
+                        end_at = inferred_end
+                else:
+                    fallback_start, fallback_end = _default_event_window_iso()
+                    if not start_at:
+                        start_at = fallback_start
+                    if not end_at:
+                        end_at = fallback_end
+                _calendar_trace(
+                    f"add_google_calendar_events defaulted missing date fields user_id={user_id} "
+                    f"title={title} start_at={start_at} end_at={end_at}"
+                )
             try:
+                _calendar_trace(
+                    f"add_google_calendar_events inserting {idx}/{total_events} user_id={user_id} title={title}"
+                )
                 body = {
                     "summary": title,
                     "description": description,
                     "start": {"dateTime": _to_iso(start_at), "timeZone": tz},
                     "end": {"dateTime": _to_iso(end_at), "timeZone": tz},
                 }
-                if "@" in user_email:
-                    body["attendees"] = [{"email": user_email}]
                 created = service.events().insert(
                     calendarId=calendar_id,
                     body=body,
-                    sendUpdates="all",
+                    # Avoid invite fan-out latency for bulk sync.
+                    sendUpdates="none",
                 ).execute()
                 success_count += 1
-                html_link = str(created.get("htmlLink") or "").strip()
-                if html_link:
-                    created_links.append(html_link)
                 cur.execute(
                     """
                     INSERT INTO calendar_blocks (user_id, start_at, end_at, title, source, status)
@@ -845,18 +971,21 @@ def add_google_calendar_events(
                     """,
                     (user_id, start_at, end_at, title, "google_calendar_sync", "active"),
                 )
-            except Exception:
+            except Exception as exc:
+                _calendar_trace(
+                    f"add_google_calendar_events insert failed user_id={user_id} title={title} start={start_at} error={exc}"
+                )
+                if first_error is None:
+                    first_error = str(exc)
                 failed += 1
         conn.commit()
+    _calendar_trace(f"add_google_calendar_events completed user_id={user_id} success={success_count} failed={failed}")
 
     if success_count <= 0:
+        if first_error:
+            return f"I couldn't add any events to Google Calendar. First error: {first_error}"
         return "I couldn't add any events to Google Calendar. Please verify calendar credentials and try again."
-    link_preview = "\n".join(created_links[:3]) if created_links else "Events created successfully."
-    return (
-        f"Added {success_count} Google Calendar event(s) for {user_email}."
-        + (f" Failed: {failed}." if failed else "")
-        + f"\n{link_preview}"
-    )
+    return f"Added {success_count} Google Calendar event(s) for {user_email}." + (f" Failed: {failed}." if failed else "")
 
 
 @tool("generate_plan")

@@ -202,6 +202,20 @@ def _format_plan_text(plan_data: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _normalize_goal_type(goal: Optional[str]) -> str:
+    """Normalize goal from Ashley/API format to plan format (lose/gain/maintain)."""
+    if not goal:
+        return "lose"
+    g = str(goal).lower().strip()
+    if g in ("lose_weight", "lose"):
+        return "lose"
+    if g in ("build_muscle", "gain"):
+        return "gain"
+    if g in ("get_fit", "maintain"):
+        return "maintain"
+    return "lose"
+
+
 def calc_targets(
     user_row: tuple,
     pref_row: Optional[tuple],
@@ -210,13 +224,15 @@ def calc_targets(
     birthdate, height_cm, weight_kg, gender, age_years = user_row
     weekly_delta = pref_row[0] if pref_row else -0.5
     activity_level = pref_row[1] if pref_row else "moderate"
-    goal_type = goal_override or (pref_row[2] if pref_row else "lose")
+    goal_type = _normalize_goal_type(goal_override or (pref_row[2] if pref_row else None))
     if goal_type == "lose":
         weekly_delta = -abs(weekly_delta) if weekly_delta is not None else -0.5
     elif goal_type == "gain":
         weekly_delta = abs(weekly_delta) if weekly_delta is not None else 0.25
     elif goal_type == "maintain":
         weekly_delta = 0.0
+    else:
+        weekly_delta = -0.5 if weekly_delta is None else weekly_delta
 
     age = _resolve_age(age_years)
     bmr = _bmr_mifflin(weight_kg, height_cm, age, gender)
@@ -237,7 +253,8 @@ def calc_targets(
         calorie_target = int(tdee)
         calorie_formula = f"TDEE {int(tdee)} (maintenance)"
     else:
-        daily_delta = (weekly_delta * 7700) / 7.0
+        safe_weekly = weekly_delta if weekly_delta is not None else -0.5
+        daily_delta = (safe_weekly * 7700) / 7.0
         calorie_target = int(max(1200, tdee + daily_delta))
         calorie_formula = f"TDEE {int(tdee)} + daily_delta {int(daily_delta)}"
 

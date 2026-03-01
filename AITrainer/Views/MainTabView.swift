@@ -653,14 +653,12 @@ struct ProgressPageView: View {
     }
 
     private func buildPeriodCalories(from meals: [ProgressMealResponse]) -> [Int] {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
         let calendar = Calendar.current
         let days = (0..<selectedPeriodDayWindow).compactMap { calendar.date(byAdding: .day, value: -$0, to: Date()) }
         var totals = Array(repeating: 0, count: days.count)
         for meal in meals {
             guard let loggedAt = meal.logged_at else { continue }
-            let dayKey = String(loggedAt.prefix(10))
+            guard let dayKey = normalizedDayKey(from: loggedAt) else { continue }
             for (idx, day) in days.enumerated() {
                 if dayKeyFormatter.string(from: day) == dayKey {
                     totals[days.count - 1 - idx] += meal.calories ?? 0
@@ -795,13 +793,13 @@ struct ProgressPageView: View {
 
         for meal in progress?.meals ?? [] {
             guard let loggedAt = meal.logged_at else { continue }
-            let dayKey = String(loggedAt.prefix(10))
+            guard let dayKey = normalizedDayKey(from: loggedAt) else { continue }
             intakeByDay[dayKey, default: 0] += meal.calories ?? 0
         }
 
         for workout in progress?.workouts ?? [] {
             guard workout.completed == true, let rawDate = workout.date else { continue }
-            let dayKey = String(rawDate.prefix(10))
+            guard let dayKey = normalizedDayKey(from: rawDate) else { continue }
             burnedByDay[dayKey, default: 0] += workout.calories_burned ?? 0
         }
 
@@ -852,6 +850,28 @@ struct ProgressPageView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "EEE"
         return formatter.string(from: date)
+    }
+
+    private func normalizedDayKey(from raw: String) -> String? {
+        let value = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !value.isEmpty else { return nil }
+        if value.count >= 10 {
+            let prefix = String(value.prefix(10))
+            if prefix.count == 10 {
+                return prefix
+            }
+        }
+        let iso = ISO8601DateFormatter()
+        if let date = iso.date(from: value) {
+            return dayKeyFormatter.string(from: date)
+        }
+        let fallback = DateFormatter()
+        fallback.locale = Locale(identifier: "en_US_POSIX")
+        fallback.dateFormat = "yyyy-MM-dd"
+        if let date = fallback.date(from: value) {
+            return dayKeyFormatter.string(from: date)
+        }
+        return nil
     }
 }
 
@@ -1196,9 +1216,12 @@ struct SettingsPageView: View {
     @State private var showHealthImpact = false
     @State private var showReminderManager = false
     @State private var isCreatingCheckout = false
+    @State private var isConnectingGoogleCalendar = false
+    @State private var isGoogleCalendarConnected = false
     @State private var billingErrorMessage: String?
     @State private var healthSyncMessage: String?
     @State private var reminderErrorMessage: String?
+    @State private var googleCalendarMessage: String?
     @State private var reminders: [ReminderItemResponse] = []
     @State private var remindersLoading = false
     @State private var reminderBusyIds: Set<Int> = []
@@ -1233,6 +1256,7 @@ struct SettingsPageView: View {
         .onAppear {
             notificationManager.checkAuthorizationStatus()
             loadProfileData()
+            refreshGoogleCalendarConnectionState()
             if let userId = authManager.effectiveUserId {
                 loadRemindersForSettings(userId: userId)
             }
@@ -1371,6 +1395,19 @@ struct SettingsPageView: View {
             },
             message: {
                 Text(reminderErrorMessage ?? "")
+            }
+        )
+        .alert(
+            "Google Calendar",
+            isPresented: Binding(
+                get: { googleCalendarMessage != nil },
+                set: { if !$0 { googleCalendarMessage = nil } }
+            ),
+            actions: {
+                Button("OK", role: .cancel) { googleCalendarMessage = nil }
+            },
+            message: {
+                Text(googleCalendarMessage ?? "")
             }
         )
     }
@@ -1641,6 +1678,15 @@ struct SettingsPageView: View {
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
+            SettingsRow(
+                title: "Connect Google Calendar",
+                value: isConnectingGoogleCalendar
+                    ? "Connecting..."
+                    : (isGoogleCalendarConnected ? "Connected" : "Not Connected"),
+                highlight: isGoogleCalendarConnected
+            ) {
+                connectGoogleCalendarInSettings()
+            }
             SettingsRow(title: "Manage Notification Reminders") {
                 showReminderManager = true
             }
@@ -1841,6 +1887,27 @@ struct SettingsPageView: View {
                     }
                 } else {
                     billingErrorMessage = error.localizedDescription
+                }
+            }
+        }
+    }
+
+    private func refreshGoogleCalendarConnectionState() {
+        isGoogleCalendarConnected = authManager.googleAccessToken != nil
+    }
+
+    private func connectGoogleCalendarInSettings() {
+        guard !isConnectingGoogleCalendar else { return }
+        isConnectingGoogleCalendar = true
+        authManager.connectGoogleCalendar { result in
+            DispatchQueue.main.async {
+                isConnectingGoogleCalendar = false
+                refreshGoogleCalendarConnectionState()
+                switch result {
+                case .success:
+                    googleCalendarMessage = "Google Calendar connected successfully. You can now ask the coach to add events."
+                case .failure(let error):
+                    googleCalendarMessage = "Couldn’t connect Google Calendar: \(error.localizedDescription)"
                 }
             }
         }

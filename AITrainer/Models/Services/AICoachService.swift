@@ -17,10 +17,21 @@ final class AICoachService {
 
     private var baseURL: String { BackendConfig.baseURL }
     private let session: URLSession
+    
+    private func logCalendar(_ message: String) {
+        print("[GoogleCalendar][AICoachService] \(message)")
+    }
+
+    private func maskedToken(_ token: String?) -> String {
+        guard let token, !token.isEmpty else { return "nil" }
+        if token.count <= 10 { return "\(token.prefix(2))...\(token.suffix(2))" }
+        return "\(token.prefix(6))...\(token.suffix(4))"
+    }
 
     private init() {
         let configuration = URLSessionConfiguration.default
-        configuration.timeoutIntervalForRequest = 30
+        // Calendar sync requests can legitimately take longer (many events).
+        configuration.timeoutIntervalForRequest = 180
         configuration.timeoutIntervalForResource = 300
         self.session = URLSession(configuration: configuration)
     }
@@ -30,6 +41,7 @@ final class AICoachService {
         threadId: String?,
         agentId: Int? = nil,
         userId: Int,
+        googleAccessToken: String? = nil,
         imageBase64: String? = nil,
         completion: @escaping (Result<CoachChatResponse, Error>) -> Void
     ) {
@@ -49,6 +61,12 @@ final class AICoachService {
         if let imageBase64, !imageBase64.isEmpty {
             payload["image_base64"] = imageBase64
         }
+        if let googleAccessToken, !googleAccessToken.isEmpty {
+            payload["google_access_token"] = googleAccessToken
+        }
+        logCalendar(
+            "Sending chat payload user_id=\(userId), thread_id=\(threadId ?? "nil"), token=\(maskedToken(googleAccessToken))"
+        )
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

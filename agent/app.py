@@ -7,6 +7,7 @@ AI Trainer unified backend (videos, gyms, coach).
 import base64
 import hashlib
 import io
+import logging
 import os
 import re
 import hmac
@@ -41,7 +42,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, Response
 from googleapiclient.discovery import build
 import google.generativeai as genai
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from PIL import Image
 from pydantic import BaseModel
 from openai import OpenAI
@@ -54,6 +55,22 @@ from agent.plan.plan_generation import _build_plan_data
 from agent.tools.plan_tools import _set_active_plan_cache
 load_dotenv(dotenv_path=_ROOT_ENV_PATH)
 load_dotenv(dotenv_path=_ENV_PATH)
+logger = logging.getLogger(__name__)
+
+
+def _mask_token(token: Optional[str]) -> str:
+    value = str(token or "").strip()
+    if not value:
+        return "nil"
+    if len(value) <= 10:
+        return f"{value[:2]}...{value[-2:]}"
+    return f"{value[:6]}...{value[-4:]}"
+
+
+def _calendar_trace(message: str) -> None:
+    print(f"[GoogleCalendar] {message}", flush=True)
+
+
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
@@ -478,6 +495,8 @@ def _ensure_profile_schema() -> None:
             ("allergies", "TEXT NULL"),
             ("preferred_workout_time", "TEXT NULL"),
             ("menstrual_cycle_notes", "TEXT NULL"),
+            ("trainer_gender_preference", "TEXT NULL"),
+            ("trainer_style_preference", "TEXT NULL"),
             ("muscle_group_preferences", "TEXT NULL"),
             ("sports_preferences", "TEXT NULL"),
             ("location_context", "TEXT NULL"),
@@ -1422,6 +1441,26 @@ class CoachFeedbackResponse(BaseModel):
     thread_id: str
 
 
+class AshleyChatRequest(BaseModel):
+    message: str
+    user_id: int
+    thread_id: Optional[str] = None
+    messages_history: Optional[List[Dict[str, str]]] = None  # [{"role":"user"|"assistant","content":"..."}]
+
+
+class AshleyChatResponse(BaseModel):
+    reply: str
+    thread_id: str
+    coach_recommendation_slug: Optional[str] = None
+
+
+class AshleyCompleteOnboardingRequest(BaseModel):
+    user_id: int
+    coach_id: Optional[int] = None
+    coach_slug: Optional[str] = None  # e.g. marcus_hayes
+    messages_history: List[Dict[str, str]]  # [{"role":"user"|"assistant","content":"..."}]
+
+
 class CoachItemResponse(BaseModel):
     id: int
     slug: str
@@ -1713,6 +1752,9 @@ class OnboardingCompletePayload(BaseModel):
     fitness_background: Optional[str] = None
     voice: Optional[str] = None
     workout_preference: Optional[str] = None
+    dietary_preferences: Optional[str] = None
+    trainer_gender_preference: Optional[str] = None
+    trainer_style_preference: Optional[str] = None
     muscle_group_preferences: Optional[str] = None
     sports_preferences: Optional[str] = None
     allergies: Optional[str] = None
@@ -2512,8 +2554,20 @@ def coach_chat(payload: CoachChatRequest):
     resolved_agent = _resolve_coach_slug(payload.agent_id)
     if resolved_agent:
         SESSION_CACHE.setdefault(payload.user_id, {})["agent_id"] = resolved_agent
+    SESSION_CACHE.setdefault(payload.user_id, {})["last_user_message"] = payload.message
+    _calendar_trace(
+        f"coach_chat incoming user_id={payload.user_id} thread_id={thread_id} token={_mask_token(payload.google_access_token)}"
+    )
     if payload.google_access_token and payload.google_access_token.strip():
         SESSION_CACHE.setdefault(payload.user_id, {})["google_access_token"] = payload.google_access_token.strip()
+        _calendar_trace(
+            f"coach_chat stored token in SESSION_CACHE user_id={payload.user_id} token={_mask_token(payload.google_access_token)}"
+        )
+    else:
+        cached = SESSION_CACHE.get(payload.user_id, {}).get("google_access_token")
+        _calendar_trace(
+            f"coach_chat payload token missing user_id={payload.user_id}, cached={_mask_token(cached)}"
+        )
 
     if thread_id not in _AGENT_PRELOADED:
         preload_fn(payload.user_id)
@@ -2557,6 +2611,192 @@ def coach_chat(payload: CoachChatRequest):
             plan_text=plan_data.get("plan_text"),
         )
     return CoachChatResponse(reply=reply, thread_id=thread_id)
+
+
+def _ashley_extract_recommendation(reply: str) -> tuple:
+    """Parse [COACH_RECOMMENDATION: slug] from Ashley reply. Returns (clean_reply, slug or None)."""
+    import re
+    pattern = r"\[COACH_RECOMMENDATION:\s*(\w+)\]\s*$"
+    m = re.search(pattern, reply, re.IGNORECASE | re.MULTILINE)
+    if m:
+        slug = m.group(1).strip().lower()
+        clean = re.sub(pattern, "", reply, flags=re.IGNORECASE | re.MULTILINE).rstrip()
+        return clean, slug
+    return reply, None
+
+
+@app.post("/api/ashley/chat", response_model=AshleyChatResponse)
+def ashley_chat(payload: AshleyChatRequest):
+    """Chat with Ashley (receptionist) during onboarding. Returns reply and optional coach recommendation."""
+    from langchain_openai import ChatOpenAI
+    from agent.prompts.system_prompt import get_ashley_system_prompt
+
+    thread_id = payload.thread_id or f"ashley:{payload.user_id}"
+    llm = ChatOpenAI(model="gpt-4o", temperature=0.7, max_retries=1, request_timeout=30)
+
+    messages: List = [SystemMessage(content=get_ashley_system_prompt())]
+
+    if payload.messages_history:
+        for h in payload.messages_history:
+            role = (h.get("role") or "user").lower()
+            content = h.get("content") or ""
+            if role == "user":
+                messages.append(HumanMessage(content=content))
+            elif role == "assistant":
+                messages.append(AIMessage(content=content))
+
+    messages.append(HumanMessage(content=payload.message))
+
+    try:
+        response = llm.invoke(messages)
+        reply = response.content if hasattr(response, "content") else str(response)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Ashley chat error: {exc}") from exc
+
+    clean_reply, slug = _ashley_extract_recommendation(reply)
+    valid_slugs = {
+        "marcus_hayes", "hana_kim", "alex_rivera", "maria_santos", "jake_foster",
+        "david_thompson", "zara_khan", "kenji_tanaka", "chloe_evans",
+        "simone_adebayo", "liam_carter",
+    }
+    coach_slug = slug if slug and slug in valid_slugs else None
+
+    return AshleyChatResponse(
+        reply=clean_reply,
+        thread_id=thread_id,
+        coach_recommendation_slug=coach_slug,
+    )
+
+
+def _extract_onboarding_from_ashley_conversation(messages_history: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Extract structured onboarding fields from Ashley chat history."""
+    from langchain_openai import ChatOpenAI
+    import json
+
+    conv_text = "\n".join(
+        f"{h.get('role', 'user')}: {h.get('content', '')}"
+        for h in (messages_history or [])
+    )
+    if not conv_text.strip():
+        return {}
+
+    prompt = """Given this fitness onboarding conversation between Ashley (receptionist) and the user, extract structured fields.
+Return a JSON object with these keys (use null for missing):
+- full_name (string)
+- age (integer)
+- height_cm (number, convert inches to cm if needed: 1 in = 2.54 cm)
+- current_weight_kg (number, convert lbs to kg if needed: 1 lb = 0.453592 kg)
+- target_weight_kg (number)
+- goal_type: "lose_weight" | "build_muscle" | "get_fit" | null
+- activity_level: "sedentary" | "light" | "moderate" | "active" | "very_active" | null
+- fitness_background: "beginner" | "some_experience" | "intermediate" | "advanced" | null
+- timeframe_weeks (number, e.g. 12 for "12 weeks")
+- workout_preference (string, e.g. "3 days" or "strength")
+- muscle_group_preferences (string or null)
+- sports_preferences (string or null)
+- preferred_workout_time (string or null)
+- allergies (string or null)
+- menstrual_cycle_notes (string or null)
+- dietary_preferences (string or null)
+- trainer_gender_preference (string, e.g. "female", "male", "non-binary", "no preference")
+- trainer_style_preference (string, e.g. "strict", "gentle", "hype", "technical", or null)
+
+Conversation:
+"""
+    prompt += conv_text
+    prompt += "\n\nReturn ONLY valid JSON, no markdown."
+
+    llm = ChatOpenAI(model="gpt-4o-mini", temperature=0, max_retries=1)
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+        content = response.content if hasattr(response, "content") else str(response)
+        # Strip markdown code blocks if present
+        if "```" in content:
+            content = re.sub(r"```\w*\n?", "", content).strip()
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return data
+    except Exception:
+        pass
+    return {}
+
+
+@app.post("/api/ashley/complete-onboarding")
+def ashley_complete_onboarding(payload: AshleyCompleteOnboardingRequest):
+    """Complete onboarding using Ashley's conversation. Extracts structured data and creates plan."""
+    user_id = payload.user_id
+    extracted = _extract_onboarding_from_ashley_conversation(payload.messages_history)
+
+    # Resolve coach
+    trainer_id: Optional[int] = None
+    if payload.coach_id:
+        trainer_id = payload.coach_id
+    elif payload.coach_slug:
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM coaches WHERE slug = ? LIMIT 1", (payload.coach_slug,))
+            row = cur.fetchone()
+        if row:
+            trainer_id = int(row[0])
+
+    if not trainer_id:
+        raise HTTPException(status_code=400, detail="coach_id or coach_slug required")
+
+    # Fetch coach for storyline/personality
+    storyline, personality, voice = None, None, None
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT philosophy, personality FROM coaches WHERE id = ? LIMIT 1",
+            (trainer_id,),
+        )
+        row = cur.fetchone()
+    if row:
+        storyline = str(row[0]) if row[0] else None
+        personality = str(row[1]) if row[1] else None
+    voice = _default_voice_for_agent(trainer_id)
+
+    # Build OnboardingCompletePayload
+    goal_type = extracted.get("goal_type")
+    current_weight = extracted.get("current_weight_kg")
+    target_weight = extracted.get("target_weight_kg")
+    timeframe = extracted.get("timeframe_weeks")
+    weekly_delta = None
+    if current_weight is not None and target_weight is not None and timeframe:
+        if goal_type == "lose_weight" and current_weight > target_weight:
+            weekly_delta = (target_weight - current_weight) / float(timeframe)
+        elif goal_type == "build_muscle" and target_weight > current_weight:
+            weekly_delta = (target_weight - current_weight) / float(timeframe)
+        elif goal_type == "get_fit":
+            weekly_delta = 0.0
+
+    payload_obj = OnboardingCompletePayload(
+        user_id=user_id,
+        current_weight_kg=extracted.get("current_weight_kg"),
+        height_cm=extracted.get("height_cm"),
+        age=extracted.get("age"),
+        goal_type=goal_type,
+        target_weight_kg=target_weight,
+        activity_level=extracted.get("activity_level"),
+        timeframe_weeks=float(timeframe) if timeframe else None,
+        weekly_weight_change_kg=weekly_delta,
+        trainer_id=trainer_id,
+        storyline=storyline,
+        personality=personality,
+        voice=voice,
+        full_name=extracted.get("full_name"),
+        fitness_background=extracted.get("fitness_background"),
+        workout_preference=extracted.get("workout_preference"),
+        dietary_preferences=extracted.get("dietary_preferences"),
+        trainer_gender_preference=extracted.get("trainer_gender_preference"),
+        trainer_style_preference=extracted.get("trainer_style_preference"),
+        muscle_group_preferences=extracted.get("muscle_group_preferences"),
+        sports_preferences=extracted.get("sports_preferences"),
+        allergies=extracted.get("allergies"),
+        preferred_workout_time=extracted.get("preferred_workout_time"),
+        menstrual_cycle_notes=extracted.get("menstrual_cycle_notes"),
+    )
+    return complete_onboarding(payload_obj)
 
 
 @app.post("/coach/feedback", response_model=CoachFeedbackResponse)
@@ -3333,6 +3573,27 @@ def get_progress(user_id: int):
         "meals": _list_meal_logs(user_id),
         "workouts": _list_workout_sessions(user_id),
         "daily_checklist": _daily_checklist_status(user_id, date.today().isoformat()),
+    }
+
+
+@app.get("/api/calendar-sync/status")
+def get_calendar_sync_status(user_id: int):
+    """Return lightweight Google Calendar sync status for UI fallback checks."""
+    with get_db_conn() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT COUNT(*), MAX(id)
+            FROM calendar_blocks
+            WHERE user_id = ? AND source = ?
+            """,
+            (user_id, "google_calendar_sync"),
+        )
+        row = cur.fetchone() or (0, None)
+    return {
+        "user_id": user_id,
+        "synced_events_count": int(row[0] or 0),
+        "latest_sync_block_id": int(row[1]) if row[1] is not None else None,
     }
 
 
@@ -4122,6 +4383,12 @@ def complete_onboarding(payload: OnboardingCompletePayload):
         pref_updates["menstrual_cycle_notes"] = payload.menstrual_cycle_notes
     if payload.workout_preference is not None:
         pref_updates["workout_preferences"] = payload.workout_preference
+    if payload.dietary_preferences is not None:
+        pref_updates["dietary_preferences"] = payload.dietary_preferences
+    if payload.trainer_gender_preference is not None:
+        pref_updates["trainer_gender_preference"] = payload.trainer_gender_preference
+    if payload.trainer_style_preference is not None:
+        pref_updates["trainer_style_preference"] = payload.trainer_style_preference
     if payload.muscle_group_preferences is not None:
         pref_updates["muscle_group_preferences"] = payload.muscle_group_preferences
     if payload.sports_preferences is not None:
@@ -4143,8 +4410,14 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         user_id, weekly_weight_change_kg, activity_level, goal_type, target_weight_kg,
                         dietary_preferences, workout_preferences, timezone, created_at,
                         allergies, preferred_workout_time, menstrual_cycle_notes,
+<<<<<<< HEAD
                         muscle_group_preferences, sports_preferences, location_context, google_calendar_connected
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+=======
+                        trainer_gender_preference, trainer_style_preference,
+                        muscle_group_preferences, sports_preferences, location_context
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+>>>>>>> 64afd4555bdd0ef876ca12b89b90c73677f925f2
                     """,
                     (
                         user_id,
@@ -4152,13 +4425,15 @@ def complete_onboarding(payload: OnboardingCompletePayload):
                         pref_updates.get("activity_level"),
                         pref_updates.get("goal_type"),
                         pref_updates.get("target_weight_kg"),
-                        None,
+                        pref_updates.get("dietary_preferences"),
                         pref_updates.get("workout_preferences"),
                         None,
                         created_at,
                         pref_updates.get("allergies"),
                         pref_updates.get("preferred_workout_time"),
                         pref_updates.get("menstrual_cycle_notes"),
+                        pref_updates.get("trainer_gender_preference"),
+                        pref_updates.get("trainer_style_preference"),
                         pref_updates.get("muscle_group_preferences"),
                         pref_updates.get("sports_preferences"),
                         pref_updates.get("location_context"),
@@ -4189,48 +4464,6 @@ def complete_onboarding(payload: OnboardingCompletePayload):
             print(f"Calendar autosync failed for user {user_id}: {exc}")
     return {"ok": True, "calendar_events_created": calendar_events_created}
 
-
-@app.get("/api/coach-media/{media_type}/{filename}")
-def get_coach_media(media_type: str, filename: str):
-    """Serve coach media files securely from Supabase with signed URLs."""
-    # Validate media type
-    if media_type not in ["images", "videos"]:
-        raise HTTPException(status_code=404, detail="Invalid media type")
-
-    # Validate filename format (basic security check)
-    import re
-    if not re.match(r'^[a-zA-Z0-9_-]+\.(png|jpg|jpeg|mp4|mov)$', filename):
-        raise HTTPException(status_code=404, detail="Invalid filename")
-
-    base = _supabase_url()
-    if not base or not os.environ.get("SUPABASE_SERVICE_ROLE_KEY"):
-        raise HTTPException(status_code=500, detail="Supabase not configured")
-
-    # Generate signed URL for the coach media
-    path = f"coach-media/{media_type}/{filename}"
-    url = f"{base}/storage/v1/object/sign/coach-media/{media_type}/{filename}"
-
-    headers = {
-        "Content-Type": "application/json",
-        **_supabase_headers()
-    }
-
-    try:
-        import requests
-        # Request a signed URL that expires in 1 hour
-        response = requests.post(url, json={"expiresIn": 3600}, headers=headers)
-        response.raise_for_status()
-        signed_data = response.json()
-
-        if "signedURL" in signed_data:
-            # Return the signed URL for the client to fetch directly
-            from fastapi.responses import RedirectResponse
-            return RedirectResponse(url=signed_data["signedURL"])
-        else:
-            raise HTTPException(status_code=500, detail="Failed to generate signed URL")
-
-    except requests.exceptions.RequestException as e:
-        raise HTTPException(status_code=500, detail=f"Failed to access media: {str(e)}")
 
 
 if __name__ == "__main__":

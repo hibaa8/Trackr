@@ -1,6 +1,19 @@
 -- WARNING: This schema is for context only and is not meant to be run.
 -- Table order and constraints may not be valid for execution.
 
+## Run Backend
+
+The backend is a FastAPI app in `agent/`. To run it:
+
+1. **Start (with venv + auto-install):** `cd agent && bash start.sh`
+2. **Start (if venv already exists):** `cd agent && source venv/bin/activate && uvicorn app:app --reload --host 0.0.0.0 --port 8000`
+3. **If port 8000 is in use:** `lsof -i :8000 -t | xargs kill` (or `kill <PID>`), then start again.
+4. **URLs:** http://localhost:8000 (API), http://localhost:8000/docs (Swagger)
+
+Run in background for long-lived server.
+
+---
+
 CREATE TABLE public.calendar_blocks (
   id integer GENERATED ALWAYS AS IDENTITY NOT NULL,
   user_id integer NOT NULL,

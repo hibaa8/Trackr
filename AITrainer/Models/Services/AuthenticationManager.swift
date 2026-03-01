@@ -10,6 +10,7 @@ import Combine
 import Supabase
 import AuthenticationServices
 import UIKit
+import GoogleSignIn
 
 @MainActor
 class AuthenticationManager: ObservableObject {
@@ -26,6 +27,17 @@ class AuthenticationManager: ObservableObject {
     private let supabase: SupabaseClient?
     private let isoFormatter = ISO8601DateFormatter()
     private var cancellables = Set<AnyCancellable>()
+    private let googleAccessTokenKey = "currentGoogleAccessToken"
+    
+    private func logCalendar(_ message: String) {
+        print("[GoogleCalendar][AuthManager] \(message)")
+    }
+
+    private func maskedToken(_ token: String?) -> String {
+        guard let token, !token.isEmpty else { return "nil" }
+        if token.count <= 10 { return "\(token.prefix(2))...\(token.suffix(2))" }
+        return "\(token.prefix(6))...\(token.suffix(4))"
+    }
 
     private struct UserRecord: Codable {
         let id: Int?
@@ -66,6 +78,12 @@ class AuthenticationManager: ObservableObject {
 
     var effectiveUserId: Int? {
         demoUserId ?? currentUserId
+    }
+
+    var googleAccessToken: String? {
+        let token = userDefaults.string(forKey: googleAccessTokenKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        logCalendar("Read stored token: \(token.isEmpty ? "missing" : "present"), value=\(maskedToken(token))")
+        return token.isEmpty ? nil : token
     }
 
     func checkAuthenticationStatus() {
@@ -152,6 +170,7 @@ class AuthenticationManager: ObservableObject {
         userDefaults.removeObject(forKey: "currentUserEmail")
         userDefaults.removeObject(forKey: "currentUserName")
         userDefaults.removeObject(forKey: "currentUserId")
+        userDefaults.removeObject(forKey: googleAccessTokenKey)
     }
 
     func forceShowLoginOnLaunch() {
@@ -166,6 +185,7 @@ class AuthenticationManager: ObservableObject {
         userDefaults.removeObject(forKey: "currentUserEmail")
         userDefaults.removeObject(forKey: "currentUserName")
         userDefaults.removeObject(forKey: "currentUserId")
+        userDefaults.removeObject(forKey: googleAccessTokenKey)
     }
 
     func completeOnboarding() {
@@ -221,6 +241,138 @@ class AuthenticationManager: ObservableObject {
         }
     }
 
+    func connectGoogleCalendar(completion: @escaping (Result<Void, Error>) -> Void) {
+        logCalendar("connectGoogleCalendar() called")
+        guard let clientID = SupabaseConfig.googleClientID, !clientID.isEmpty else {
+            logCalendar("Missing Google client ID")
+            completion(.failure(NSError(
+                domain: "Auth",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Google client ID is missing."]
+            )))
+            return
+        }
+        guard let presenting = topViewController() else {
+            logCalendar("Missing presenting view controller")
+            completion(.failure(NSError(
+                domain: "Auth",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "Cannot present Google sign-in right now."]
+            )))
+            return
+        }
+
+        let requiredScopes = ["https://www.googleapis.com/auth/calendar.events"]
+        GIDSignIn.sharedInstance.configuration = GIDConfiguration(clientID: clientID)
+        logCalendar("Starting Google calendar scope flow with required scopes: \(requiredScopes)")
+
+        func finishWithScopes(for user: GIDGoogleUser) {
+            let granted = user.grantedScopes ?? []
+            let missing = requiredScopes.filter { !granted.contains($0) }
+            self.logCalendar("finishWithScopes granted=\(granted.count), missing=\(missing.count)")
+            guard !missing.isEmpty else {
+                userDefaults.set(user.accessToken.tokenString, forKey: googleAccessTokenKey)
+                self.logCalendar("Stored token after existing scopes: \(self.maskedToken(user.accessToken.tokenString))")
+                completion(.success(()))
+                return
+            }
+            user.addScopes(missing, presenting: presenting) { result, error in
+                if let error {
+                    self.logCalendar("addScopes failed: \(error.localizedDescription)")
+                    completion(.failure(error))
+                    return
+                }
+                guard let token = result?.user.accessToken.tokenString, !token.isEmpty else {
+                    self.logCalendar("addScopes succeeded but access token missing")
+                    completion(.failure(NSError(
+                        domain: "Auth",
+                        code: 0,
+                        userInfo: [NSLocalizedDescriptionKey: "Google calendar permission granted but access token is missing."]
+                    )))
+                    return
+                }
+                self.userDefaults.set(token, forKey: self.googleAccessTokenKey)
+                self.logCalendar("Stored token after addScopes: \(self.maskedToken(token))")
+                completion(.success(()))
+            }
+        }
+
+        if let current = GIDSignIn.sharedInstance.currentUser {
+            logCalendar("Using existing GID currentUser session")
+            finishWithScopes(for: current)
+            return
+        }
+
+        GIDSignIn.sharedInstance.signIn(withPresenting: presenting) { result, error in
+            if let error {
+                self.logCalendar("Initial Google signIn failed: \(error.localizedDescription)")
+                completion(.failure(error))
+                return
+            }
+            guard let user = result?.user else {
+                self.logCalendar("Initial Google signIn returned nil user")
+                completion(.failure(NSError(
+                    domain: "Auth",
+                    code: 0,
+                    userInfo: [NSLocalizedDescriptionKey: "Google sign-in did not return a user."]
+                )))
+                return
+            }
+            self.logCalendar("Initial Google signIn succeeded")
+            finishWithScopes(for: user)
+        }
+    }
+    
+    func freshGoogleCalendarAccessToken(completion: @escaping (String?) -> Void) {
+        let fallback = googleAccessToken
+        
+        func finalize(_ token: String?) {
+            let trimmed = token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !trimmed.isEmpty else {
+                completion(fallback)
+                return
+            }
+            userDefaults.set(trimmed, forKey: googleAccessTokenKey)
+            logCalendar("freshGoogleCalendarAccessToken() returning token=\(maskedToken(trimmed))")
+            completion(trimmed)
+        }
+        
+        if let current = GIDSignIn.sharedInstance.currentUser {
+            logCalendar("Refreshing token from currentUser")
+            current.refreshTokensIfNeeded { [weak self] user, error in
+                if let error {
+                    self?.logCalendar("refreshTokensIfNeeded failed: \(error.localizedDescription)")
+                    finalize(nil)
+                    return
+                }
+                finalize(user?.accessToken.tokenString)
+            }
+            return
+        }
+        
+        logCalendar("No currentUser; attempting restorePreviousSignIn")
+        GIDSignIn.sharedInstance.restorePreviousSignIn { [weak self] user, error in
+            if let error {
+                self?.logCalendar("restorePreviousSignIn failed: \(error.localizedDescription)")
+                finalize(nil)
+                return
+            }
+            guard let user else {
+                self?.logCalendar("restorePreviousSignIn returned nil user")
+                finalize(nil)
+                return
+            }
+            user.refreshTokensIfNeeded { refreshedUser, refreshError in
+                if let refreshError {
+                    self?.logCalendar("refresh after restore failed: \(refreshError.localizedDescription)")
+                    finalize(user.accessToken.tokenString)
+                    return
+                }
+                finalize(refreshedUser?.accessToken.tokenString ?? user.accessToken.tokenString)
+            }
+        }
+    }
+
     private func refreshSession() async {
         guard let supabase else {
             isAuthenticated = false
@@ -256,6 +408,16 @@ class AuthenticationManager: ObservableObject {
         guard let id else { return }
         currentUserId = id
         userDefaults.set(id, forKey: "currentUserId")
+    }
+
+    private func topViewController() -> UIViewController? {
+        let scenes = UIApplication.shared.connectedScenes
+        let windowScene = scenes.first { $0.activationState == .foregroundActive } as? UIWindowScene
+        var root = windowScene?.windows.first { $0.isKeyWindow }?.rootViewController
+        while let presented = root?.presentedViewController {
+            root = presented
+        }
+        return root
     }
 
     private func backendSignIn(email: String, password: String) async throws -> BackendAuthResponse {
@@ -353,6 +515,9 @@ class AuthenticationManager: ObservableObject {
     }
 
     func handleAuthCallback(url: URL) {
+        if GIDSignIn.sharedInstance.handle(url) {
+            return
+        }
         guard let supabase else { return }
         supabase.auth.handle(url)
     }

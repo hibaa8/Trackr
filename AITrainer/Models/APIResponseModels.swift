@@ -244,6 +244,12 @@ struct CoachSuggestionEnvelope: Codable {
     let suggestion: CoachSuggestionResponse?
 }
 
+struct AshleyChatResponse: Codable {
+    let reply: String
+    let thread_id: String
+    let coach_recommendation_slug: String?
+}
+
 struct ReminderItemResponse: Codable {
     let id: Int
     let reminder_type: String

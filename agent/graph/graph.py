@@ -142,6 +142,7 @@ def _preload_session_cache(user_id: int) -> Dict[str, Any]:
         "reminders": reminders,
         "agent_id": existing.get("agent_id"),
         "google_access_token": existing.get("google_access_token"),
+        "last_user_message": existing.get("last_user_message"),
     }
     return {
         "context": context,

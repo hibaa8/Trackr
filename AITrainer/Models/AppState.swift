@@ -21,6 +21,7 @@ class AppState: ObservableObject {
     @Published var coaches: [Coach] = []
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
+    private var cancellables = Set<AnyCancellable>()
 
     // Macros
     @Published var proteinCurrent: Int = 0
@@ -70,6 +71,11 @@ class AppState: ObservableObject {
     }
 
     func refreshDailyData(for date: Date, userId: Int) {
+        let dayKeyFormatter = DateFormatter()
+        dayKeyFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dayKeyFormatter.dateFormat = "yyyy-MM-dd"
+        let selectedDayKey = dayKeyFormatter.string(from: date)
+
         FoodScanService.shared.getDailyIntake(date: date, userId: userId) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
@@ -111,6 +117,23 @@ class AppState: ObservableObject {
                 }
             }
         }
+
+        // Keep net calories accurate by refreshing burned calories from completed workouts.
+        APIService.shared.getProgress(userId: userId)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in },
+                receiveValue: { [weak self] progress in
+                    let burned = progress.workouts.reduce(into: 0) { total, workout in
+                        guard workout.completed == true,
+                              let rawDate = workout.date,
+                              String(rawDate.prefix(10)) == selectedDayKey else { return }
+                        total += workout.calories_burned ?? 0
+                    }
+                    self?.caloriesOut = burned
+                }
+            )
+            .store(in: &cancellables)
     }
 
     private func updateMacroTargets() {
@@ -133,7 +156,8 @@ class AppState: ObservableObject {
             trimmed,
             threadId: coachThreadId,
             agentId: selectedCoach?.id,
-            userId: userId
+            userId: userId,
+            googleAccessToken: UserDefaults.standard.string(forKey: "currentGoogleAccessToken")
         ) { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
