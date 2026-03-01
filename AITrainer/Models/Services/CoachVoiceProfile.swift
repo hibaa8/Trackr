@@ -41,6 +41,11 @@ enum CoachVoiceProfile {
             return
         }
 
+        if let fallback = genderFallbackVoice(for: coach, language: language) {
+            utterance.voice = fallback
+            return
+        }
+
         utterance.voice = AVSpeechSynthesisVoice(language: language)
     }
 
@@ -88,17 +93,44 @@ enum CoachVoiceProfile {
         if normalized == "onyx" || normalized == "echo" {
             return voices.first { $0.language == language && $0.name.lowercased().contains("daniel") }
                 ?? voices.first { $0.language == language && $0.name.lowercased().contains("alex") }
+                ?? voices.first { $0.language == language && $0.quality == .enhanced }
+                ?? voices.first { $0.language == language }
         }
         if normalized == "nova" || normalized == "shimmer" {
             return voices.first { $0.language == language && $0.name.lowercased().contains("samantha") }
                 ?? voices.first { $0.language == language && $0.name.lowercased().contains("ava") }
+                ?? voices.first { $0.language == language && $0.quality == .enhanced }
+                ?? voices.first { $0.language == language }
         }
         if normalized == "sage" || normalized == "alloy" {
             return voices.first { $0.language == language && $0.name.lowercased().contains("alex") }
+                ?? voices.first { $0.language == language && $0.quality == .enhanced }
                 ?? voices.first { $0.language == language }
         }
 
         return voices.first { $0.language == language && $0.name.lowercased().contains(normalized) }
             ?? voices.first { $0.language == language }
+    }
+
+    private static func genderFallbackVoice(for coach: Coach, language: String) -> AVSpeechSynthesisVoice? {
+        let voices = AVSpeechSynthesisVoice.speechVoices().filter { $0.language == language }
+        guard !voices.isEmpty else { return nil }
+
+        let maleHints = ["daniel", "alex", "thomas", "aaron", "arthur", "fred", "jorge"]
+        let femaleHints = ["samantha", "ava", "victoria", "karen", "susan", "allison", "moira", "tessa"]
+        let gender = coach.gender.lowercased()
+
+        if gender.contains("male") {
+            return voices.first { voice in
+                maleHints.contains { voice.name.lowercased().contains($0) }
+            } ?? voices.first { $0.quality == .enhanced } ?? voices.first
+        }
+        if gender.contains("female") {
+            return voices.first { voice in
+                femaleHints.contains { voice.name.lowercased().contains($0) }
+            } ?? voices.first { $0.quality == .enhanced } ?? voices.first
+        }
+
+        return voices.first { $0.quality == .enhanced } ?? voices.first
     }
 }

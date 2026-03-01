@@ -1199,6 +1199,7 @@ struct SettingsPageView: View {
     @AppStorage("enableNotifications") private var notificationsEnabled = true
     @AppStorage("selectedPlanTier") private var selectedPlanTier = "free"
     @AppStorage("enableHealthSync") private var healthSyncEnabled = false
+    @AppStorage("enableCoachVoiceTTS") private var coachVoiceEnabled = true
     @State private var profileUser: ProfileUserResponse?
     @State private var showManagePlan = false
     @State private var showHelp = false
@@ -1650,6 +1651,7 @@ struct SettingsPageView: View {
     private var settingsList: some View {
         VStack(spacing: 16) {
             SettingsRow(title: "Notifications", toggle: $notificationsEnabled)
+            SettingsRow(title: "Enable Coach Voice", toggle: $coachVoiceEnabled)
             SettingsRow(title: "Units", value: "Imperial")
             SettingsRow(title: "Language", value: "English")
             SettingsRow(title: "Apple Health Sync", toggle: $healthSyncEnabled)
