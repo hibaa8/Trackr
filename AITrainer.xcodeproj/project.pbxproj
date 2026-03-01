@@ -11,6 +11,7 @@
 		84D4F62C2F34ABBD00BEE516 /* GoogleSignIn in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */; };
 		84D4F62E2F34ABBD00BEE516 /* GoogleSignInSwift in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */; };
 		84D4F6322F34ABED00BEE516 /* Supabase in Frameworks */ = {isa = PBXBuildFile; productRef = 84D4F6312F34ABED00BEE516 /* Supabase */; };
+		E1A1B1C32F50000100EEE111 /* ElevenLabs in Frameworks */ = {isa = PBXBuildFile; productRef = E1A1B1C22F50000100EEE111 /* ElevenLabs */; };
 		9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */ = {isa = PBXBuildFile; productRef = 9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */; };
 /* End PBXBuildFile section */
 
@@ -32,6 +33,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				E1A1B1C32F50000100EEE111 /* ElevenLabs in Frameworks */,
 				84D4F6322F34ABED00BEE516 /* Supabase in Frameworks */,
 				84D4F62E2F34ABBD00BEE516 /* GoogleSignInSwift in Frameworks */,
 				9F0A6E3D8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper in Frameworks */,
@@ -95,6 +97,7 @@
 			);
 			name = AITrainer;
 			packageProductDependencies = (
+				E1A1B1C22F50000100EEE111 /* ElevenLabs */,
 				9F0A6E3C8C5F4A1BA1B2C3D4 /* YouTubeiOSPlayerHelper */,
 				84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */,
 				84D4F62D2F34ABBD00BEE516 /* GoogleSignInSwift */,
@@ -129,6 +132,7 @@
 			mainGroup = 3D93F18B2F1855FC00A8D3CB;
 			minimizedProjectReferenceProxies = 1;
 			packageReferences = (
+				E1A1B1C12F50000100EEE111 /* XCRemoteSwiftPackageReference "elevenlabs-swift-sdk" */,
 				9F0A6E3B8C5F4A1BA1B2C3D4 /* XCRemoteSwiftPackageReference "youtube-ios-player-helper" */,
 				84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */,
 				84D4F62F2F34ABCC00BEE516 /* XCRemoteSwiftPackageReference "supabase-swift" */,
@@ -401,6 +405,14 @@
 /* End XCConfigurationList section */
 
 /* Begin XCRemoteSwiftPackageReference section */
+		E1A1B1C12F50000100EEE111 /* XCRemoteSwiftPackageReference "elevenlabs-swift-sdk" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/elevenlabs/elevenlabs-swift-sdk.git";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 2.0.16;
+			};
+		};
 		84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */ = {
 			isa = XCRemoteSwiftPackageReference;
 			repositoryURL = "https://github.com/google/GoogleSignIn-iOS";
@@ -428,6 +440,11 @@
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCSwiftPackageProductDependency section */
+		E1A1B1C22F50000100EEE111 /* ElevenLabs */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = E1A1B1C12F50000100EEE111 /* XCRemoteSwiftPackageReference "elevenlabs-swift-sdk" */;
+			productName = ElevenLabs;
+		};
 		84D4F62B2F34ABBD00BEE516 /* GoogleSignIn */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 84D4F62A2F34ABBD00BEE516 /* XCRemoteSwiftPackageReference "GoogleSignIn-iOS" */;

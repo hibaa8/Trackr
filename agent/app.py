@@ -61,6 +61,9 @@ TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AISTUDIO_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
 HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "").strip()
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY", "").strip()
+ELEVENLABS_DEFAULT_VOICE_ID = os.getenv("ELEVENLABS_DEFAULT_VOICE_ID", "").strip()
+ELEVENLABS_AGENT_ID = os.getenv("ELEVENLABS_AGENT_ID", "").strip()
 if not YOUTUBE_API_KEY:
     raise RuntimeError("Missing YOUTUBE_API_KEY env var")
 
@@ -1749,6 +1752,18 @@ class HeyGenTTSRequest(BaseModel):
     speed: Optional[str] = None
     language: Optional[str] = None
     locale: Optional[str] = None
+
+
+class ElevenLabsTTSRequest(BaseModel):
+    text: str
+    voice_id: Optional[str] = None
+    model_id: Optional[str] = "eleven_turbo_v2_5"
+    stability: Optional[float] = 0.45
+    similarity_boost: Optional[float] = 0.75
+    style: Optional[float] = 0.0
+    use_speaker_boost: Optional[bool] = True
+    output_format: Optional[str] = "mp3_44100_128"
+    optimize_streaming_latency: Optional[int] = 4
 
 
 class RecipeSearchRequest(BaseModel):
@@ -3515,6 +3530,102 @@ def generate_voice_heygen(payload: HeyGenTTSRequest):
         "duration": data.get("duration"),
         "request_id": data.get("request_id"),
     }
+
+
+@app.post("/api/voice/elevenlabs")
+def generate_voice_elevenlabs(payload: ElevenLabsTTSRequest):
+    """Generate TTS audio via ElevenLabs and return mp3 bytes."""
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY is not configured")
+
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="text exceeds 5000 characters")
+
+    voice_id = (payload.voice_id or ELEVENLABS_DEFAULT_VOICE_ID).strip()
+    if not voice_id:
+        raise HTTPException(status_code=400, detail="voice_id is required (or set ELEVENLABS_DEFAULT_VOICE_ID)")
+
+    body: Dict[str, Any] = {
+        "text": text,
+        "model_id": payload.model_id or "eleven_turbo_v2_5",
+        "voice_settings": {
+            "stability": payload.stability if payload.stability is not None else 0.45,
+            "similarity_boost": payload.similarity_boost if payload.similarity_boost is not None else 0.75,
+            "style": payload.style if payload.style is not None else 0.0,
+            "use_speaker_boost": bool(payload.use_speaker_boost) if payload.use_speaker_boost is not None else True,
+        },
+    }
+    output_format = (payload.output_format or "mp3_44100_128").strip()
+    optimize_latency = payload.optimize_streaming_latency if payload.optimize_streaming_latency is not None else 4
+    query = urllib.parse.urlencode(
+        {"output_format": output_format, "optimize_streaming_latency": optimize_latency}
+    )
+    endpoint = f"https://api.elevenlabs.io/v1/text-to-speech/{urllib.parse.quote(voice_id)}?{query}"
+
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "accept": "audio/mpeg",
+            "content-type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            audio_bytes = resp.read()
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs TTS HTTPError: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ElevenLabs TTS failed: {exc}") from exc
+
+    return Response(content=audio_bytes, media_type="audio/mpeg")
+
+
+@app.get("/api/elevenlabs/conversation-token")
+def get_elevenlabs_conversation_token(agent_id: Optional[str] = None):
+    """
+    Create a short-lived ElevenLabs conversation token for mobile/WebRTC sessions.
+    Keeps xi-api-key on server only.
+    """
+    if not ELEVENLABS_API_KEY:
+        raise HTTPException(status_code=500, detail="ELEVENLABS_API_KEY is not configured")
+
+    resolved_agent_id = (agent_id or ELEVENLABS_AGENT_ID).strip()
+    if not resolved_agent_id:
+        raise HTTPException(status_code=400, detail="agent_id is required")
+
+    endpoint = (
+        "https://api.elevenlabs.io/v1/convai/conversation/token?"
+        + urllib.parse.urlencode({"agent_id": resolved_agent_id})
+    )
+    req = urllib.request.Request(
+        endpoint,
+        headers={
+            "accept": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY,
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            payload_raw = resp.read().decode("utf-8")
+            parsed = json.loads(payload_raw)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"ElevenLabs token HTTPError: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"ElevenLabs token failed: {exc}") from exc
+
+    token = parsed.get("token")
+    if not token:
+        raise HTTPException(status_code=502, detail="ElevenLabs token missing in response")
+    return {"token": token, "agent_id": resolved_agent_id}
 
 
 @app.post("/api/voice-to-text")

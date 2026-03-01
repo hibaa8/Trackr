@@ -277,7 +277,7 @@ class AppState: ObservableObject {
         }
 
         voiceLoadingMessageIds.insert(messageId)
-        ttsCancellables[messageId] = APIService.shared.generateHeyGenVoice(text: capped)
+        ttsCancellables[messageId] = APIService.shared.generateElevenLabsVoiceAudioData(text: capped)
             .receive(on: DispatchQueue.main)
             .sink(
                 receiveCompletion: { [weak self] completion in
@@ -288,10 +288,14 @@ class AppState: ObservableObject {
                         self.ttsCancellables[messageId] = nil
                     }
                 },
-                receiveValue: { [weak self] payload in
+                receiveValue: { [weak self] data in
                     guard let self else { return }
-                    guard let urlString = payload.audio_url, let url = URL(string: urlString) else {
-                        self.requestFallbackTTS(capped, messageId: messageId, autoPlayWhenReady: autoPlayWhenReady)
+                    guard let url = self.persistTTSAudioToTemp(data) else {
+                        self.voiceLoadingMessageIds.remove(messageId)
+                        self.ttsCancellables[messageId] = nil
+                        if autoPlayWhenReady {
+                            self.currentlySpeakingMessageId = nil
+                        }
                         return
                     }
                     self.ttsURLCache[messageId] = url
@@ -350,6 +354,16 @@ class AppState: ObservableObject {
         guard !spoken.isEmpty else { return "" }
         let sanitized = spoken.replacingOccurrences(of: "[^\\x20-\\x7E\\n]", with: "", options: .regularExpression)
         return String(sanitized.prefix(450))
+    }
+
+    private func persistTTSAudioToTemp(_ data: Data) -> URL? {
+        let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("coach-voice-\(UUID().uuidString).mp3")
+        do {
+            try data.write(to: tempURL, options: .atomic)
+            return tempURL
+        } catch {
+            return nil
+        }
     }
 
     private func playAudio(from url: URL, messageId: UUID) {

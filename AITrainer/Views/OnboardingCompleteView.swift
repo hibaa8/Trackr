@@ -1229,6 +1229,7 @@ struct VoiceActiveView: View {
     @State private var selectedImage: UIImage?
     @State private var showImagePicker = false
     @State private var showImageOptions = false
+    @State private var showElevenLabsCall = false
     @State private var imagePickerSource: UIImagePickerController.SourceType = .photoLibrary
     @State private var isRecording = false
     @State private var audioRecorder: AVAudioRecorder?
@@ -1237,6 +1238,7 @@ struct VoiceActiveView: View {
     @EnvironmentObject private var appState: AppState
     @EnvironmentObject private var authManager: AuthenticationManager
     @FocusState private var inputFocused: Bool
+    private let elevenLabsAgentId = "agent_9301kjkm38bpft1vangzmecx4fxk"
 
     var body: some View {
         ZStack {
@@ -1272,6 +1274,16 @@ struct VoiceActiveView: View {
                         .foregroundColor(.white)
 
                     Spacer()
+
+                    Button(action: { showElevenLabsCall = true }) {
+                        Label("Call AI agent", systemImage: "phone.connection.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundColor(.white)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 8)
+                            .background(Color.white.opacity(0.18))
+                            .clipShape(Capsule())
+                    }
                 }
                 .padding(.horizontal, 20)
                 .padding(.top, 60)
@@ -1387,6 +1399,9 @@ struct VoiceActiveView: View {
         }
         .sheet(isPresented: $showImagePicker) {
             ImagePicker(sourceType: imagePickerSource, selectedImage: $selectedImage)
+        }
+        .sheet(isPresented: $showElevenLabsCall) {
+            ElevenLabsCallView(agentId: elevenLabsAgentId)
         }
         .confirmationDialog("Add Image", isPresented: $showImageOptions, titleVisibility: .visible) {
             if UIImagePickerController.isSourceTypeAvailable(.camera) {

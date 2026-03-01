@@ -310,6 +310,54 @@ class APIService {
         return request(endpoint: "/api/voice/heygen", method: "POST", body: jsonData)
     }
 
+    func generateElevenLabsVoiceAudioData(
+        text: String,
+        voiceId: String? = nil
+    ) -> AnyPublisher<Data, APIError> {
+        struct ElevenLabsVoiceRequest: Codable {
+            let text: String
+            let voice_id: String?
+        }
+        let body = ElevenLabsVoiceRequest(text: text, voice_id: voiceId)
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        guard let url = URL(string: "\(baseURL)/api/voice/elevenlabs") else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.httpBody = jsonData
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        if let token = getAuthToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        return session.dataTaskPublisher(for: request)
+            .tryMap { data, response in
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw APIError.invalidResponse
+                }
+                guard (200...299).contains(httpResponse.statusCode) else {
+                    throw APIError.serverError(httpResponse.statusCode)
+                }
+                return data
+            }
+            .mapError { error in
+                if let apiError = error as? APIError {
+                    return apiError
+                }
+                return APIError.requestFailed(error)
+            }
+            .eraseToAnyPublisher()
+    }
+
+    func fetchElevenLabsConversationToken(agentId: String) -> AnyPublisher<ElevenLabsConversationTokenResponse, APIError> {
+        let encoded = agentId.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? agentId
+        return request(endpoint: "/api/elevenlabs/conversation-token?agent_id=\(encoded)")
+    }
+
     func generateFallbackVoiceAudioData(
         text: String,
         voice: String = "alloy"
@@ -722,6 +770,11 @@ struct HeyGenVoiceResponse: Decodable {
     let audio_url: String?
     let duration: Double?
     let request_id: String?
+}
+
+struct ElevenLabsConversationTokenResponse: Decodable {
+    let token: String
+    let agent_id: String?
 }
 
 struct CoachChangeResponse: Decodable {
