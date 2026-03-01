@@ -541,6 +541,8 @@ private struct CoachImagePicker: UIViewControllerRepresentable {
 // MARK: - Enhanced Message Bubble
 
 struct EnhancedMessageBubble: View {
+    @EnvironmentObject var appState: AppState
+    @AppStorage("enableCoachVoiceTTS") private var coachVoiceEnabled = true
     let message: WireframeChatMessage
     @State private var showTime = false
 
@@ -576,6 +578,32 @@ struct EnhancedMessageBubble: View {
                         .font(.captionMedium)
                         .foregroundColor(.textTertiary)
                         .transition(.opacity.combined(with: .scale))
+                }
+
+                if !message.isFromUser {
+                    let isGeneratingVoice = appState.voiceLoadingMessageIds.contains(message.id)
+                    Button(action: {
+                        guard coachVoiceEnabled else { return }
+                        if isGeneratingVoice { return }
+                        if appState.currentlySpeakingMessageId == message.id {
+                            appState.stopCoachVoice()
+                        } else {
+                            appState.playCoachReplyTTS(message.text, messageId: message.id)
+                        }
+                    }) {
+                        HStack(spacing: 6) {
+                            Image(systemName: coachVoiceEnabled
+                                  ? (isGeneratingVoice ? "hourglass" : (appState.currentlySpeakingMessageId == message.id ? "stop.fill" : "speaker.wave.2.fill"))
+                                  : "speaker.slash.fill")
+                                .font(.system(size: 11, weight: .semibold))
+                            Text(coachVoiceEnabled
+                                 ? (isGeneratingVoice ? "Generating..." : (appState.currentlySpeakingMessageId == message.id ? "Stop Voice" : "Play Voice"))
+                                 : "Voice Off")
+                                .font(.system(size: 11, weight: .semibold))
+                        }
+                        .foregroundColor(coachVoiceEnabled ? .blue : .textTertiary)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             .frame(maxWidth: 280, alignment: message.isFromUser ? .trailing : .leading)

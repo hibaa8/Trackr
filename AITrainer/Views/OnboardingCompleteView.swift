@@ -1498,6 +1498,7 @@ struct VoiceActiveView: View {
                     self.threadId = response.thread_id
                     let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
                     let chunks = splitCoachReply(replyText)
+                    var firstCoachMessageId: UUID?
                     for chunk in chunks {
                         let coachMessage = VoiceMessage(
                             id: UUID(),
@@ -1506,7 +1507,19 @@ struct VoiceActiveView: View {
                             timestamp: Date(),
                             image: nil
                         )
+                        if firstCoachMessageId == nil {
+                            firstCoachMessageId = coachMessage.id
+                        }
                         self.messages.append(coachMessage)
+                    }
+                    if let firstChunk = chunks.first, let messageId = firstCoachMessageId {
+                        self.appState.prefetchCoachReplyTTS(firstChunk, messageId: messageId, autoPlayWhenReady: true)
+                    }
+                    if chunks.count > 1 {
+                        for index in 1..<chunks.count {
+                            let targetId = self.messages[self.messages.count - chunks.count + index].id
+                            self.appState.prefetchCoachReplyTTS(chunks[index], messageId: targetId, autoPlayWhenReady: false)
+                        }
                     }
                     refreshPlanAndBroadcast(userId: userId)
                 case .failure:
@@ -1932,6 +1945,8 @@ private struct GamificationSheetView: View {
 }
 
 struct VoiceMessageBubble: View {
+    @EnvironmentObject var appState: AppState
+    @AppStorage("enableCoachVoiceTTS") private var coachVoiceEnabled = true
     let message: VoiceMessage
     let coach: Coach
 
@@ -1977,6 +1992,30 @@ struct VoiceMessageBubble: View {
                             .font(.system(size: 15, weight: .medium))
                             .foregroundColor(.white)
                             .lineSpacing(4)
+
+                        Button(action: {
+                            guard coachVoiceEnabled else { return }
+                            if appState.voiceLoadingMessageIds.contains(message.id) { return }
+                            if appState.currentlySpeakingMessageId == message.id {
+                                appState.stopCoachVoice()
+                            } else {
+                                appState.playCoachReplyTTS(message.text, messageId: message.id)
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: coachVoiceEnabled
+                                      ? (appState.voiceLoadingMessageIds.contains(message.id) ? "hourglass" : (appState.currentlySpeakingMessageId == message.id ? "stop.fill" : "speaker.wave.2.fill"))
+                                      : "speaker.slash.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(coachVoiceEnabled
+                                     ? (appState.voiceLoadingMessageIds.contains(message.id) ? "Generating..." : (appState.currentlySpeakingMessageId == message.id ? "Stop Voice" : "Play Voice"))
+                                     : "Voice Off")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundColor(coachVoiceEnabled ? .white.opacity(0.95) : .white.opacity(0.6))
+                            .padding(.top, 2)
+                        }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)

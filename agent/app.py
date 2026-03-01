@@ -60,6 +60,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("GEMINI_AISTUDIO_API_KEY", "")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "").strip()
+HEYGEN_API_KEY = os.getenv("HEYGEN_API_KEY", "").strip()
 if not YOUTUBE_API_KEY:
     raise RuntimeError("Missing YOUTUBE_API_KEY env var")
 
@@ -1739,6 +1740,15 @@ class OnboardingCompletePayload(BaseModel):
     location_shared: Optional[bool] = None
     location_latitude: Optional[float] = None
     location_longitude: Optional[float] = None
+
+
+class HeyGenTTSRequest(BaseModel):
+    text: str
+    voice_id: Optional[str] = None
+    input_type: Optional[str] = "text"
+    speed: Optional[str] = None
+    language: Optional[str] = None
+    locale: Optional[str] = None
 
 
 class RecipeSearchRequest(BaseModel):
@@ -3450,6 +3460,61 @@ def generate_voice(
         return Response(content=response.content, media_type="audio/mpeg")
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"TTS failed: {exc}") from exc
+
+
+@app.post("/api/voice/heygen")
+def generate_voice_heygen(payload: HeyGenTTSRequest):
+    """Generate TTS via HeyGen Starfish and return audio URL metadata."""
+    if not HEYGEN_API_KEY:
+        raise HTTPException(status_code=500, detail="HEYGEN_API_KEY is not configured")
+    text = (payload.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text is required")
+    if len(text) > 5000:
+        raise HTTPException(status_code=400, detail="text exceeds 5000 characters")
+
+    body: Dict[str, Any] = {
+        "text": text,
+        "voice_id": payload.voice_id or "f38a635bee7a4d1f9b0a654a31d050d2",
+    }
+    if payload.input_type:
+        body["input_type"] = payload.input_type
+    if payload.speed:
+        body["speed"] = payload.speed
+    if payload.language:
+        body["language"] = payload.language
+    if payload.locale:
+        body["locale"] = payload.locale
+
+    req = urllib.request.Request(
+        "https://api.heygen.com/v1/audio/text_to_speech",
+        data=json.dumps(body).encode("utf-8"),
+        headers={
+            "accept": "application/json",
+            "content-type": "application/json",
+            "x-api-key": HEYGEN_API_KEY,
+        },
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload_raw = resp.read().decode("utf-8")
+            parsed = json.loads(payload_raw)
+    except urllib.error.HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="ignore")
+        raise HTTPException(status_code=502, detail=f"HeyGen TTS HTTPError: {detail or exc.reason}") from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"HeyGen TTS failed: {exc}") from exc
+
+    data = parsed.get("data") or {}
+    error = parsed.get("error")
+    if error:
+        raise HTTPException(status_code=502, detail=f"HeyGen TTS error: {error}")
+    return {
+        "audio_url": data.get("audio_url"),
+        "duration": data.get("duration"),
+        "request_id": data.get("request_id"),
+    }
 
 
 @app.post("/api/voice-to-text")

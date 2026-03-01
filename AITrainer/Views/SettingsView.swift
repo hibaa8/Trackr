@@ -74,6 +74,9 @@ struct SettingsView: View {
             .onAppear {
                 viewModel.loadSettings()
             }
+            .onDisappear {
+                viewModel.saveSettings()
+            }
         }
     }
 
@@ -270,6 +273,14 @@ struct SettingsView: View {
                         subtitle: "Help improve the app",
                         isOn: $viewModel.enableAnalytics
                     )
+
+                    ModernDivider()
+
+                    ModernToggleRow(
+                        title: "Enable Coach Voice",
+                        subtitle: "Play coach replies in human voice",
+                        isOn: $viewModel.enableCoachVoiceTTS
+                    )
                 }
                 .padding(.vertical, 12)
             }
@@ -410,6 +421,7 @@ class SettingsViewModel: ObservableObject {
     @Published var units = "Metric (kg, cm)"
     @Published var theme = "System"
     @Published var enableAnalytics = true
+    @Published var enableCoachVoiceTTS = true
 
     // Sheet states
     @Published var showExercisePreferences = false
@@ -420,14 +432,14 @@ class SettingsViewModel: ObservableObject {
 
     func loadSettings() {
         // Load settings from UserDefaults or Core Data
-        enableNotifications = UserDefaults.standard.bool(forKey: "enableNotifications")
-        // ... load other settings
+        enableNotifications = UserDefaults.standard.object(forKey: "enableNotifications") as? Bool ?? true
+        enableCoachVoiceTTS = UserDefaults.standard.object(forKey: "enableCoachVoiceTTS") as? Bool ?? true
     }
 
     func saveSettings() {
         // Save settings to UserDefaults or Core Data
         UserDefaults.standard.set(enableNotifications, forKey: "enableNotifications")
-        // ... save other settings
+        UserDefaults.standard.set(enableCoachVoiceTTS, forKey: "enableCoachVoiceTTS")
     }
 
     func syncHealthData() {
