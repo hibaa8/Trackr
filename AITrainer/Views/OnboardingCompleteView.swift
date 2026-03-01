@@ -1642,95 +1642,64 @@ struct VoiceActiveView: View {
     }
 
     private func prepareAndSendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
-        let shouldVerifyCalendarSync = isLikelyCalendarConfirmation(outgoingText)
-        guard shouldVerifyCalendarSync else {
-            sendChat(
-                outgoingText,
-                imageBase64: imageBase64,
-                userId: userId,
-                shouldVerifyCalendarSync: false,
-                baselineCalendarSyncCount: nil
-            )
-            return
-        }
-
-        APIService.shared.getGoogleCalendarSyncStatus(userId: userId)
-            .receive(on: DispatchQueue.main)
-            .sink(
-                receiveCompletion: { completion in
-                    if case .failure = completion {
-                        sendChat(
-                            outgoingText,
-                            imageBase64: imageBase64,
-                            userId: userId,
-                            shouldVerifyCalendarSync: true,
-                            baselineCalendarSyncCount: nil
-                        )
-                    }
-                },
-                receiveValue: { status in
-                    sendChat(
-                        outgoingText,
-                        imageBase64: imageBase64,
-                        userId: userId,
-                        shouldVerifyCalendarSync: true,
-                        baselineCalendarSyncCount: status.synced_events_count
-                    )
-                }
-            )
-            .store(in: &cancellables)
+        sendChat(outgoingText, imageBase64: imageBase64, userId: userId)
     }
 
     private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
-        AICoachService.shared.sendMessage(
-            outgoingText,
-            threadId: threadId,
-            agentId: coach.id,
-            userId: userId,
-            imageBase64: imageBase64
-        ) { result in
-            DispatchQueue.main.async {
-                self.isLoading = false
-                switch result {
-                case .success(let response):
-                    self.threadId = response.thread_id
-                    let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
-                    let chunks = splitCoachReply(replyText)
-                    var firstCoachMessageId: UUID?
-                    for chunk in chunks {
-                        let coachMessage = VoiceMessage(
+        authManager.freshGoogleCalendarAccessToken { token in
+            AICoachService.shared.sendMessage(
+                outgoingText,
+                threadId: threadId,
+                agentId: coach.id,
+                userId: userId,
+                googleAccessToken: token,
+                imageBase64: imageBase64
+            ) { result in
+                DispatchQueue.main.async {
+                    self.isLoading = false
+                    switch result {
+                    case .success(let response):
+                        self.threadId = response.thread_id
+                        let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                        let chunks = splitCoachReply(replyText)
+                        var firstCoachMessageId: UUID?
+                        for chunk in chunks {
+                            let coachMessage = VoiceMessage(
+                                id: UUID(),
+                                text: chunk,
+                                isFromCoach: true,
+                                timestamp: Date(),
+                                image: nil
+                            )
+                            if firstCoachMessageId == nil {
+                                firstCoachMessageId = coachMessage.id
+                            }
+                            self.messages.append(coachMessage)
+                        }
+                        if let firstChunk = chunks.first, let messageId = firstCoachMessageId {
+                            self.appState.prefetchCoachReplyTTS(firstChunk, messageId: messageId, autoPlayWhenReady: true)
+                        }
+                        if chunks.count > 1 {
+                            for index in 1..<chunks.count {
+                                let targetId = self.messages[self.messages.count - chunks.count + index].id
+                                self.appState.prefetchCoachReplyTTS(chunks[index], messageId: targetId, autoPlayWhenReady: false)
+                            }
+                        }
+                        maybeShowUpdateNotice(response: response, replyText: replyText)
+                        maybePromptCalendarConnection(replyText)
+                        refreshPlanAndBroadcast(userId: userId)
+                    case .failure:
+                        let errorMessage = VoiceMessage(
                             id: UUID(),
-                            text: chunk,
+                            text: "I couldn’t reach the coach service. Please make sure the backend is running.",
                             isFromCoach: true,
                             timestamp: Date(),
                             image: nil
                         )
-                        if firstCoachMessageId == nil {
-                            firstCoachMessageId = coachMessage.id
-                        }
-                        self.messages.append(coachMessage)
+                        self.messages.append(errorMessage)
+                        // Even when chat fails, refresh listeners in case server-side tools partially completed.
+                        NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                     }
-                    if let firstChunk = chunks.first, let messageId = firstCoachMessageId {
-                        self.appState.prefetchCoachReplyTTS(firstChunk, messageId: messageId, autoPlayWhenReady: true)
-                    }
-                    if chunks.count > 1 {
-                        for index in 1..<chunks.count {
-                            let targetId = self.messages[self.messages.count - chunks.count + index].id
-                            self.appState.prefetchCoachReplyTTS(chunks[index], messageId: targetId, autoPlayWhenReady: false)
-                        }
-                    }
-                    refreshPlanAndBroadcast(userId: userId)
-                case .failure:
-                    let errorMessage = VoiceMessage(
-                        id: UUID(),
-                        text: "I couldn’t reach the coach service. Please make sure the backend is running.",
-                        isFromCoach: true,
-                        timestamp: Date(),
-                        image: nil
-                    )
-                    self.messages.append(errorMessage)
-                    // Even when chat fails, refresh listeners in case server-side tools partially completed.
-                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 }
             }
         }

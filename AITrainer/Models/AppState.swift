@@ -22,6 +22,7 @@ class AppState: ObservableObject {
     @Published var coaches: [Coach] = []
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
+    private var cancellables = Set<AnyCancellable>()
     private var ttsPlayer: AVPlayer?
     private var ttsCancellables: [UUID: AnyCancellable] = [:]
     private var ttsURLCache: [UUID: URL] = [:]
