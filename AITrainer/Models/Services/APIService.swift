@@ -305,6 +305,61 @@ class APIService {
         return request(endpoint: "/api/ashley/chat", method: "POST", body: jsonData)
     }
 
+    func generateHeyGenVoice(
+        text: String,
+        voiceId: String? = nil
+    ) -> AnyPublisher<HeyGenVoiceResponse, APIError> {
+        struct HeyGenVoiceRequest: Codable {
+            let text: String
+            let voice_id: String?
+        }
+        let body = HeyGenVoiceRequest(text: text, voice_id: voiceId)
+        guard let jsonData = try? JSONEncoder().encode(body) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/voice/heygen", method: "POST", body: jsonData)
+    }
+
+    func generateFallbackVoiceAudioData(
+        text: String,
+        voice: String = "alloy"
+    ) -> AnyPublisher<Data, APIError> {
+        guard var components = URLComponents(string: "\(baseURL)/api/voice") else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        components.queryItems = [
+            URLQueryItem(name: "text", value: text),
+            URLQueryItem(name: "voice", value: voice)
+        ]
+        guard let url = components.url else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        var request = URLRequest(url: url)
+        request.httpMethod = "GET"
+        request.setValue("audio/mpeg", forHTTPHeaderField: "Accept")
+        if let token = getAuthToken() {
+            request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        }
+
+        return session.dataTaskPublisher(for: request)
+            .tryMap { data, response in
+                guard let httpResponse = response as? HTTPURLResponse else {
+                    throw APIError.invalidResponse
+                }
+                guard (200...299).contains(httpResponse.statusCode) else {
+                    throw APIError.serverError(httpResponse.statusCode)
+                }
+                return data
+            }
+            .mapError { error in
+                if let apiError = error as? APIError {
+                    return apiError
+                }
+                return APIError.requestFailed(error)
+            }
+            .eraseToAnyPublisher()
+    }
+
     func completeAshleyOnboarding(
         userId: Int,
         coachId: Int? = nil,
@@ -674,6 +729,12 @@ struct OnboardingCompletePayload: Codable {
 struct OnboardingCompleteResponse: Decodable {
     let ok: Bool?
     let error: String?
+}
+
+struct HeyGenVoiceResponse: Decodable {
+    let audio_url: String?
+    let duration: Double?
+    let request_id: String?
 }
 
 struct CoachChangeResponse: Decodable {

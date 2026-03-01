@@ -1681,110 +1681,58 @@ struct VoiceActiveView: View {
             .store(in: &cancellables)
     }
 
-    private func sendChat(
-        _ outgoingText: String,
-        imageBase64: String?,
-        userId: Int,
-        shouldVerifyCalendarSync: Bool,
-        baselineCalendarSyncCount: Int?
-    ) {
-        authManager.freshGoogleCalendarAccessToken { token in
-            AICoachService.shared.sendMessage(
-                outgoingText,
-                threadId: threadId,
-                agentId: coach.id,
-                userId: userId,
-                googleAccessToken: token,
-                imageBase64: imageBase64
-            ) { result in
-                DispatchQueue.main.async {
-                    self.isLoading = false
-                    switch result {
-                    case .success(let response):
-                        self.threadId = response.thread_id
-                        let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
-                        let chunks = splitCoachReply(replyText)
-                        for chunk in chunks {
-                            let coachMessage = VoiceMessage(
-                                id: UUID(),
-                                text: chunk,
-                                isFromCoach: true,
-                                timestamp: Date(),
-                                image: nil
-                            )
-                            self.messages.append(coachMessage)
-                        }
-                        maybeShowUpdateNotice(response: response, replyText: replyText)
-                        maybePromptCalendarConnection(replyText)
-                        refreshPlanAndBroadcast(userId: userId)
-                    case .failure:
-                        if shouldVerifyCalendarSync {
-                            verifyCalendarSyncAfterChatFailure(
-                                userId: userId,
-                                baselineCalendarSyncCount: baselineCalendarSyncCount
-                            )
-                        } else {
-                            let errorMessage = VoiceMessage(
-                                id: UUID(),
-                                text: "I couldn’t reach the coach service. Please make sure the backend is running.",
-                                isFromCoach: true,
-                                timestamp: Date(),
-                                image: nil
-                            )
-                            self.messages.append(errorMessage)
-                            // Even when chat fails, refresh listeners in case server-side tools partially completed.
-                            NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private func verifyCalendarSyncAfterChatFailure(userId: Int, baselineCalendarSyncCount: Int?) {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) {
-            APIService.shared.getGoogleCalendarSyncStatus(userId: userId)
-                .receive(on: DispatchQueue.main)
-                .sink(
-                    receiveCompletion: { completion in
-                        guard case .failure = completion else { return }
-                        let errorMessage = VoiceMessage(
+    private func sendChat(_ outgoingText: String, imageBase64: String?, userId: Int) {
+        AICoachService.shared.sendMessage(
+            outgoingText,
+            threadId: threadId,
+            agentId: coach.id,
+            userId: userId,
+            imageBase64: imageBase64
+        ) { result in
+            DispatchQueue.main.async {
+                self.isLoading = false
+                switch result {
+                case .success(let response):
+                    self.threadId = response.thread_id
+                    let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                    let chunks = splitCoachReply(replyText)
+                    var firstCoachMessageId: UUID?
+                    for chunk in chunks {
+                        let coachMessage = VoiceMessage(
                             id: UUID(),
-                            text: "I couldn’t reach the coach service. Please make sure the backend is running.",
+                            text: chunk,
                             isFromCoach: true,
                             timestamp: Date(),
                             image: nil
                         )
-                        self.messages.append(errorMessage)
-                        NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
-                    },
-                    receiveValue: { status in
-                        if let baseline = baselineCalendarSyncCount, status.synced_events_count > baseline {
-                            let addedCount = status.synced_events_count - baseline
-                            let successMessage = VoiceMessage(
-                                id: UUID(),
-                                text: "Calendar sync completed. I added \(addedCount) event(s) to your Google Calendar.",
-                                isFromCoach: true,
-                                timestamp: Date(),
-                                image: nil
-                            )
-                            self.messages.append(successMessage)
-                            self.showTopNotice("Calendar updated - events were added successfully.")
-                            self.refreshPlanAndBroadcast(userId: userId)
-                        } else {
-                            let errorMessage = VoiceMessage(
-                                id: UUID(),
-                                text: "I couldn’t confirm calendar sync yet. Please try again in a moment.",
-                                isFromCoach: true,
-                                timestamp: Date(),
-                                image: nil
-                            )
-                            self.messages.append(errorMessage)
-                            NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                        if firstCoachMessageId == nil {
+                            firstCoachMessageId = coachMessage.id
+                        }
+                        self.messages.append(coachMessage)
+                    }
+                    if let firstChunk = chunks.first, let messageId = firstCoachMessageId {
+                        self.appState.prefetchCoachReplyTTS(firstChunk, messageId: messageId, autoPlayWhenReady: true)
+                    }
+                    if chunks.count > 1 {
+                        for index in 1..<chunks.count {
+                            let targetId = self.messages[self.messages.count - chunks.count + index].id
+                            self.appState.prefetchCoachReplyTTS(chunks[index], messageId: targetId, autoPlayWhenReady: false)
                         }
                     }
-                )
-                .store(in: &cancellables)
+                    refreshPlanAndBroadcast(userId: userId)
+                case .failure:
+                    let errorMessage = VoiceMessage(
+                        id: UUID(),
+                        text: "I couldn’t reach the coach service. Please make sure the backend is running.",
+                        isFromCoach: true,
+                        timestamp: Date(),
+                        image: nil
+                    )
+                    self.messages.append(errorMessage)
+                    // Even when chat fails, refresh listeners in case server-side tools partially completed.
+                    NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
+                }
+            }
         }
     }
 
@@ -2321,6 +2269,8 @@ private struct GamificationSheetView: View {
 }
 
 struct VoiceMessageBubble: View {
+    @EnvironmentObject var appState: AppState
+    @AppStorage("enableCoachVoiceTTS") private var coachVoiceEnabled = true
     let message: VoiceMessage
     let coach: Coach
     
@@ -2374,6 +2324,30 @@ struct VoiceMessageBubble: View {
                             .font(.system(size: 15, weight: .medium))
                             .foregroundColor(.white)
                             .lineSpacing(4)
+
+                        Button(action: {
+                            guard coachVoiceEnabled else { return }
+                            if appState.voiceLoadingMessageIds.contains(message.id) { return }
+                            if appState.currentlySpeakingMessageId == message.id {
+                                appState.stopCoachVoice()
+                            } else {
+                                appState.playCoachReplyTTS(message.text, messageId: message.id)
+                            }
+                        }) {
+                            HStack(spacing: 6) {
+                                Image(systemName: coachVoiceEnabled
+                                      ? (appState.voiceLoadingMessageIds.contains(message.id) ? "hourglass" : (appState.currentlySpeakingMessageId == message.id ? "stop.fill" : "speaker.wave.2.fill"))
+                                      : "speaker.slash.fill")
+                                    .font(.system(size: 11, weight: .semibold))
+                                Text(coachVoiceEnabled
+                                     ? (appState.voiceLoadingMessageIds.contains(message.id) ? "Generating..." : (appState.currentlySpeakingMessageId == message.id ? "Stop Voice" : "Play Voice"))
+                                     : "Voice Off")
+                                    .font(.system(size: 11, weight: .semibold))
+                            }
+                            .foregroundColor(coachVoiceEnabled ? .white.opacity(0.95) : .white.opacity(0.6))
+                            .padding(.top, 2)
+                        }
+                        .buttonStyle(.plain)
                     }
                     .padding(.horizontal, 16)
                     .padding(.vertical, 12)

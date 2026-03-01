@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import Combine
+import AVFoundation
 
 extension Notification.Name {
     static let dataDidUpdate = Notification.Name("DataDidUpdate")
@@ -21,7 +22,11 @@ class AppState: ObservableObject {
     @Published var coaches: [Coach] = []
     private var coachThreadId: String?
     private var awaitingPlanApproval = false
-    private var cancellables = Set<AnyCancellable>()
+    private var ttsPlayer: AVPlayer?
+    private var ttsCancellables: [UUID: AnyCancellable] = [:]
+    private var ttsURLCache: [UUID: URL] = [:]
+    @Published var currentlySpeakingMessageId: UUID?
+    @Published var voiceLoadingMessageIds: Set<UUID> = []
 
     // Macros
     @Published var proteinCurrent: Int = 0
@@ -52,6 +57,10 @@ class AppState: ObservableObject {
         selectedCoach = coach
         coachThreadId = nil
         awaitingPlanApproval = false
+        stopCoachVoice()
+        ttsURLCache.removeAll()
+        ttsCancellables.removeAll()
+        voiceLoadingMessageIds.removeAll()
         chatMessages = [
             WireframeChatMessage(
                 text: "Hi! I'm \(coach.name). How can I help you today?",
@@ -164,7 +173,9 @@ class AppState: ObservableObject {
                 case .success(let response):
                     self?.coachThreadId = response.thread_id
                     let replyText = response.reply.isEmpty ? "How can I help you further?" : response.reply
-                    self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    let coachMsg = WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date())
+                    self?.chatMessages.append(coachMsg)
+                    self?.prefetchCoachReplyTTS(replyText, messageId: coachMsg.id, autoPlayWhenReady: true)
                     NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
 
                     if response.requires_feedback {
@@ -222,7 +233,9 @@ class AppState: ObservableObject {
                 switch result {
                 case .success(let response):
                     let replyText = response.reply.isEmpty ? "Plan updated." : response.reply
-                    self?.chatMessages.append(WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date()))
+                    let coachMsg = WireframeChatMessage(text: replyText, isFromUser: false, timestamp: Date())
+                    self?.chatMessages.append(coachMsg)
+                    self?.prefetchCoachReplyTTS(replyText, messageId: coachMsg.id, autoPlayWhenReady: true)
                     NotificationCenter.default.post(name: .dataDidUpdate, object: nil)
                 case .failure:
                     self?.chatMessages.append(
@@ -247,5 +260,133 @@ class AppState: ObservableObject {
         } else {
             return "Fantastic consistency today! Keep up the amazing work. Remember to stay hydrated! 💧"
         }
+    }
+
+    private var coachVoiceEnabled: Bool {
+        UserDefaults.standard.object(forKey: "enableCoachVoiceTTS") as? Bool ?? true
+    }
+
+    func playCoachReplyTTS(_ text: String, messageId: UUID?) {
+        guard coachVoiceEnabled else { return }
+        guard let messageId else { return }
+        if let cachedURL = ttsURLCache[messageId] {
+            playAudio(from: cachedURL, messageId: messageId)
+            return
+        }
+        prefetchCoachReplyTTS(text, messageId: messageId, autoPlayWhenReady: true)
+    }
+
+    func prefetchCoachReplyTTS(_ text: String, messageId: UUID, autoPlayWhenReady: Bool = false) {
+        guard coachVoiceEnabled else { return }
+        if autoPlayWhenReady {
+            currentlySpeakingMessageId = messageId
+        }
+        if let cachedURL = ttsURLCache[messageId] {
+            if autoPlayWhenReady {
+                playAudio(from: cachedURL, messageId: messageId)
+            }
+            return
+        }
+        if voiceLoadingMessageIds.contains(messageId) {
+            return
+        }
+
+        let capped = sanitizeTTSInput(text)
+        guard !capped.isEmpty else {
+            if autoPlayWhenReady {
+                currentlySpeakingMessageId = nil
+            }
+            return
+        }
+
+        voiceLoadingMessageIds.insert(messageId)
+        ttsCancellables[messageId] = APIService.shared.generateHeyGenVoice(text: capped)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    guard let self else { return }
+                    if case .failure = completion {
+                        self.requestFallbackTTS(capped, messageId: messageId, autoPlayWhenReady: autoPlayWhenReady)
+                    } else {
+                        self.ttsCancellables[messageId] = nil
+                    }
+                },
+                receiveValue: { [weak self] payload in
+                    guard let self else { return }
+                    guard let urlString = payload.audio_url, let url = URL(string: urlString) else {
+                        self.requestFallbackTTS(capped, messageId: messageId, autoPlayWhenReady: autoPlayWhenReady)
+                        return
+                    }
+                    self.ttsURLCache[messageId] = url
+                    self.voiceLoadingMessageIds.remove(messageId)
+                    self.ttsCancellables[messageId] = nil
+                    if autoPlayWhenReady {
+                        self.playAudio(from: url, messageId: messageId)
+                    }
+                }
+            )
+    }
+
+    func stopCoachVoice() {
+        ttsPlayer?.pause()
+        ttsPlayer = nil
+        currentlySpeakingMessageId = nil
+    }
+
+    private func requestFallbackTTS(_ text: String, messageId: UUID, autoPlayWhenReady: Bool) {
+        let voice = selectedCoach.map { CoachVoiceProfile.preferredBackendVoice(for: $0) } ?? "alloy"
+        ttsCancellables[messageId] = APIService.shared.generateFallbackVoiceAudioData(text: text, voice: voice)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { [weak self] completion in
+                    guard let self else { return }
+                    self.voiceLoadingMessageIds.remove(messageId)
+                    self.ttsCancellables[messageId] = nil
+                    if case .failure = completion {
+                        if autoPlayWhenReady {
+                            self.currentlySpeakingMessageId = nil
+                        }
+                    }
+                },
+                receiveValue: { [weak self] data in
+                    guard let self else { return }
+                    let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent("coach-voice-\(UUID().uuidString).mp3")
+                    do {
+                        try data.write(to: tempURL, options: .atomic)
+                        self.ttsURLCache[messageId] = tempURL
+                        self.voiceLoadingMessageIds.remove(messageId)
+                        if autoPlayWhenReady {
+                            self.playAudio(from: tempURL, messageId: messageId)
+                        }
+                    } catch {
+                        self.voiceLoadingMessageIds.remove(messageId)
+                        if autoPlayWhenReady {
+                            self.currentlySpeakingMessageId = nil
+                        }
+                    }
+                }
+            )
+    }
+
+    private func sanitizeTTSInput(_ text: String) -> String {
+        let spoken = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !spoken.isEmpty else { return "" }
+        let sanitized = spoken.replacingOccurrences(of: "[^\\x20-\\x7E\\n]", with: "", options: .regularExpression)
+        return String(sanitized.prefix(450))
+    }
+
+    private func playAudio(from url: URL, messageId: UUID) {
+        ttsPlayer?.pause()
+        let player = AVPlayer(url: url)
+        ttsPlayer = player
+        currentlySpeakingMessageId = messageId
+        NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: player.currentItem,
+            queue: .main
+        ) { [weak self] _ in
+            self?.currentlySpeakingMessageId = nil
+        }
+        player.play()
     }
 }
