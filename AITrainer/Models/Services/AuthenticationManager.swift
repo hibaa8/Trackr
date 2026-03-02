@@ -40,6 +40,19 @@ class AuthenticationManager: ObservableObject {
         return "\(token.prefix(6))...\(token.suffix(4))"
     }
 
+    private func logAuth(_ message: String) {
+        print("[Auth] \(message)")
+    }
+
+    private func isCancelledAuthFlow(_ error: Error) -> Bool {
+        let nsError = error as NSError
+        if nsError.domain == ASWebAuthenticationSessionError.errorDomain && nsError.code == ASWebAuthenticationSessionError.canceledLogin.rawValue {
+            return true
+        }
+        let lowered = nsError.localizedDescription.lowercased()
+        return lowered.contains("canceled") || lowered.contains("cancelled")
+    }
+
     private struct UserRecord: Codable {
         let id: Int?
         let email: String
@@ -125,7 +138,8 @@ class AuthenticationManager: ObservableObject {
                 userDefaults.set(response.name, forKey: "currentUserName")
                 isLoading = false
             } catch {
-                authErrorMessage = error.localizedDescription
+                logAuth("signIn failed: \(error.localizedDescription)")
+                authErrorMessage = nil
                 isLoading = false
             }
         }
@@ -134,7 +148,8 @@ class AuthenticationManager: ObservableObject {
     func signInDemo() {
         let storedDemoId = UserDefaults.standard.integer(forKey: "demoUserId")
         guard storedDemoId > 0 else {
-            authErrorMessage = "No demo user configured. Please sign in."
+            logAuth("signInDemo aborted: no demo user configured")
+            authErrorMessage = nil
             return
         }
         demoUserId = storedDemoId
@@ -158,7 +173,8 @@ class AuthenticationManager: ObservableObject {
                 userDefaults.set(response.name, forKey: "currentUserName")
                 isLoading = false
             } catch {
-                authErrorMessage = error.localizedDescription
+                logAuth("signUp failed: \(error.localizedDescription)")
+                authErrorMessage = nil
                 isLoading = false
             }
         }
@@ -206,7 +222,8 @@ class AuthenticationManager: ObservableObject {
     func signInWithGoogle() {
         authErrorMessage = nil
         guard let supabase else {
-            authErrorMessage = "Supabase is not configured."
+            logAuth("Google sign-in aborted: Supabase is not configured")
+            authErrorMessage = nil
             return
         }
 
@@ -215,7 +232,8 @@ class AuthenticationManager: ObservableObject {
         Task {
             do {
                 guard let redirectURL = SupabaseConfig.authRedirectURL else {
-                    authErrorMessage = "Google redirect URL is missing."
+                    logAuth("Google sign-in aborted: redirect URL is missing")
+                    authErrorMessage = nil
                     isLoading = false
                     return
                 }
@@ -245,7 +263,12 @@ class AuthenticationManager: ObservableObject {
                 isAuthenticated = false
                 currentUser = nil
                 currentUserId = nil
-                authErrorMessage = error.localizedDescription
+                if isCancelledAuthFlow(error) {
+                    logAuth("Google sign-in cancelled by user")
+                } else {
+                    logAuth("Google sign-in failed: \(error.localizedDescription)")
+                }
+                authErrorMessage = nil
                 isLoading = false
             }
         }

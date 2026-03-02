@@ -416,6 +416,8 @@ def _extract_og_image(url: str) -> Optional[str]:
 
 def _store_meal_log(payload: FoodLogRequest) -> None:
     _ensure_meal_log_schema()
+    if int(payload.total_calories or 0) <= 0:
+        raise ValueError("Could not determine calories for this meal")
     logged_at = payload.logged_at or datetime.now().isoformat(timespec="seconds")
     description = payload.food_name
     day_key = logged_at[:10]
@@ -1622,6 +1624,26 @@ class HealthActivityLogRequest(BaseModel):
     active_minutes: int = 0
     workouts_summary: Optional[str] = None
     source: str = "apple_health"
+
+
+class WorkoutSessionExerciseInput(BaseModel):
+    name: str
+    sets_reps: Optional[str] = None
+    rpe: Optional[str] = None
+
+
+class WorkoutSessionLogRequest(BaseModel):
+    user_id: int
+    date: Optional[str] = None
+    workout_title: str
+    elapsed_seconds: int = 0
+    exercises: List[WorkoutSessionExerciseInput] = []
+    notes: Optional[str] = None
+
+
+class WorkoutSessionLogResponse(BaseModel):
+    ok: bool
+    message: str
 
 
 class HealthActivityImpactItemResponse(BaseModel):
@@ -3138,8 +3160,114 @@ def generate_recipe_image(payload: RecipeImageRequest):
 @app.post("/food/logs")
 def log_food(payload: FoodLogRequest):
     """Persist a scanned meal log."""
-    _store_meal_log(payload)
+    try:
+        _store_meal_log(payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"status": "ok"}
+
+
+@app.post("/api/workout-session/log", response_model=WorkoutSessionLogResponse)
+def log_workout_session_direct(payload: WorkoutSessionLogRequest):
+    """Persist a completed guided workout to cache + database."""
+    try:
+        elapsed_seconds = max(0, int(payload.elapsed_seconds or 0))
+        duration_min = max(1, int(round(elapsed_seconds / 60.0)))
+        session_date = payload.date or date.today().isoformat()
+        exercise_items = [
+            {
+                "name": ex.name,
+                "sets_reps": ex.sets_reps,
+                "rpe": ex.rpe,
+            }
+            for ex in (payload.exercises or [])
+            if ex.name and ex.name.strip()
+        ]
+        details: Dict[str, Any] = {"exercises": exercise_items}
+        if payload.notes:
+            details["notes"] = payload.notes
+        workout_entry = {
+            "id": None,
+            "user_id": payload.user_id,
+            "date": session_date,
+            "workout_type": payload.workout_title or "Workout",
+            "duration_min": duration_min,
+            "calories_burned": 0,
+            "notes": json.dumps(details),
+            "completed": 1,
+            "source": "guided_workout",
+        }
+
+        cached_session = SESSION_CACHE.setdefault(payload.user_id, {})
+        draft = cached_session.get("workout_sessions")
+        if not isinstance(draft, dict):
+            draft = {"sessions": [], "new_sessions": []}
+
+        sessions = draft.get("sessions", []) if isinstance(draft, dict) else []
+        updated = False
+        for idx, existing in enumerate(sessions):
+            if str(existing.get("date") or "") == session_date:
+                sessions[idx] = workout_entry
+                updated = True
+                break
+        if not updated:
+            sessions.insert(0, workout_entry)
+        draft["sessions"] = sessions
+
+        pending = draft.get("new_sessions", []) if isinstance(draft.get("new_sessions", []), list) else []
+        pending = [entry for entry in pending if str(entry.get("date") or "") != session_date]
+        pending.append(workout_entry)
+        draft["new_sessions"] = pending
+
+        cached_session["workout_sessions"] = draft
+        try:
+            _redis_set_json(_draft_workout_sessions_key(payload.user_id), draft, ttl_seconds=CACHE_TTL_LONG)
+        except Exception:
+            pass
+
+        with get_db_conn() as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "DELETE FROM workout_sessions WHERE user_id = ? AND date = ?",
+                (payload.user_id, session_date),
+            )
+            cur.execute(
+                """
+                INSERT INTO workout_sessions (
+                    user_id, date, workout_type, duration_min, calories_burned, notes, completed, source
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    payload.user_id,
+                    session_date,
+                    workout_entry["workout_type"],
+                    workout_entry["duration_min"],
+                    workout_entry["calories_burned"],
+                    workout_entry["notes"],
+                    workout_entry["completed"],
+                    workout_entry["source"],
+                ),
+            )
+            conn.commit()
+
+        for cache_key in (
+            "workout:latest",
+            f"session_hydration:{payload.user_id}",
+            f"user:{payload.user_id}:progress",
+            f"user:{payload.user_id}:meal_logs",
+        ):
+            try:
+                _redis_delete(cache_key)
+            except Exception:
+                pass
+
+        _award_points(payload.user_id, 5, f"workout_log:{datetime.now().isoformat(timespec='seconds')}")
+        _apply_daily_checklist_completion_bonus(payload.user_id, session_date)
+
+        message = "Workout logged from guided session."
+        return WorkoutSessionLogResponse(ok=True, message=str(message))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Workout logging failed: {exc}") from exc
 
 
 @app.post("/api/transcribe")

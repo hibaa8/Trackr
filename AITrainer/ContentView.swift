@@ -24,7 +24,11 @@ struct ContentView: View {
     var body: some View {
         Group {
             if authManager.forceLoginOnLaunch {
-                WelcomeView()
+                if authManager.isLoading {
+                    AuthLoadingView()
+                } else {
+                    WelcomeView()
+                }
             } else if authManager.isAuthenticated {
                 if authManager.hasCompletedOnboarding {
                     if isPreparingDashboard {
@@ -36,7 +40,11 @@ struct ContentView: View {
                     WelcomeOnboardingView()
                 }
             } else {
-                WelcomeView()
+                if authManager.isLoading {
+                    AuthLoadingView()
+                } else {
+                    WelcomeView()
+                }
             }
         }
         .onAppear {
@@ -224,6 +232,26 @@ struct ContentView: View {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter.string(from: Date())
+    }
+}
+
+private struct AuthLoadingView: View {
+    var body: some View {
+        ZStack {
+            Color.black.ignoresSafeArea()
+            VStack(spacing: 14) {
+                ProgressView()
+                    .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                    .scaleEffect(1.2)
+                Text("Signing you in...")
+                    .font(.system(size: 18, weight: .semibold))
+                    .foregroundColor(.white)
+                Text("Preparing your account and next step.")
+                    .font(.system(size: 14))
+                    .foregroundColor(.white.opacity(0.7))
+            }
+            .padding(.horizontal, 24)
+        }
     }
 }
 

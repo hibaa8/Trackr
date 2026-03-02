@@ -209,6 +209,9 @@ def _sync_meal_logs_to_db(user_id: int, meals: List[dict]) -> None:
                 continue
             logged_at = _normalize_meal_time(str(logged_at))
             calories = int(float(meal.get("calories", 0) or 0))
+            if calories <= 0:
+                # Never persist meals without a valid calorie estimate.
+                continue
             protein_g = int(float(meal.get("protein_g", 0) or 0))
             carbs_g = int(float(meal.get("carbs_g", 0) or 0))
             fat_g = int(float(meal.get("fat_g", 0) or 0))
@@ -295,6 +298,15 @@ def log_meal(
         return "What items were included in the meal?"
     if total_calories is None:
         total_calories = _estimate_meal_calories(meal_items)
+    try:
+        total_calories = int(total_calories)
+    except (TypeError, ValueError):
+        total_calories = 0
+    if total_calories <= 0:
+        return (
+            "I couldn't determine a reliable calorie estimate for that meal, so I didn't log it. "
+            "Please share more detail (portion size, ingredients, or brand) and I'll estimate it accurately."
+        )
     macros = {
         "protein_g": protein_g,
         "carbs_g": carbs_g,

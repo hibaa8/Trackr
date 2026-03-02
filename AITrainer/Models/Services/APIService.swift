@@ -213,6 +213,13 @@ class APIService {
     func getWorkoutPlan() -> AnyPublisher<WorkoutPlan, APIError> {
         return request(endpoint: "/workout-plan")
     }
+
+    func logGuidedWorkoutSession(_ payload: WorkoutSessionLogRequest) -> AnyPublisher<WorkoutSessionLogResponse, APIError> {
+        guard let jsonData = try? JSONEncoder().encode(payload) else {
+            return Fail(error: APIError.invalidURL).eraseToAnyPublisher()
+        }
+        return request(endpoint: "/api/workout-session/log", method: "POST", body: jsonData)
+    }
     
     // MARK: - Progress
     

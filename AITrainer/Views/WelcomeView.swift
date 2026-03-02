@@ -14,7 +14,6 @@ struct WelcomeView: View {
     @State private var email = ""
     @State private var password = ""
     @State private var confirmPassword = ""
-    @State private var errorMessage: String?
 
     enum AuthMode: String, CaseIterable {
         case signIn = "Sign In"
@@ -41,11 +40,6 @@ struct WelcomeView: View {
                     footerSection
                         .padding(.bottom, 40)
                 }
-            }
-        }
-        .onReceive(authManager.$authErrorMessage) { message in
-            if let message {
-                errorMessage = message
             }
         }
         .preferredColorScheme(.dark)
@@ -123,12 +117,6 @@ private extension WelcomeView {
                     )
                 }
 
-                if let errorMessage = errorMessage {
-                    Text(errorMessage)
-                        .font(.captionLarge)
-                        .foregroundColor(.red)
-                }
-
                 AuthPrimaryButton(title: mode.rawValue) {
                     handleAuth()
                 }
@@ -141,6 +129,16 @@ private extension WelcomeView {
 
             }
             .padding(24)
+            .allowsHitTesting(!authManager.isLoading)
+            .overlay(alignment: .center) {
+                if authManager.isLoading {
+                    Color.black.opacity(0.25)
+                        .clipShape(RoundedRectangle(cornerRadius: 20))
+                    ProgressView()
+                        .progressViewStyle(CircularProgressViewStyle(tint: .white))
+                        .scaleEffect(1.1)
+                }
+            }
         }
     }
 
@@ -156,20 +154,19 @@ private extension WelcomeView {
     }
 
     func handleAuth() {
-        errorMessage = nil
         let trimmedEmail = email.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmedEmail.isEmpty || password.isEmpty {
-            errorMessage = "Email and password are required."
+            print("[Auth] Validation failed: missing email or password")
             return
         }
 
         if mode == .signUp {
             if !trimmedEmail.contains("@") {
-                errorMessage = "For testing, sign-up email only needs an @ symbol."
+                print("[Auth] Validation failed: sign-up email missing @")
                 return
             }
             if password != confirmPassword {
-                errorMessage = "Passwords do not match."
+                print("[Auth] Validation failed: password mismatch")
                 return
             }
             authManager.signUp(email: trimmedEmail, password: password)
@@ -179,7 +176,6 @@ private extension WelcomeView {
     }
 
     func handleGoogleSignIn() {
-        errorMessage = nil
         authManager.signInWithGoogle()
     }
 }

@@ -2358,7 +2358,7 @@ struct CoachChangeView: View {
     @Environment(\.dismiss) var dismiss
     @EnvironmentObject var appState: AppState
     @EnvironmentObject var backendConnector: FrontendBackendConnector
-    @State private var selectedCoach: Coach?
+    @State private var selectedCoachForBio: Coach?
     @State private var isUpdating = false
     @State private var errorMessage: String?
 
@@ -2366,56 +2366,59 @@ struct CoachChangeView: View {
 
     var body: some View {
         NavigationView {
-            ZStack {
-                Color.black.ignoresSafeArea()
+            Group {
+                if let selectedCoachForBio {
+                    CoachChangeBioView(
+                        coach: selectedCoachForBio,
+                        isCurrent: selectedCoachForBio.id == currentCoach.id,
+                        isUpdating: isUpdating,
+                        onBack: {
+                            withAnimation(.easeInOut(duration: 0.25)) {
+                                self.selectedCoachForBio = nil
+                            }
+                        },
+                        onSwitch: {
+                            changeCoach(to: selectedCoachForBio)
+                        }
+                    )
+                } else {
+                    ZStack {
+                        Color.black.ignoresSafeArea()
 
-                VStack(spacing: 24) {
-                    // Header
-                    VStack(spacing: 12) {
-                        Text("Choose Your Coach")
-                            .font(.system(size: 28, weight: .bold, design: .rounded))
-                            .foregroundColor(.white)
+                        VStack(spacing: 24) {
+                            VStack(spacing: 12) {
+                                Text("Choose Your Coach")
+                                    .font(.system(size: 28, weight: .bold, design: .rounded))
+                                    .foregroundColor(.white)
 
-                        Text("Your coach will guide your fitness journey with personalized advice")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundColor(.white.opacity(0.8))
-                            .multilineTextAlignment(.center)
-                    }
-                    .padding(.top, 20)
+                                Text("Tap a coach to view their full bio and intro video.")
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.white.opacity(0.8))
+                                    .multilineTextAlignment(.center)
+                            }
+                            .padding(.top, 20)
 
-                    // Coach Grid
-                    ScrollView(showsIndicators: false) {
-                        LazyVGrid(columns: columns, spacing: 16) {
-                            ForEach(appState.coaches) { coach in
-                                CoachChangeCard(
-                                    coach: coach,
-                                    isSelected: selectedCoach?.id == coach.id,
-                                    isCurrent: currentCoach.id == coach.id
-                                ) {
-                                    withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
-                                        selectedCoach = coach
+                            ScrollView(showsIndicators: false) {
+                                LazyVGrid(columns: columns, spacing: 16) {
+                                    ForEach(appState.coaches.filter { $0.id != currentCoach.id }) { coach in
+                                        CoachChangeCard(
+                                            coach: coach,
+                                            isSelected: false,
+                                            isCurrent: false
+                                        ) {
+                                            withAnimation(.spring(response: 0.3, dampingFraction: 0.7)) {
+                                                selectedCoachForBio = coach
+                                            }
+                                            let selectionFeedback = UISelectionFeedbackGenerator()
+                                            selectionFeedback.selectionChanged()
+                                        }
                                     }
-
-                                    // Haptic feedback
-                                    let selectionFeedback = UISelectionFeedbackGenerator()
-                                    selectionFeedback.selectionChanged()
                                 }
+                                .padding(.horizontal, 20)
+                                .padding(.bottom, 40)
                             }
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.bottom, 100)
                     }
-                }
-
-                // Floating action button
-                if let selectedCoach = selectedCoach, selectedCoach.id != currentCoach.id {
-                    VStack {
-                        Spacer()
-                        changeCoachButton(selectedCoach)
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 40)
-                    }
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
                 }
             }
             .navigationTitle("")
@@ -2430,7 +2433,7 @@ struct CoachChangeView: View {
             }
         }
         .onAppear {
-            selectedCoach = currentCoach
+            selectedCoachForBio = nil
         }
         .alert(
             "Unable to Change Coach",
@@ -2445,48 +2448,6 @@ struct CoachChangeView: View {
                 Text(errorMessage ?? "Please try again later.")
             }
         )
-    }
-
-    private func changeCoachButton(_ coach: Coach) -> some View {
-        Button(action: {
-            changeCoach(to: coach)
-        }) {
-            HStack(spacing: 12) {
-                if isUpdating {
-                    ProgressView()
-                        .scaleEffect(0.8)
-                        .tint(.white)
-                } else {
-                    Image(systemName: "person.2.circle.fill")
-                        .font(.system(size: 20, weight: .semibold))
-                        .foregroundColor(.white)
-                }
-
-                Text(isUpdating ? "Switching Coach..." : "Switch to \(coach.name)")
-                    .font(.system(size: 16, weight: .semibold, design: .rounded))
-                    .foregroundColor(.white)
-            }
-            .frame(maxWidth: .infinity)
-            .frame(height: 56)
-            .background(
-                RoundedRectangle(cornerRadius: 16)
-                    .fill(
-                        LinearGradient(
-                            colors: [Color(coach.primaryColor), Color(coach.secondaryColor)],
-                            startPoint: .leading,
-                            endPoint: .trailing
-                        )
-                    )
-            )
-            .overlay(
-                RoundedRectangle(cornerRadius: 16)
-                    .stroke(Color.white.opacity(0.3), lineWidth: 1)
-            )
-            .shadow(color: Color(coach.primaryColor).opacity(0.4), radius: 8, x: 0, y: 4)
-            .scaleEffect(isUpdating ? 0.98 : 1.0)
-            .animation(.spring(response: 0.3, dampingFraction: 0.7), value: isUpdating)
-        }
-        .disabled(isUpdating)
     }
 
     private func changeCoach(to newCoach: Coach) {
@@ -2519,6 +2480,172 @@ struct CoachChangeView: View {
                     errorMessage = error.localizedDescription
                 }
             }
+        }
+    }
+}
+
+struct CoachChangeBioView: View {
+    let coach: Coach
+    let isCurrent: Bool
+    let isUpdating: Bool
+    let onBack: () -> Void
+    let onSwitch: () -> Void
+
+    @State private var showIntroVideo = false
+
+    var body: some View {
+        ZStack {
+            LinearGradient(
+                colors: [
+                    Color(coach.primaryColor).opacity(0.3),
+                    Color.black.opacity(0.8),
+                    Color.black
+                ],
+                startPoint: .top,
+                endPoint: .bottom
+            )
+            .ignoresSafeArea()
+
+            VStack(spacing: 0) {
+                HStack {
+                    Button(action: onBack) {
+                        Image(systemName: "arrow.left")
+                            .font(.system(size: 20, weight: .medium))
+                            .foregroundColor(.white)
+                    }
+                    Spacer()
+                }
+                .padding(.horizontal, 20)
+                .padding(.top, 60)
+
+                ScrollView(showsIndicators: false) {
+                    VStack(spacing: 0) {
+                        ZStack {
+                            Circle()
+                                .fill(
+                                    LinearGradient(
+                                        colors: [Color(coach.primaryColor).opacity(0.6), Color(coach.secondaryColor).opacity(0.4)],
+                                        startPoint: .topLeading,
+                                        endPoint: .bottomTrailing
+                                    )
+                                )
+                                .frame(width: 200, height: 200)
+
+                            if let url = coach.imageURL {
+                                AsyncImage(url: url) { phase in
+                                    if let image = phase.image {
+                                        image.resizable().scaledToFill()
+                                    } else {
+                                        Image(systemName: "person.fill")
+                                            .font(.system(size: 80))
+                                            .foregroundColor(.white.opacity(0.8))
+                                    }
+                                }
+                                .frame(width: 180, height: 180)
+                                .clipShape(Circle())
+                            } else {
+                                Image(systemName: "person.fill")
+                                    .font(.system(size: 80))
+                                    .foregroundColor(.white.opacity(0.8))
+                            }
+                        }
+                        .padding(.top, 20)
+                        .padding(.bottom, 24)
+
+                        VStack(alignment: .leading, spacing: 0) {
+                            VStack(alignment: .leading, spacing: 8) {
+                                Text(coach.name)
+                                    .font(.system(size: 32, weight: .bold))
+                                    .foregroundColor(.white)
+                                Text(coach.title)
+                                    .font(.system(size: 16, weight: .medium))
+                                    .foregroundColor(.gray)
+                            }
+                            .padding(.bottom, 24)
+
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("About")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(.white)
+                                Text(coach.backgroundStory)
+                                    .font(.system(size: 14, weight: .regular))
+                                    .foregroundColor(.gray)
+                                    .lineSpacing(4)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.bottom, 24)
+
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Specialties")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(.white)
+                                LazyVGrid(columns: [GridItem(.adaptive(minimum: 100), spacing: 8)], spacing: 8) {
+                                    ForEach(coach.expertise, id: \.self) { specialty in
+                                        Text(specialty)
+                                            .font(.system(size: 12, weight: .medium))
+                                            .foregroundColor(.white)
+                                            .padding(.horizontal, 12)
+                                            .padding(.vertical, 6)
+                                            .background(Capsule().fill(Color(coach.primaryColor).opacity(0.8)))
+                                    }
+                                }
+                            }
+                            .padding(.bottom, 24)
+
+                            VStack(alignment: .leading, spacing: 12) {
+                                Text("Training Style")
+                                    .font(.system(size: 20, weight: .semibold))
+                                    .foregroundColor(.white)
+                                Text(coach.personality + " " + coach.speakingStyle)
+                                    .font(.system(size: 14, weight: .regular))
+                                    .foregroundColor(.gray)
+                                    .lineSpacing(4)
+                                    .fixedSize(horizontal: false, vertical: true)
+                            }
+                            .padding(.bottom, 28)
+
+                            Button(action: { showIntroVideo = true }) {
+                                Text("View Intro")
+                                    .font(.system(size: 16, weight: .semibold))
+                                    .foregroundColor(.white)
+                                    .frame(maxWidth: .infinity)
+                                    .frame(height: 52)
+                                    .background(Color.white.opacity(0.14))
+                                    .cornerRadius(14)
+                            }
+                            .padding(.bottom, 12)
+
+                            Button(action: onSwitch) {
+                                HStack(spacing: 10) {
+                                    if isUpdating {
+                                        ProgressView().scaleEffect(0.8).tint(.white)
+                                    }
+                                    Text(isCurrent ? "Current Coach" : "Switch to \(coach.name)")
+                                        .font(.system(size: 17, weight: .semibold))
+                                        .foregroundColor(.white)
+                                }
+                                .frame(maxWidth: .infinity)
+                                .frame(height: 56)
+                                .background(
+                                    LinearGradient(
+                                        colors: [Color(coach.primaryColor), Color(coach.secondaryColor)],
+                                        startPoint: .leading,
+                                        endPoint: .trailing
+                                    )
+                                )
+                                .cornerRadius(16)
+                            }
+                            .disabled(isUpdating || isCurrent)
+                            .opacity((isUpdating || isCurrent) ? 0.6 : 1.0)
+                        }
+                        .padding(.horizontal, 24)
+                        .padding(.bottom, 40)
+                    }
+                }
+            }
+        }
+        .fullScreenCover(isPresented: $showIntroVideo) {
+            CoachIntroVideoView(coach: coach, onFinish: {}, dismissOnFinish: true)
         }
     }
 }

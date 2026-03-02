@@ -474,6 +474,7 @@ private struct GuidedWorkoutPlayerView: View {
     @State private var activeBeatStepIndex: Int?
     @State private var localVideoCatalog: [LocalWorkoutVideoResponse] = []
     @State private var assignedVideoByStepIndex: [Int: LocalWorkoutVideoResponse] = [:]
+    @State private var logRequestCancellable: AnyCancellable?
     @StateObject private var videoPlayback = GuidedWorkoutVideoPlayback()
 
     private let timer = Timer.publish(every: 1, on: .main, in: .common).autoconnect()
@@ -619,6 +620,18 @@ private struct GuidedWorkoutPlayerView: View {
                     .background(Color.green.opacity(0.9))
                     .clipShape(RoundedRectangle(cornerRadius: 12))
 
+                    Button("Previous") {
+                        goPrevious()
+                    }
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundColor(.white)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 10)
+                    .background(Color.white.opacity(0.2))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .disabled(currentIndex <= 0)
+                    .opacity(currentIndex <= 0 ? 0.45 : 1.0)
+
                     Button("Next") {
                         goNext()
                     }
@@ -719,6 +732,13 @@ private struct GuidedWorkoutPlayerView: View {
         saveProgress()
     }
 
+    private func goPrevious() {
+        guard currentIndex > 0 else { return }
+        currentIndex -= 1
+        stopBeats()
+        saveProgress()
+    }
+
     private func saveProgress() {
         onSaveState(
             GuidedWorkoutSessionState(
@@ -738,32 +758,40 @@ private struct GuidedWorkoutPlayerView: View {
         isPaused = true
         stopBeats()
         videoPlayback.stop()
-        let summary = exercises.map { "\($0.name) \($0.setsReps) \($0.rpe)" }.joined(separator: ", ")
         guard let userId else {
             onSaveState(nil)
             onWorkoutCompleted()
             dismiss()
             return
         }
-        let logPrompt = """
-        Please log this workout as completed for today.
-        Workout: \(workoutTitle)
-        Elapsed seconds: \(elapsedSeconds)
-        Exercises: \(summary)
-        """
-        AICoachService.shared.sendMessage(logPrompt, threadId: nil, userId: userId) { _ in
-            DispatchQueue.main.async {
-                isLogging = false
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    showLoggedToast = true
-                }
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    onSaveState(nil)
-                    onWorkoutCompleted()
-                    dismiss()
-                }
-            }
+        let exercisePayload = exercises.map {
+            WorkoutSessionExerciseRequest(name: $0.name, sets_reps: $0.setsReps, rpe: $0.rpe)
         }
+        let payload = WorkoutSessionLogRequest(
+            user_id: userId,
+            date: dayKey,
+            workout_title: workoutTitle,
+            elapsed_seconds: elapsedSeconds,
+            exercises: exercisePayload,
+            notes: "Logged from guided workout flow"
+        )
+        logRequestCancellable = APIService.shared.logGuidedWorkoutSession(payload)
+            .receive(on: DispatchQueue.main)
+            .sink(
+                receiveCompletion: { _ in
+                    isLogging = false
+                    withAnimation(.easeInOut(duration: 0.2)) {
+                        showLoggedToast = true
+                    }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
+                        onSaveState(nil)
+                        onWorkoutCompleted()
+                        dismiss()
+                    }
+                    logRequestCancellable = nil
+                },
+                receiveValue: { _ in }
+            )
     }
 
     private func loadLocalVideoCatalog() {

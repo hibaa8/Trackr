@@ -8,6 +8,6 @@ enum BackendConfig {
         if let info = Bundle.main.infoDictionary?["BackendBaseURL"] as? String, !info.isEmpty {
             return info.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         }
-        return "http://localhost:8000"
+        return "https://trackr-uwep.onrender.com/"
     }
 }

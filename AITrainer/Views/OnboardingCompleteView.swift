@@ -241,7 +241,7 @@ struct TrainerMainView: View {
 
                 VStack(spacing: 0) {
                     headerView(topInset: geometry.safeAreaInsets.top)
-                        .padding(.bottom, 16)
+                        .padding(.bottom, 8)
                     ScrollView(showsIndicators: false) {
                         VStack(spacing: 0) {
                             greetingSection
@@ -263,7 +263,7 @@ struct TrainerMainView: View {
                                     .frame(maxWidth: .infinity, minHeight: 176)
                             }
                             .padding(.horizontal, 20)
-                            .padding(.bottom, 120)
+                            .padding(.bottom, 92)
                         }
                     }
                 }
@@ -330,7 +330,7 @@ struct TrainerMainView: View {
         }
         .safeAreaInset(edge: .bottom) {
             bottomInputBar
-                .padding(.bottom, 10)
+                .padding(.bottom, 2)
         }
         .sheet(isPresented: $showMealLogging) {
             VoiceActiveView(
@@ -481,7 +481,7 @@ struct TrainerMainView: View {
             }
         }
         .padding(.horizontal, 20)
-        .padding(.top, topInset + 4)
+        .padding(.top, max(0, topInset - 6))
         .frame(maxWidth: .infinity)
     }
 
@@ -1674,7 +1674,8 @@ struct VoiceActiveView: View {
                     switch result {
                     case .success(let response):
                         self.threadId = response.thread_id
-                        let replyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                        let rawReplyText = response.reply.isEmpty ? "How can I help you next?" : response.reply
+                        let replyText = cleanCoachReplyText(rawReplyText)
                         let chunks = splitCoachReply(replyText)
                         var firstCoachMessageId: UUID?
                         for chunk in chunks {
@@ -1692,7 +1693,7 @@ struct VoiceActiveView: View {
                         }
                         // Voice playback/prefetch is disabled for agent chat messages.
                         // Temporarily disabled to avoid showing "saved" notices prematurely.
-                        maybePromptCalendarConnection(replyText)
+                        maybePromptCalendarConnection(rawReplyText)
                         refreshPlanAndBroadcast(userId: userId)
                     case .failure:
                         let errorMessage = VoiceMessage(
@@ -1742,33 +1743,73 @@ struct VoiceActiveView: View {
             sentenceCandidates = [normalized]
         }
 
+        let maxChunkLength = 420
         var chunks: [String] = []
+        var currentChunk = ""
         for sentence in sentenceCandidates {
-            let sentenceWithPunctuation: String
-            if sentence.hasSuffix(".") || sentence.hasSuffix("!") || sentence.hasSuffix("?") {
-                sentenceWithPunctuation = sentence
-            } else {
-                sentenceWithPunctuation = "\(sentence)."
-            }
-            if sentenceWithPunctuation.count <= 180 {
-                chunks.append(sentenceWithPunctuation)
-            } else {
-                // Fallback split for very long single sentences.
-                var current = ""
-                for word in sentenceWithPunctuation.split(separator: " ") {
-                    let next = current.isEmpty ? String(word) : "\(current) \(word)"
-                    if next.count > 180 {
-                        if !current.isEmpty { chunks.append(current) }
-                        current = String(word)
-                    } else {
-                        current = next
+            let normalizedSentence = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedSentence.isEmpty else { continue }
+
+            if currentChunk.isEmpty {
+                if normalizedSentence.count <= maxChunkLength {
+                    currentChunk = normalizedSentence
+                } else {
+                    // Fallback split for very long single sentences.
+                    var current = ""
+                    for word in normalizedSentence.split(separator: " ") {
+                        let next = current.isEmpty ? String(word) : "\(current) \(word)"
+                        if next.count > maxChunkLength {
+                            if !current.isEmpty { chunks.append(current) }
+                            current = String(word)
+                        } else {
+                            current = next
+                        }
                     }
+                    if !current.isEmpty { chunks.append(current) }
                 }
-                if !current.isEmpty { chunks.append(current) }
+                continue
+            }
+
+            let nextChunk = "\(currentChunk) \(normalizedSentence)"
+            if nextChunk.count <= maxChunkLength {
+                currentChunk = nextChunk
+            } else {
+                chunks.append(currentChunk)
+                if normalizedSentence.count <= maxChunkLength {
+                    currentChunk = normalizedSentence
+                } else {
+                    var current = ""
+                    for word in normalizedSentence.split(separator: " ") {
+                        let next = current.isEmpty ? String(word) : "\(current) \(word)"
+                        if next.count > maxChunkLength {
+                            if !current.isEmpty { chunks.append(current) }
+                            current = String(word)
+                        } else {
+                            current = next
+                        }
+                    }
+                    currentChunk = current
+                }
             }
         }
+        if !currentChunk.isEmpty { chunks.append(currentChunk) }
 
         return chunks.isEmpty ? [trimmed] : chunks
+    }
+
+    private func cleanCoachReplyText(_ text: String) -> String {
+        var cleaned = text.replacingOccurrences(of: "\r\n", with: "\n")
+        cleaned = cleaned.replacingOccurrences(of: "```[\\s\\S]*?```", with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "(?m)^\\s{0,3}#{1,6}\\s*", with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "(?m)^\\s*>\\s?", with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "(?m)^\\s*[-*+]\\s+", with: "", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\[(.*?)\\]\\((.*?)\\)", with: "$1", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\*\\*(.*?)\\*\\*", with: "$1", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "\\*(.*?)\\*", with: "$1", options: .regularExpression)
+        cleaned = cleaned.replacingOccurrences(of: "`", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "#", with: "")
+        cleaned = cleaned.replacingOccurrences(of: "\\n{3,}", with: "\n\n", options: .regularExpression)
+        return cleaned.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private func maybeShowUpdateNotice(response: CoachChatResponse, replyText: String) {

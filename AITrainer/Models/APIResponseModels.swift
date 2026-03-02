@@ -364,6 +364,26 @@ struct BillingCheckoutSessionResponse: Codable {
     let session_id: String
 }
 
+struct WorkoutSessionExerciseRequest: Codable {
+    let name: String
+    let sets_reps: String?
+    let rpe: String?
+}
+
+struct WorkoutSessionLogRequest: Codable {
+    let user_id: Int
+    let date: String
+    let workout_title: String
+    let elapsed_seconds: Int
+    let exercises: [WorkoutSessionExerciseRequest]
+    let notes: String?
+}
+
+struct WorkoutSessionLogResponse: Codable {
+    let ok: Bool
+    let message: String
+}
+
 enum JSONValue: Codable {
     case string(String)
     case number(Double)
